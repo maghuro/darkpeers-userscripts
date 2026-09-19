@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.2
+// @version      1.2.3
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -20,8 +20,8 @@
 // Changes in this fork:
 //   - All non-DarkPeers tracker support, the upload.cx extra commands and the
 //     openuserjs update check have been removed.
-//   - A host-selected percentage (0-30%, steps of 5) of the final pot is donated
-//     to the BONanza fund, managed by DarkPeers user "trzykaksien".
+//   - A host-selected percentage (0-30%, steps of 5) of the final pot is
+//     contributed directly to the DarkPeers BON Pool (/bon-pool).
 //   - Winning number is drawn with crypto.getRandomValues (Math.random fallback).
 //   - Storage keys and panel IDs are namespaced; if the original script is also
 //     installed on the page, this one stands down; its toolbar button stays but
@@ -33,9 +33,10 @@
 //   - v1.2.1 hardens reload/multi-tab safety, persists sponsor/stat cursors,
 //     draws the winning number only at payout time, makes !random range-safe,
 //     and strengthens payout verification against stale gift messages.
-//   - v1.2.2 formalizes stable DP -> IRC bridge emoji signatures for TLCC,
-//     adds an unambiguous final-result marker, and labels BONanza donations as
-//     cosmetic "taxes" while Rigged Mode is active (the fund transfer is unchanged).
+//   - v1.2.2 added an interim TLCC bridge signature and cosmetic Rigged taxes.
+//   - v1.2.3 contributes the selected share directly to DarkPeers /bon-pool,
+//     verifies it before announcing success, and introduces authoritative URL
+//     markers so TLCC can prefer this fork over legacy heuristic classifiers.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -197,35 +198,41 @@
         return `/users/${safeSlug}/gifts`;
     }
 
-    // ── BONanza fund ────────────────────────────────────────────
-    // The fund manager is deliberately a frozen constant, not a UI field, so
-    // the donation destination cannot be changed from the giveaway panel.
+    // ── DarkPeers BON Pool ──────────────────────────────────────
     const BONANZA = Object.freeze({
-        FUND_MANAGER: "trzykaksien",   // DarkPeers username that receives donations
-        FUND_NAME: "BONanza fund",
+        FUND_NAME: "BON Pool",
+        POOL_PATH: "/bon-pool",
+        POOL_STORE_PATH: "/bon-pool/store",
         PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
         MAX_PERCENT: 30,
-        ACCENT_COLOR: "#FF8C42"
+        ACCENT_COLOR: "#FF8C42",
+        VERIFY_ATTEMPTS: 6,
+        VERIFY_DELAY_MS: 2500,
+        FETCH_TIMEOUT_MS: 8000
     });
 
-    // Stable website -> DP -> IRC -> The Lounge bridge contract.
-    // TLCC is CSS-only after the bridge has flattened BBCode, so these surviving
-    // emoji signatures are intentionally treated like a tiny public API:
-    //   🎁 + ✨ + ✨  main giveaway / reminder
-    //   🧡 + 💫       fork sponsor summary
-    //   📋            entries
-    //   📊            user stats
-    //   ⏳            time
-    //   🥳            final sponsor thank-you
-    //   🏆 + 🎯       final result (🎯 disambiguates it from !top)
-    //   ⚠️            tie (adjacent to result)
-    //   😈 / 😒       rigged / unrigged
-    //   👮            naughty-list add
-    // Keep these signatures stable unless TLCC is updated in the same change.
+    // Authoritative website -> DP -> IRC -> The Lounge contract.
+    // TLCC gives these real link markers precedence over legacy emoji heuristics.
+    const BRIDGE_MARKER_PREFIX = `${location.origin}/#dpgw-v1-`;
     const BRIDGE_MARKERS = Object.freeze({
-        RESULT: "🎯",
-        TAXES: "🧾"
+        START: "start",
+        SPONSORS: "sponsors",
+        ENTRIES: "entries",
+        STATS: "stats",
+        TIME: "time",
+        RESULT: "result",
+        TIE: "tie",
+        RIGGED: "rigged",
+        UNRIGGED: "unrigged",
+        NAUGHTY: "naughty",
+        POOL_PAID: "pool-paid",
+        TAXES_PAID: "taxes-paid"
     });
+
+    function bridgeMarker(kind, visible) {
+        const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
+        return `[url=${BRIDGE_MARKER_PREFIX}${safeKind}]${visible}[/url]`;
+    }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
     const LS_STATEMENTS = `bonanza-giveaway-statements::${location.hostname}`;
@@ -348,11 +355,6 @@
         return BONANZA.PERCENT_OPTIONS.includes(n) ? n : 0;
     }
 
-    function isFundManagerName(name) {
-        return String(name || "").trim().toLowerCase() === BONANZA.FUND_MANAGER.toLowerCase();
-    }
-
-
 
     const LS_SUPPRESS = "bonanza-giveaway-suppressEntryReplies";
     const LS_SILENT = "bonanza-giveaway-silentMode";
@@ -366,6 +368,7 @@
     // Per-giveaway ledger of completed gift attempts. Survives reload + visible to other tabs,
     // so even if endGiveaway runs in two tabs the second one won't re-pay.
     const LS_PAID_GIFTS = `bonanza-giveaway-paidGifts::${location.hostname}`;
+    const LS_POOL_CONTRIBUTIONS = `bonanza-giveaway-poolContributions::${location.hostname}`;
     // Cap retained giveaway-id entries in the ledger so it can't grow unbounded over time.
     const PAID_GIFTS_MAX_GIVEAWAYS = 50;
     const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2915,7 +2918,7 @@ body.host-panel-dragging * {
             initializeScaledWinnersAnnouncementState(giveawayData);
             logEvent(
                 "Giveaway started",
-                `Host=${sanitizeNick(giveawayData.host)} | Host-funded=${fmtBON(giveawayData.initialPotVerifiedAtStart)} BON | Base winners=${fmtBON(giveawayData.baseWinnersAtStart)} | Time=${fmtBON(totalTimeMin)} min | ${BONANZA.FUND_NAME}=${giveawayData.donationPercent}%${isFundManagerName(giveawayData.host) ? " (host is fund manager, retained)" : ""} | Flags: silent=${GENERAL_SETTINGS.silent_mode ? "on" : "off"}, rigged=${riggedMode ? "on" : "off"}, scale=${giveawayData.scaleWinnersWithSponsors ? "on" : "off"}${giveawayData.scaleWinnersWithSponsors ? `, max winners=${fmtBON(giveawayData.hostMaxScaledWinners)}` : ""}`
+                `Host=${sanitizeNick(giveawayData.host)} | Host-funded=${fmtBON(giveawayData.initialPotVerifiedAtStart)} BON | Base winners=${fmtBON(giveawayData.baseWinnersAtStart)} | Time=${fmtBON(totalTimeMin)} min | ${BONANZA.FUND_NAME}=${giveawayData.donationPercent}% | Flags: silent=${GENERAL_SETTINGS.silent_mode ? "on" : "off"}, rigged=${riggedMode ? "on" : "off"}, scale=${giveawayData.scaleWinnersWithSponsors ? "on" : "off"}${giveawayData.scaleWinnersWithSponsors ? `, max winners=${fmtBON(giveawayData.hostMaxScaledWinners)}` : ""}`
             );
             // The winning number is deliberately NOT drawn here. It is generated
             // only when endGiveaway() commits to payout, so DevTools/localStorage
@@ -2932,24 +2935,15 @@ body.host-panel-dragging * {
             };
 
             const donationPct = normalizeDonationPercent(giveawayData.donationPercent);
-            const hostIsFundManager = isFundManagerName(giveawayData.host);
             const introHeader = donationPct > 0
                 ? (riggedMode
-                    ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b] ${BRIDGE_MARKERS.TAXES}\n🎁 I am hosting a giveaway for `
-                    : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} DONATION GIVEAWAY[/color][/b] 🧡\n🎁 I am hosting a giveaway for `)
-                : `🎁 I am hosting a giveaway for `;
+                    ? `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b]\nI am hosting a giveaway for `
+                    : `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} 🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} CONTRIBUTION GIVEAWAY[/color][/b] 🧡\nI am hosting a giveaway for `)
+                : `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} I am hosting a giveaway for `;
             const donationIntroLine = donationPct > 0
                 ? (riggedMode
-                    ? `\n[b][color=#FF4F9A]${donationPct}% rigging tax[/color][/b] will be skimmed from the final pot (including sponsor gifts) and ` +
-                      (hostIsFundManager
-                          ? `retained in the [b]${BONANZA.FUND_NAME}[/b] because the host manages the fund. `
-                          : `sent to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. `) +
-                      `Winners keep the remaining ${100 - donationPct}%. Entirely legitimate accounting. 😈`
-                    : `\n[b][color=${BONANZA.ACCENT_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) ` +
-                      (hostIsFundManager
-                          ? `stays in the [b]${BONANZA.FUND_NAME}[/b] (hosted by the fund manager). `
-                          : `goes to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. `) +
-                      `Winners receive the remaining ${100 - donationPct}%.`)
+                    ? `\n[b][color=#FF4F9A]${donationPct}% rigging tax[/color][/b] will be taken from the final pot (including sponsor gifts) and paid directly into the [b]${BONANZA.FUND_NAME}[/b]. Winners keep the remaining ${100 - donationPct}%. Entirely legitimate accounting. 😈`
+                    : `\n[b][color=${BONANZA.ACCENT_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b]. Winners receive the remaining ${100 - donationPct}%.`)
                 : "";
 
             let introMessage = `${introHeader}[b][color=#ffc00a]${fmtBON(giveawayData.amount)} BON[/color][/b] | ` +
@@ -3878,7 +3872,7 @@ body.host-panel-dragging * {
             const othersCount = Math.max(0, sponsorCount - shown.length);
 
             let msg =
-                `✨ Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
+                `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
                 `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
 
             if (parts.length) {
@@ -4097,7 +4091,7 @@ body.host-panel-dragging * {
                 return;
             }
             const out = rows.map((u, i) => format(u, i, ctx));
-            reply(`[b]${emoji} ${label}: ${out.join(" | ")}[/b]`);
+            reply(`[b]${bridgeMarker(BRIDGE_MARKERS.STATS, "📊")} ${emoji} ${label}: ${out.join(" | ")}[/b]`);
         };
     }
 
@@ -4114,7 +4108,7 @@ body.host-panel-dragging * {
                 reply(
                     `Time left: [b][color=#1DDC5D]${parseTime(
                         giveawayData.timeLeft * 1000
-                    )}[/color][/b] ⏳`
+                    )}[/color][/b] ${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")}`
                 );
                 return;
             }
@@ -4163,7 +4157,7 @@ body.host-panel-dragging * {
                 );
 
             reply(
-                `📋 Entries – ${taken}/${total} ` +
+                `${bridgeMarker(BRIDGE_MARKERS.ENTRIES, "📋")} Entries – ${taken}/${total} ` +
                 `[b]([color=#1DDC5D]${free} free[/color][/b]): ${list.join(", ")}`
             );
         },
@@ -4219,7 +4213,7 @@ body.host-panel-dragging * {
                 }
             }
 
-            reply(`[b]📊 Stats: [color=#d85e27]${safeNameForChat(rec.name || target)}[/color] - ${parts.join(" • ")}[/b]`);
+            reply(`[b]${bridgeMarker(BRIDGE_MARKERS.STATS, "📊")} Stats: [color=#d85e27]${safeNameForChat(rec.name || target)}[/color] - ${parts.join(" • ")}[/b]`);
         },
 
         // Leaderboards — table-driven to reduce repetition
@@ -4445,8 +4439,8 @@ body.host-panel-dragging * {
                 // Only announce in chat if a giveaway is actually running
                 if (hasActiveGiveaway) {
                     reply(
-                        `[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
-                        `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i] 😈`
+                        `${bridgeMarker(BRIDGE_MARKERS.RIGGED, "😈")} [color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
+                        `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i]`
                     );
                 }
             } else {
@@ -4482,8 +4476,8 @@ body.host-panel-dragging * {
 
                 if (hasActiveGiveaway) {
                     reply(
-                        `[color=#32cd53][b]Rigged mode disabled.[/b][/color] ` +
-                        `[i][color=#A0E7AF]Back to boring, fully transparent fairness.[/color][/i] 😒`
+                        `${bridgeMarker(BRIDGE_MARKERS.UNRIGGED, "😒")} [color=#32cd53][b]Rigged mode disabled.[/b][/color] ` +
+                        `[i][color=#A0E7AF]Back to boring, fully transparent fairness.[/color][/i]`
                     );
                 }
             } else {
@@ -4735,7 +4729,7 @@ body.host-panel-dragging * {
 
                     if (removed) { updateEntries(); snapshotGiveaway(); }
 
-                    reply(`👮 [color=#FFDE59]${fmtUserList([target])} added to the naughty list and removed from the giveaway.[/color]`);
+                    reply(`${bridgeMarker(BRIDGE_MARKERS.NAUGHTY, "👮")} [color=#FFDE59]${fmtUserList([target])} added to the naughty list and removed from the giveaway.[/color]`);
                     break;
                 }
 
@@ -5034,7 +5028,7 @@ body.host-panel-dragging * {
             const ties = entries.filter(e => e.gap === entries[0].gap);
             if (ties.length > 1) {
                 const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
-                sendMessage(`⚠️ We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`);
+                sendMessage(`${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`);
             }
 
             // 3) pick top N winners
@@ -5064,15 +5058,9 @@ body.host-panel-dragging * {
             const split = computeDonationSplit(allocated, giveawayData.donationPercent);
             const net = split.net;
             const donationActive = split.total > 0;
-            const donationRetained = donationActive && isFundManagerName(giveawayData.host);
             const donationInfo = donationActive
-                ? { total: split.total, percent: split.percent, retained: donationRetained }
+                ? { total: split.total, percent: split.percent, confirmed: false }
                 : null;
-
-            // Save giveaway outcome stats to localStorage (per-site)
-            try {
-                recordGiveawayStats(giveawayData, winners, net, numberEntries, donationInfo);
-            } catch (e) { /* ignore stats errors */ }
 
             // Initialize winners / payout status UI so we can tick boxes as gifts are confirmed
             initWinnersStatusUI(winners, net, giveawayData.host, donationInfo);
@@ -5105,7 +5093,7 @@ body.host-panel-dragging * {
             const rigTag = rigNote(" (Rigged mode was active, but winners were still chosen [b]fairly[/b]… allegedly.) 👀");
 
             const summaryLine =
-                  `🏆 ${BRIDGE_MARKERS.RESULT} Winning number: [b][color=#1DDC5D]${fmtBON(winNum)}[/color][/b]. ` +
+                  `🏆 ${bridgeMarker(BRIDGE_MARKERS.RESULT, "🎯")} Winning number: [b][color=#1DDC5D]${fmtBON(winNum)}[/color][/b]. ` +
                   `Winners drawn: [b][color=#5DE2E7]${fmtBON(N)}[/color][/b]. ` +
                   `Total entrants: [b][color=#5DE2E7]${fmtBON(entrantsTotal)}[/color][/b].`;
             const fundingLine =
@@ -5116,14 +5104,10 @@ body.host-panel-dragging * {
             ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b] by [b][color=#5DE2E7]+${fmtBON(scaleIncrease)}[/color][/b] due to sponsorships.`
             : "";
             const donationLine = donationActive
-            ? (riggedMode
-                ? (donationRetained
-                    ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) retained in the [b]${BONANZA.FUND_NAME}[/b], since the host is the fund manager. The taxman approves. 😈`
-                    : `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) levied and sent to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. The house always gets its paperwork. 😈`)
-                : (donationRetained
-                    ? `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) retained in the fund, as the host is the fund manager.`
-                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) donated to [b]${BONANZA.FUND_MANAGER}[/b]. Thank you for supporting the ${BONANZA.FUND_NAME}! 🧡`))
-            : "";
+                ? (riggedMode
+                    ? `🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct payment into the [b]${BONANZA.FUND_NAME}[/b]. Confirmation follows after settlement.`
+                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution. Confirmation follows after the pool records it.`)
+                : "";
 
             if (winners.length === 1) {
                 // single‐winner public message
@@ -5157,8 +5141,8 @@ body.host-panel-dragging * {
             const winnerNames = winners.map(w => sanitizeNick(w.author)).join(", ") || "none";
             const payoutPerWinner = net.map((amt, i) => `${sanitizeNick(winners[i]?.author || "unknown")}: ${fmtBON(amt)} BON`).join(", ");
             const donationLog = donationActive
-                ? ` | ${BONANZA.FUND_NAME}=${fmtBON(split.total)} BON (${split.percent}%${donationRetained ? ", retained by host/fund manager" : `, to ${BONANZA.FUND_MANAGER}`})`
-                : " | Donation=0%";
+                ? ` | ${BONANZA.FUND_NAME}=${fmtBON(split.total)} BON (${split.percent}%, direct contribution pending)`
+                : " | Contribution=0%";
             logEvent(
                 "Giveaway ended",
                 `Entrants=${fmtBON(entrantsTotal)} | Winners=${fmtBON(N)} | Host-funded=${fmtBON(hostFundedTotal)} BON | Sponsored=${fmtBON(sponsoredTotal)} BON | Total=${fmtBON(potTotal)} BON${donationLog} | Winners list=${winnerNames}${payoutPerWinner ? ` | Payouts=${payoutPerWinner}` : ""}`
@@ -5197,26 +5181,37 @@ body.host-panel-dragging * {
                 }
             }
 
-            // 6a) BONanza fund donation: one aggregated gift after the winners.
-            //     Skipped (retained) when the host *is* the fund manager, since the
-            //     BON is already in their balance and the site blocks self-gifts.
-            if (donationActive && !donationRetained) {
-                await giftBon(
-                    BONANZA.FUND_MANAGER,
-                    split.total,
-                    riggedMode
-                        ? `${BRIDGE_MARKERS.TAXES} Rigging taxes (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host}) -> ${BONANZA.FUND_NAME}`
-                        : `🧡 ${BONANZA.FUND_NAME} donation (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host})`,
-                    GIFT_PURPOSE.FUND
-                );
-                expectedGifts.push({ recipient: BONANZA.FUND_MANAGER, amount: split.total, purpose: GIFT_PURPOSE.FUND });
+            // 6a) Direct BON Pool contribution. Success is announced publicly only
+            //     after both the host's own contribution counter and the global pool
+            //     total confirm the expected increase.
+            let poolResult = { confirmed: false, attempted: false, reason: "not-active" };
+            if (donationActive) {
+                poolResult = await contributeBonPool(split.total);
+                donationInfo.confirmed = !!poolResult.confirmed;
+                if (poolResult.confirmed) {
+                    markFundGiftStatus("confirmed");
+                    const paidMessage = riggedMode
+                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
+                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "🧡")} [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] paid directly into the pool. Thank you for supporting the event! ✨`;
+                    await sendMessage(paidMessage);
+                } else {
+                    markFundGiftStatus("failed");
+                    logEvent("BON Pool verification warning", `Direct contribution of ${fmtBON(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
+                    try {
+                        window.alert(`BON Pool warning: the ${fmtBON(split.total)} BON contribution could not be confirmed. Check /bon-pool manually before retrying anything.`);
+                    } catch {}
+                }
             }
-
-            // 6a2) Statement record (updated further as gift confirmations arrive)
+            try {
+                recordGiveawayStats(giveawayData, winners, net, numberEntries, donationInfo);
+            } catch (e) { /* ignore stats errors */ }
             try {
                 currentStatement = createStatementRecord({
                     winners, gross: allocated, net, donations: split.donations, split,
-                    donationRetained, entrants: entrantsTotal
+                    poolStatus: donationActive
+                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
+                        : "none",
+                    entrants: entrantsTotal
                 });
                 if (currentStatement && !expectedGifts.length) currentStatement.verification = "nothing to verify";
                 persistCurrentStatement();
@@ -5339,7 +5334,7 @@ body.host-panel-dragging * {
             fundRow.style.borderTop = `2px solid ${BONANZA.ACCENT_COLOR}`;
 
             const userCell = document.createElement("td");
-            userCell.innerHTML = `<span style="color:${BONANZA.ACCENT_COLOR};font-weight:600;">${BONANZA.FUND_NAME}</span> <small style="color:#aaa;">(${BONANZA.FUND_MANAGER})</small>`;
+            userCell.innerHTML = `<span style="color:${BONANZA.ACCENT_COLOR};font-weight:600;">${BONANZA.FUND_NAME}</span> <small style="color:#aaa;">(direct)</small>`;
             const entryCell = document.createElement("td");
             entryCell.textContent = `${donation.percent}%`;
             const prizeCell = document.createElement("td");
@@ -5347,14 +5342,8 @@ body.host-panel-dragging * {
             const giftCell = document.createElement("td");
             giftCell.style.textAlign = "center";
 
-            if (donation.retained) {
-                giftCell.textContent = "Retained";
-                giftCell.title = "Host is the fund manager; donation stays in the fund (no self-gift)";
-                fundRow.classList.add("gift-self");
-            } else {
-                giftCell.innerHTML = `<span class="gift-spinner" title="Checking donation status…"></span>`;
-                fundRow.classList.add("gift-pending");
-            }
+            giftCell.innerHTML = `<span class="gift-spinner" title="Checking BON Pool contribution…"></span>`;
+            fundRow.classList.add("gift-pending");
 
             fundRow.append(userCell, entryCell, prizeCell, giftCell);
             tbody.appendChild(fundRow);
@@ -5548,18 +5537,14 @@ body.host-panel-dragging * {
             let attempts = 0;
             let done = false;
 
-            const describe = g => g.purpose === GIFT_PURPOSE.FUND
-                ? `${BONANZA.FUND_NAME} → ${sanitizeNick(g.recipient)} (${fmtBON(g.amount)} BON)`
-                : `${sanitizeNick(g.recipient)} (${fmtBON(g.amount)} BON)`;
+            const describe = g => `${sanitizeNick(g.recipient)} (${fmtBON(g.amount)} BON)`;
 
             function markConfirmed(g) {
-                if (g.purpose === GIFT_PURPOSE.FUND) markFundGiftStatus("confirmed");
-                else markWinnerGiftConfirmed(g.recipient);
+                markWinnerGiftConfirmed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "confirmed");
             }
             function markFailed(g) {
-                if (g.purpose === GIFT_PURPOSE.FUND) markFundGiftStatus("failed");
-                else markWinnerGiftFailed(g.recipient);
+                markWinnerGiftFailed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed");
             }
 
@@ -5811,7 +5796,7 @@ body.host-panel-dragging * {
     // ───────────── End-of-giveaway statements ─────────────
     // A plain-text record of every transaction in a giveaway, built when the
     // giveaway ends and updated as gift confirmations arrive. The last few are
-    // kept in localStorage so the host (or the fund manager) can save them later.
+    // kept in localStorage so the host (or the BON Pool) can save them later.
 
     let currentStatement = null; // record for the giveaway that just ended
 
@@ -5851,7 +5836,7 @@ body.host-panel-dragging * {
 
     /**
      * Create the statement record at the end of a giveaway.
-     * @param {object} p  { winners, gross, net, donations, split, donationRetained, expectedGifts }
+     * @param {object} p  { winners, gross, net, donations, split, poolStatus, entrants }
      */
     function createStatementRecord(p) {
         const data = giveawayData;
@@ -5898,9 +5883,8 @@ body.host-panel-dragging * {
             sponsors,
             donationPercent: pct,
             donationTotal,
-            donationRecipient: BONANZA.FUND_MANAGER,
-            donationRetained: !!p.donationRetained,
-            donationStatus: donationTotal <= 0 ? "none" : (p.donationRetained ? "retained (host is fund manager)" : "sent, awaiting confirmation"),
+            donationRecipient: "DarkPeers /bon-pool",
+            donationStatus: donationTotal <= 0 ? "none" : (p.poolStatus || "contribution pending verification"),
             winners,
             verification: "in progress",
             notes: []
@@ -5911,12 +5895,8 @@ body.host-panel-dragging * {
     function updateStatementGiftStatus(recipient, purpose, status) {
         if (!currentStatement) return;
         const label = ({ confirmed: "confirmed in chat", failed: "NOT CONFIRMED, check manually", self: "self (host, no gift sent)" })[status] || status;
-        if (purpose === GIFT_PURPOSE.FUND) {
-            if (currentStatement.donationTotal > 0 && !currentStatement.donationRetained) currentStatement.donationStatus = label;
-        } else {
-            const key = normalizeUserKey(recipient);
-            currentStatement.winners.forEach(w => { if (normalizeUserKey(w.user) === key) w.status = label; });
-        }
+        const key = normalizeUserKey(recipient);
+        currentStatement.winners.forEach(w => { if (normalizeUserKey(w.user) === key) w.status = label; });
         persistCurrentStatement();
     }
 
@@ -5957,7 +5937,7 @@ body.host-panel-dragging * {
         L.push(`TOTAL POT       : ${money(rec.potTotal)}`);
         L.push("");
         L.push(line("-"));
-        L.push(`${BONANZA.FUND_NAME.toUpperCase()} DONATION`);
+        L.push(`BON POOL CONTRIBUTION`);
         L.push(line("-"));
         if (rec.donationTotal > 0) {
             L.push(`Percentage      : ${rec.donationPercent}% of the total pot (host + sponsors)`);
@@ -6067,8 +6047,8 @@ body.host-panel-dragging * {
         const pct = normalizeDonationPercent(donationPercentInput ? donationPercentInput.value : 0);
         if (pct <= 0) {
             donationHint.innerHTML = riggedMode
-                ? `Rigged mode is active, but the tax rate is <b>0%</b>. Suspiciously generous. No ${BONANZA.FUND_NAME} transfer.`
-                : `Standard giveaway. No ${BONANZA.FUND_NAME} donation.`;
+                ? `Rigged mode is active, but the tax rate is <b>0%</b>. Suspiciously generous. No ${BONANZA.FUND_NAME} contribution.`
+                : `Standard giveaway. No ${BONANZA.FUND_NAME} contribution.`;
             return;
         }
         const potRaw = coinInput ? String(coinInput.value || "").replace(/[^0-9]/g, "") : "";
@@ -6076,10 +6056,8 @@ body.host-panel-dragging * {
         const est = pot > 0 ? Math.floor(pot * pct / 100) : 0;
         const estText = pot > 0 ? ` About <b>${fmtBON(est)} BON</b> of a ${fmtBON(pot)} BON pot (more if sponsored).` : "";
         donationHint.innerHTML = riggedMode
-            ? `${BRIDGE_MARKERS.TAXES} <b style="color:#FF4F9A;">${pct}% rigging taxes</b> will be taken from the final pot (host + sponsors) and sent to ` +
-              `<b>${BONANZA.FUND_MANAGER}</b> for the ${BONANZA.FUND_NAME}. "Taxes" is cosmetic; the verified fund transfer is unchanged. Your outlay is unchanged.${estText}`
-            : `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) goes to ` +
-              `<b>${BONANZA.FUND_MANAGER}</b> for the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
+            ? `🧾 <b style="color:#FF4F9A;">${pct}% rigging taxes</b> will be taken from the final pot (host + sponsors) and paid <b>directly</b> into the ${BONANZA.FUND_NAME}. Your outlay is unchanged.${estText}`
+            : `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) will be contributed <b>directly</b> to the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
     }
 
     function sendReminder(options = {}) {
@@ -6105,11 +6083,11 @@ body.host-panel-dragging * {
         const reminderPct = normalizeDonationPercent(giveawayData.donationPercent);
         const reminderPrefix = reminderPct > 0
             ? (riggedMode
-                ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes: ${reminderPct}% to the ${BONANZA.FUND_NAME}[/color][/b] ${BRIDGE_MARKERS.TAXES}\n`
-                : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} donation giveaway (${reminderPct}% to the fund)[/color][/b] 🧡\n`)
+                ? `🧾 [b][color=#FF4F9A]Rigging taxes: ${reminderPct}% to the ${BONANZA.FUND_NAME}[/color][/b] 🧾\n`
+                : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution giveaway (${reminderPct}% to the pool)[/color][/b] 🧡\n`)
             : "";
         const msg = reminderPrefix +
-              `🎁 Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
+              `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
@@ -6163,10 +6141,188 @@ body.host-panel-dragging * {
         } catch {}
     }
 
-    // Gift purposes. The fund manager can legitimately receive two gifts in one
-    // giveaway (their own winnings + the fund donation), possibly for the same
-    // amount, so the ledger key carries the purpose to keep them distinct.
-    const GIFT_PURPOSE = Object.freeze({ WINNER: "winner", FUND: "fund" });
+    function readPoolContributionLedger() {
+        try {
+            const raw = localStorage.getItem(LS_POOL_CONTRIBUTIONS);
+            const parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch { return {}; }
+    }
+
+    function writePoolContributionLedger(ledger) {
+        try {
+            const ids = Object.keys(ledger).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+            while (ids.length > PAID_GIFTS_MAX_GIVEAWAYS) delete ledger[ids.shift()];
+            localStorage.setItem(LS_POOL_CONTRIBUTIONS, JSON.stringify(ledger));
+        } catch {}
+    }
+
+    function savePoolContributionAttempt(giveawayId, record) {
+        if (!giveawayId) return;
+        const ledger = readPoolContributionLedger();
+        ledger[String(giveawayId)] = { ...(ledger[String(giveawayId)] || {}), ...record };
+        writePoolContributionLedger(ledger);
+    }
+
+    function getPoolContributionAttempt(giveawayId) {
+        if (!giveawayId) return null;
+        return readPoolContributionLedger()[String(giveawayId)] || null;
+    }
+
+    function parsePoolCounter(text, label) {
+        const source = String(text || "");
+        const needle = String(label || "");
+        const pos = source.toLowerCase().indexOf(needle.toLowerCase());
+        if (pos < 0) return null;
+        const tail = source.slice(pos + needle.length);
+        const m = tail.match(/[0-9][0-9.,\s]*/);
+        if (!m) return null;
+        const digits = m[0].replace(/[^0-9]/g, "");
+        const n = parseInt(digits, 10);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    async function fetchBonPoolPage() {
+        const url = new URL(BONANZA.POOL_PATH, location.origin);
+        const res = await fetchWithTimeout(url, {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+            headers: { "Accept": "text/html", "X-Requested-With": "XMLHttpRequest" }
+        }, BONANZA.FETCH_TIMEOUT_MS);
+        if (!res.ok) throw new Error(`BON Pool GET failed: HTTP ${res.status}`);
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const text = (doc.body?.textContent || "").replace(/\u00a0/g, " ");
+        const total = parsePoolCounter(text, "Total contributions:");
+        const mine = parsePoolCounter(text, "Your contribution:");
+        const form = Array.from(doc.querySelectorAll("form")).find(el => {
+            try {
+                const u = new URL(el.getAttribute("action") || "", location.origin);
+                return u.origin === location.origin && u.pathname === BONANZA.POOL_STORE_PATH;
+            } catch { return false; }
+        });
+        if (!form || total == null || mine == null) throw new Error("Could not parse BON Pool form/counters.");
+        const action = new URL(form.getAttribute("action") || BONANZA.POOL_STORE_PATH, location.origin);
+        return { form, action: action.href, total, mine };
+    }
+
+    function formDataFromParsedForm(form) {
+        const data = new FormData();
+        form.querySelectorAll("input, select, textarea").forEach(el => {
+            if (!el.name || el.disabled) return;
+            const type = String(el.type || "").toLowerCase();
+            if ((type === "radio" || type === "checkbox") && !el.checked) return;
+            data.append(el.name, el.value ?? "");
+        });
+        return data;
+    }
+
+    async function verifyBonPoolContribution(record) {
+        const targetMine = Number(record.beforeMine) + Number(record.amount);
+        const targetTotal = Number(record.beforeTotal) + Number(record.amount);
+        let last = null;
+        for (let i = 0; i < BONANZA.VERIFY_ATTEMPTS; i++) {
+            if (i > 0) await new Promise(resolve => setTimeout(resolve, BONANZA.VERIFY_DELAY_MS));
+            try {
+                last = await fetchBonPoolPage();
+                if (last.mine >= targetMine && last.total >= targetTotal) return { confirmed: true, snapshot: last };
+            } catch (e) {
+                logEvent("BON Pool verify retry", String(e?.message || e));
+            }
+        }
+        return { confirmed: false, snapshot: last };
+    }
+
+    async function contributeBonPool(amount) {
+        const safeAmount = Math.floor(Number(amount));
+        if (!Number.isFinite(safeAmount) || safeAmount <= 0) return { attempted: false, confirmed: false, reason: "invalid" };
+        const giveawayId = getActiveGiveawayId();
+        if (!giveawayId) return { attempted: false, confirmed: false, reason: "missing-giveaway-id" };
+    
+        const existing = getPoolContributionAttempt(giveawayId);
+        if (existing) {
+            if (existing.amount !== safeAmount) return { attempted: false, confirmed: false, reason: "amount-conflict" };
+            if (existing.status === "confirmed") return { attempted: false, confirmed: true, reason: "already-confirmed", reused: true };
+            const checked = await verifyBonPoolContribution(existing);
+            if (checked.confirmed) {
+                savePoolContributionAttempt(giveawayId, {
+                    status: "confirmed",
+                    confirmedAt: Date.now(),
+                    afterMine: checked.snapshot.mine,
+                    afterTotal: checked.snapshot.total
+                });
+                return { attempted: false, confirmed: true, reason: "verified-existing", reused: true };
+            }
+            return { attempted: false, confirmed: false, reason: "existing-unconfirmed", reused: true };
+        }
+    
+        let before;
+        try {
+            before = await fetchBonPoolPage();
+        } catch (e) {
+            logEvent("BON Pool contribution aborted", String(e?.message || e));
+            return { attempted: false, confirmed: false, reason: "preflight-failed" };
+        }
+    
+        const record = {
+            amount: safeAmount,
+            beforeMine: before.mine,
+            beforeTotal: before.total,
+            attemptedAt: Date.now(),
+            status: "attempted"
+        };
+        savePoolContributionAttempt(giveawayId, record);
+    
+        const data = formDataFromParsedForm(before.form);
+        data.set("type", "bon");
+        data.set("contribution", String(safeAmount));
+        data.set("contributionTokens", "");
+        data.set("anon", "0");
+    
+        try {
+            const res = await fetchWithTimeout(before.action, {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+                redirect: "follow",
+                headers: { "Accept": "text/html", "X-Requested-With": "XMLHttpRequest" },
+                body: data
+            }, BONANZA.FETCH_TIMEOUT_MS);
+            savePoolContributionAttempt(giveawayId, {
+                httpStatus: res.status,
+                postFinishedAt: Date.now(),
+                status: res.ok ? "posted" : "posted-http-error"
+            });
+        } catch (e) {
+            savePoolContributionAttempt(giveawayId, {
+                postError: String(e?.message || e),
+                status: "post-uncertain"
+            });
+        }
+    
+        const checked = await verifyBonPoolContribution(record);
+        if (checked.confirmed) {
+            savePoolContributionAttempt(giveawayId, {
+                status: "confirmed",
+                confirmedAt: Date.now(),
+                afterMine: checked.snapshot.mine,
+                afterTotal: checked.snapshot.total
+            });
+            logEvent(
+                "BON Pool contribution confirmed",
+                `${fmtBON(safeAmount)} BON | Mine ${fmtBON(before.mine)} -> ${fmtBON(checked.snapshot.mine)} | Total ${fmtBON(before.total)} -> ${fmtBON(checked.snapshot.total)}`
+            );
+            return { attempted: true, confirmed: true, before, after: checked.snapshot };
+        }
+    
+        savePoolContributionAttempt(giveawayId, { status: "unconfirmed", verifyFinishedAt: Date.now() });
+        return { attempted: true, confirmed: false, reason: "not-confirmed", before, after: checked.snapshot };
+    }
+
+    // Winner gifts use the gift ledger. BON Pool contributions have their own
+    // persisted ledger and are verified against /bon-pool counters.
+    const GIFT_PURPOSE = Object.freeze({ WINNER: "winner" });
 
     function paidGiftKey(recipient, amount, purpose = GIFT_PURPOSE.WINNER) {
         return `${String(recipient || "").trim().toLowerCase()}::${Math.floor(Number(amount) || 0)}::${purpose}`;
@@ -6842,7 +6998,7 @@ body.host-panel-dragging * {
 
     function recordGiveawayStats(giveawayData, winners, allocated, entriesMap, donation = null) {
         if (!giveawayData) return;
-        const donatedTotal = donation && donation.total > 0 ? Math.floor(donation.total) : 0;
+        const donatedTotal = donation && donation.total > 0 && donation.confirmed ? Math.floor(donation.total) : 0;
         const donationPercent = donation && donation.total > 0 ? donation.percent : 0;
 
         const stats = getStatsCached();
@@ -6875,7 +7031,7 @@ body.host-panel-dragging * {
                 entries: entriesMap ? entriesMap.size : 0,
                 donationPercent,
                 donatedTotal,
-                donationRetained: !!(donation && donation.retained),
+                poolConfirmed: !!(donation && donation.confirmed),
                 endedAt: now,
                 endedDate: (new Date(now)).toLocaleDateString("en-CA")
             });
@@ -7809,7 +7965,7 @@ body.host-panel-dragging * {
         if (!safe.length) return "";
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
-        return `Thank you to all the sponsors! 🥳 Total sponsored: ` +
+        return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
             `[color=#ffc00a][b]${fmtBON(sponsorTotal)} BON[/b][/color]. ` +
             safe.join(", ");
     }
