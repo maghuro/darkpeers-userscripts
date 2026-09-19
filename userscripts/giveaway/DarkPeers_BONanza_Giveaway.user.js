@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.0
+// @version      1.3.1
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -3064,7 +3064,7 @@ body.host-panel-dragging * {
                 `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
                 `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]` +
                 donationIntroLine + `\n` +
-                `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨`;
+                `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨`;
 
             if (riggedMode) {
                 introMessage += `\n[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
@@ -6561,7 +6561,7 @@ body.host-panel-dragging * {
               `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
               `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
-              `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨` +
+              `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨` +
               silentLine +
               rigLine;
         sendMessage(msg);
