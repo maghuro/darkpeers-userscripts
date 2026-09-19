@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.11
+// @version      1.3.12
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -95,6 +95,8 @@
 //     inline when they fit and overflow into marked sponsor-note continuations.
 //   - v1.3.11 announces every newly discovered sponsor batch on the next poll instead
 //     of waiting up to 60 seconds. Multiple gifts discovered in the same poll remain
+//   - v1.3.12 restores self-labelled machine bridge anchors so the HTML→IRC bridge
+//     no longer leaves orphaned "()" after giveaway emojis; TLCC still hides the URL.
 //     grouped, with each matched note attached to the correct sponsor.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -320,12 +322,11 @@
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
         const markerUrl = `${BRIDGE_MARKER_PREFIX}${safeKind}`;
 
-        // Keep the semantic emoji visible and the structural anchor empty.
-        // UNIT3D renders an empty <a>, so the marker occupies no space and exposes
-        // no technical URL to ordinary website users. Bridge clients may preserve
-        // the href for authoritative TLCC classification; emoji heuristics remain
-        // the compatibility fallback if an HTML→IRC converter drops empty links.
-        return `${visible}[url=${markerUrl}][/url]`;
+        // Keep the semantic emoji outside the link. The machine marker anchor labels
+        // itself with its own URL so the website -> IRC converter emits one clean URL
+        // instead of an empty-label " (URL)" pair. Website/TLCC CSS hides that URL,
+        // leaving neither the marker nor orphaned parentheses visible to users.
+        return `${visible} [url=${markerUrl}]${markerUrl}[/url]`;
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
