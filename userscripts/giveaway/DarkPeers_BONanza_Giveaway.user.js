@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.10
+// @version      1.2.11
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -52,6 +52,8 @@
 //     pre-draw crash window by keeping the active snapshot until sponsor sync ends.
 //   - v1.2.10 recovers recently-expired snapshots instead of silently abandoning
 //     them, and uses the scheduled endTs as the cutoff when a timer fires late.
+//   - v1.2.11 makes the selected BON Pool percentage exact at pot level:
+//     floor(total pot * pct / 100), while preserving at least 1 BON per winner.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -5937,10 +5939,14 @@ body.host-panel-dragging * {
     // ───────────── BON Pool helpers ─────────────
 
     /**
-     * Split per-winner gross prizes into net prizes plus a pooled donation.
-     * donation_i = floor(gross_i * pct / 100); net_i = gross_i - donation_i.
-     * With pct <= 30 every winner with gross >= 1 keeps at least 1 BON, and
-     * Σ net + total === Σ gross exactly (host outlay is unchanged).
+     * Split gross prizes into winner net prizes plus one exact BON Pool share.
+     *
+     * The public percentage applies to the whole pot:
+     *   poolTarget = floor(sum(gross) * pct / 100)
+     *
+     * We first floor each proportional per-winner deduction, then distribute the
+     * small rounding remainder by largest fractional remainder. A deduction is
+     * never allowed to reduce a positive gross prize below 1 BON.
      *
      * @param {number[]} allocated gross prizes
      * @param {number} percent 0..30 in steps of 5
@@ -5948,13 +5954,60 @@ body.host-panel-dragging * {
      */
     function computeDonationSplit(allocated, percent) {
         const pct = normalizeDonationPercent(percent);
-        const gross = (Array.isArray(allocated) ? allocated : []).map(a => Math.max(0, Math.floor(Number(a) || 0)));
-        if (pct <= 0) {
+        const gross = (Array.isArray(allocated) ? allocated : [])
+            .map(a => Math.max(0, Math.floor(Number(a) || 0)));
+
+        if (pct <= 0 || !gross.length) {
             return { percent: 0, net: gross.slice(), donations: gross.map(() => 0), total: 0 };
         }
+
+        const grossTotal = gross.reduce((sum, g) => sum + g, 0);
+        const target = Math.floor(grossTotal * pct / 100);
         const donations = gross.map(g => Math.floor(g * pct / 100));
+        let remaining = target - donations.reduce((sum, d) => sum + d, 0);
+
+        if (remaining > 0) {
+            const order = gross.map((g, i) => ({
+                i,
+                remainder: (g * pct) % 100,
+                gross: g
+            })).sort((a, b) =>
+                (b.remainder - a.remainder) ||
+                (b.gross - a.gross) ||
+                (a.i - b.i)
+            );
+
+            for (const item of order) {
+                if (remaining <= 0) break;
+                const i = item.i;
+                if (donations[i] < Math.max(0, gross[i] - 1)) {
+                    donations[i] += 1;
+                    remaining -= 1;
+                }
+            }
+
+            // Defensive fallback. With pct <= 30 and funded weighted prizes the
+            // first pass is sufficient, but never return an under-target pool.
+            if (remaining > 0) {
+                for (let i = 0; i < gross.length && remaining > 0; i++) {
+                    while (remaining > 0 && donations[i] < Math.max(0, gross[i] - 1)) {
+                        donations[i] += 1;
+                        remaining -= 1;
+                    }
+                }
+            }
+        }
+
         const net = gross.map((g, i) => g - donations[i]);
         const total = donations.reduce((sum, d) => sum + d, 0);
+
+        selfCheck(total === target, "BON Pool split did not reach exact target", {
+            grossTotal, pct, target, total, remaining
+        });
+        selfCheck(net.every((n, i) => gross[i] === 0 ? n === 0 : n >= 1), "BON Pool split produced zero/negative winner payout", {
+            gross, donations, net
+        });
+
         return { percent: pct, net, donations, total };
     }
 
