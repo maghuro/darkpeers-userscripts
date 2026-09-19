@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.7
+// @version      1.3.8
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -84,6 +84,9 @@
 //   - v1.3.7 fixes real DarkPeers Gift History parsing: BON cells include a "Points"
 //     suffix, "No note" is treated as no message, and naive history timestamps are
 //     matched safely using both browser-local and UTC interpretations.
+//   - v1.3.8 learns the real DarkPeers Gift-History ↔ chat-API clock offset from
+//     unambiguous gifts instead of assuming browser-local/UTC equivalence. This
+//     survives site-timezone/DST differences and disambiguates repeated same-value gifts.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -2569,7 +2572,10 @@ body.host-panel-dragging * {
                 },
                 sponsorTracker: window.__activeTracker ? {
                     lastMsgId: Math.max(0, Math.floor(Number(window.__activeTracker.lastMsgId) || 0)),
-                    cursorInitialized: !!window.__activeTracker.cursorInitialized
+                    cursorInitialized: !!window.__activeTracker.cursorInitialized,
+                    giftHistoryClockOffsetMs: Number.isFinite(Number(window.__activeTracker.giftHistoryClockOffsetMs))
+                        ? Number(window.__activeTracker.giftHistoryClockOffsetMs)
+                        : null
                 } : null,
                 riggedMode: riggedMode,
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -2761,7 +2767,10 @@ body.host-panel-dragging * {
                 giveawayStartTime,
                 giveawayData,
                 lastMsgId: savedTracker ? savedTracker.lastMsgId : 0,
-                cursorInitialized: savedTracker ? !!savedTracker.cursorInitialized : false
+                cursorInitialized: savedTracker ? !!savedTracker.cursorInitialized : false,
+                giftHistoryClockOffsetMs: savedTracker && Number.isFinite(Number(savedTracker.giftHistoryClockOffsetMs))
+                    ? Number(savedTracker.giftHistoryClockOffsetMs)
+                    : null
             });
             window.__activeTracker = tracker;
 
@@ -3778,8 +3787,9 @@ body.host-panel-dragging * {
         if (!raw) return NaN;
 
         // DarkPeers Gift History currently renders Carbon timestamps without a
-        // timezone suffix. Treat that representation as browser-local first;
-        // matching also tries UTC as a fallback for other UNIT3D configurations.
+        // timezone suffix. Preserve both browser-local and UTC-scale interpretations;
+        // SponsorTracker learns the actual site-wall-clock ↔ chat-API offset from
+        // unambiguous gifts instead of assuming either interpretation is canonical.
         const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
         if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}`);
 
@@ -3943,14 +3953,17 @@ body.host-panel-dragging * {
     }
 
     class SponsorTracker {
-        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean}} opts */
-        constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false }) {
+        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean, giftHistoryClockOffsetMs?:number|null}} opts */
+        constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false, giftHistoryClockOffsetMs = null }) {
             this.chatroomId = chatroomId;
             this.giveawayStartTs = giveawayStartTime.getTime();
             this.data = giveawayData;
 
             this.lastMsgId = Math.max(0, Math.floor(Number(lastMsgId) || 0)); // persisted API cursor
             this.cursorInitialized = !!cursorInitialized;
+            this.giftHistoryClockOffsetMs = Number.isFinite(Number(giftHistoryClockOffsetMs))
+                ? Number(giftHistoryClockOffsetMs)
+                : null;
             this.processedIds = new Set(); // de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
             this.sponsorWindowStartAt = 0; // digest window start (ms)
@@ -4117,6 +4130,79 @@ body.host-panel-dragging * {
             return parseGiftHistoryPage(await res.text());
         }
 
+        inferGiftHistoryClockOffset(events, rows) {
+            const persisted = Number.isFinite(Number(this.giftHistoryClockOffsetMs))
+                ? Number(this.giftHistoryClockOffsetMs)
+                : null;
+            if (!Array.isArray(events) || !events.length || !Array.isArray(rows) || !rows.length) {
+                return persisted;
+            }
+
+            const MAX_PLAUSIBLE_OFFSET_MS = 12 * 60 * 60 * 1000;
+            const samples = [];
+
+            for (const event of events) {
+                if (!Number.isFinite(Number(event?.createdAtTs)) || !Number.isFinite(Number(event?.rawAmount))) continue;
+
+                const exactRows = rows.filter(item =>
+                    normalizeUserKey(item?.sender) === normalizeUserKey(event.gifter) &&
+                    normalizeUserKey(item?.recipient) === normalizeUserKey(event.recipient) &&
+                    Math.abs(Number(item?.amount) - Number(event.rawAmount)) <= 0.001
+                );
+
+                // Only use a unique sender/recipient/amount pair as a clock anchor.
+                // Repeated same-value gifts (e.g. multiple 69 BON gifts) are exactly
+                // what the learned offset is meant to disambiguate later.
+                if (exactRows.length !== 1) continue;
+
+                const item = exactRows[0];
+                const historyWallTs = Number.isFinite(Number(item.createdAtAltTs))
+                    ? Number(item.createdAtAltTs) // naive yyyy-mm-dd HH:mm:ss interpreted as site wall-clock on a UTC scale
+                    : Number(item.createdAtTs);
+                if (!Number.isFinite(historyWallTs)) continue;
+
+                const offset = historyWallTs - Number(event.createdAtTs);
+                if (Math.abs(offset) <= MAX_PLAUSIBLE_OFFSET_MS) samples.push(offset);
+            }
+
+            if (!samples.length) return persisted;
+
+            // Choose the densest 2-minute cluster, then its median. This rejects an
+            // unrelated historical exact-value row without hardcoding any timezone.
+            samples.sort((a, b) => a - b);
+            const CLUSTER_MS = 120_000;
+            let best = [];
+
+            for (let i = 0; i < samples.length; i++) {
+                const cluster = [];
+                for (let j = i; j < samples.length; j++) {
+                    if (samples[j] - samples[i] > CLUSTER_MS) break;
+                    cluster.push(samples[j]);
+                }
+                if (cluster.length > best.length) best = cluster;
+            }
+
+            if (!best.length) return persisted;
+            const mid = Math.floor(best.length / 2);
+            const inferred = best.length % 2
+                ? best[mid]
+                : Math.round((best[mid - 1] + best[mid]) / 2);
+
+            // If we already learned a clock offset, don't replace it with a lone,
+            // materially different sample. Multiple agreeing anchors may update it
+            // after a DST/site-timezone transition.
+            if (
+                persisted !== null &&
+                best.length === 1 &&
+                Math.abs(inferred - persisted) > CLUSTER_MS
+            ) {
+                return persisted;
+            }
+
+            this.giftHistoryClockOffsetMs = inferred;
+            return inferred;
+        }
+
         matchGiftEventsToRows(events, rows) {
             if (!Array.isArray(events) || !events.length) return [];
             if (!Array.isArray(rows) || !rows.length) {
@@ -4125,48 +4211,71 @@ body.host-panel-dragging * {
 
             const usedRows = new Set();
             const MATCH_WINDOW_MS = 120_000;
+            const learnedOffsetMs = this.inferGiftHistoryClockOffset(events, rows);
+
+            const rowMatchesEventIdentity = (item, event) =>
+                normalizeUserKey(item?.sender) === normalizeUserKey(event?.gifter) &&
+                normalizeUserKey(item?.recipient) === normalizeUserKey(event?.recipient) &&
+                Math.abs(Number(item?.amount) - Number(event?.rawAmount)) <= 0.001;
+
+            const rowSiteClockTs = item => {
+                if (Number.isFinite(Number(item?.createdAtAltTs))) return Number(item.createdAtAltTs);
+                if (Number.isFinite(Number(item?.createdAtTs))) return Number(item.createdAtTs);
+                return NaN;
+            };
 
             return events.map(event => {
-                if (!Number.isFinite(event.createdAtTs) || !Number.isFinite(event.rawAmount)) {
+                if (!Number.isFinite(Number(event.createdAtTs)) || !Number.isFinite(Number(event.rawAmount))) {
                     return { ...event, _noteSourceMatched: false };
                 }
 
-                let bestIndex = -1;
-                let bestDelta = Infinity;
-
+                const exactCandidates = [];
                 for (let i = 0; i < rows.length; i++) {
                     if (usedRows.has(i)) continue;
-                    const item = rows[i];
-                    if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
-                    if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
-                    if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
-                    const timestampCandidates = [
-                        Number(item.createdAtTs),
-                        Number(item.createdAtAltTs)
-                    ].filter(Number.isFinite);
-                    if (!timestampCandidates.length) continue;
-
-                    const delta = Math.min(
-                        ...timestampCandidates.map(ts => Math.abs(ts - event.createdAtTs))
-                    );
-                    if (delta > MATCH_WINDOW_MS || delta >= bestDelta) continue;
-                    bestDelta = delta;
-                    bestIndex = i;
+                    if (rowMatchesEventIdentity(rows[i], event)) exactCandidates.push(i);
                 }
 
-                // If timestamps are unavailable/non-standard, accept only one exact
-                // sender/recipient/amount candidate. Never guess between duplicates.
+                if (!exactCandidates.length) return { ...event, _noteSourceMatched: false };
+
+                // One exact identity match is unambiguous even if the site's displayed
+                // clock and chat API disagree. This also provides an anchor for future
+                // repeated-value gifts.
+                let bestIndex = exactCandidates.length === 1 ? exactCandidates[0] : -1;
+
                 if (bestIndex === -1) {
-                    const exactCandidates = [];
-                    for (let i = 0; i < rows.length; i++) {
-                        if (usedRows.has(i)) continue;
+                    let bestDelta = Infinity;
+
+                    for (const i of exactCandidates) {
                         const item = rows[i];
-                        if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
-                        if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
-                        if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
-                        exactCandidates.push(i);
+                        const siteTs = rowSiteClockTs(item);
+                        if (!Number.isFinite(siteTs)) continue;
+
+                        let delta = Infinity;
+
+                        if (Number.isFinite(Number(learnedOffsetMs))) {
+                            delta = Math.abs(
+                                (siteTs - Number(event.createdAtTs)) - Number(learnedOffsetMs)
+                            );
+                        } else {
+                            // Compatibility fallback for UNIT3D installs whose two
+                            // timestamp sources already agree in local or UTC terms.
+                            const timestampCandidates = [
+                                Number(item.createdAtTs),
+                                Number(item.createdAtAltTs)
+                            ].filter(Number.isFinite);
+                            if (timestampCandidates.length) {
+                                delta = Math.min(
+                                    ...timestampCandidates.map(ts =>
+                                        Math.abs(ts - Number(event.createdAtTs))
+                                    )
+                                );
+                            }
+                        }
+
+                        if (delta > MATCH_WINDOW_MS || delta >= bestDelta) continue;
+                        bestDelta = delta;
+                        bestIndex = i;
                     }
-                    if (exactCandidates.length === 1) bestIndex = exactCandidates[0];
                 }
 
                 if (bestIndex === -1) return { ...event, _noteSourceMatched: false };
