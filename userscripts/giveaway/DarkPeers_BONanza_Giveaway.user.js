@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
-// @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.5
+// @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
+// @version      1.2.6
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -38,8 +38,10 @@
 //     verifies it before announcing success, and introduces authoritative URL
 //     markers so TLCC can prefer this fork over legacy heuristic classifiers.
 //   - v1.2.4 removes the obsolete fund-manager debug hook after the direct-pool migration.
-//   - v1.2.5 matches the verified DarkPeers BON Pool browser form exactly:
-//     application/x-www-form-urlencoded POST + preserved hidden fields + counter verification.
+//   - v1.2.5 matches the verified DarkPeers BON Pool browser form encoding.
+//   - v1.2.6 audit-hardens live settlement: final sponsor sync, frozen entries,
+//     authenticated gift endpoint resolution, ordered critical announcements,
+//     bounded chat API sends, robust gift parsing, and exact BON Pool request semantics.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -196,9 +198,26 @@
     }
 
     function getGiftEndpointPath(slug) {
-        const safeSlug = String(slug || '').trim();
-        if (!safeSlug) return null;
-        return `/users/${safeSlug}/gifts`;
+        const raw = String(slug || "").trim();
+        if (!raw) return null;
+        let decoded = raw;
+        try { decoded = decodeURIComponent(raw); } catch {}
+        return `/users/${encodeURIComponent(decoded)}/gifts`;
+    }
+
+    function getAuthenticatedUserSlug() {
+        const navLink = document.querySelector('.top-nav__username a[href*="/users/"]');
+        if (navLink) {
+            try {
+                const url = new URL(navLink.getAttribute("href") || navLink.href || "", location.origin);
+                const parts = url.pathname.split("/").filter(Boolean);
+                const idx = parts.findIndex(part => part.toLowerCase() === "users");
+                if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
+            } catch {}
+        }
+
+        const username = getLoggedInUsername() || giveawayData?.host || "";
+        return username ? encodeURIComponent(username) : "";
     }
 
     // ── DarkPeers BON Pool ──────────────────────────────────────
@@ -552,7 +571,7 @@
     const normalizeLower = (value) => String(value || "").trim().toLowerCase();
     const CHAT_MESSAGE_SELECTOR = '.chatbox-message';
     const CHATROOM_MESSAGES_SELECTOR = '.chatroom__messages';
-    const GIFT_AMOUNT_RE = /has gifted\s*([\d.]+)\s*BON/i;
+    const GIFT_AMOUNT_RE = /has gifted\s*([\d\s,.'’]+?)\s*BON/i;
     const giftDOMParser = new DOMParser();
 
     let entriesTableEl = null;
@@ -826,7 +845,7 @@
         </p>
       </div>
 
-      <!-- BONanza fund donation row -->
+      <!-- BON Pool contribution row -->
       <div class="panel__body giveaway-donation-row" style="display:flex;justify-content:center;align-items:center;gap:14px;width:100%;flex-wrap:wrap;">
         <p class="form__group" style="width:38%;margin:0;">
           <select class="form__select" id="donationPercent" title="Share of the final pot (host + sponsors) donated to the ${BONANZA.FUND_NAME}. 0% runs a standard giveaway.">
@@ -2443,7 +2462,7 @@ body.host-panel-dragging * {
      * Called at key mutation points (new entry, start, addbon, sponsor, time adjust).
      */
     function snapshotGiveaway() {
-        if (!giveawayData) return;
+        if (!giveawayData || giveawayData.__ending) return;
         try {
             const snapshot = {
                 giveawayData: {
@@ -2967,9 +2986,10 @@ body.host-panel-dragging * {
                     `[i][color=#B0B0B0]Command replies will be sent privately via /msg.[/color][/i] 🤫`;
             }
 
-            sendMessage(introMessage);
+            await sendMessage(introMessage);
 
-            // Start the ignore window *and* sponsor tracking right after the intro
+            // Start the ignore window *and* sponsor tracking only after the intro
+            // send path has completed, so the public opening is the temporal boundary.
             giveawayStartTime = new Date();
 
             if (window.__activeTracker) window.__activeTracker = null;
@@ -3612,11 +3632,14 @@ body.host-panel-dragging * {
         const text = doc.body.textContent || "";
         const m = text.match(GIFT_AMOUNT_RE);
 
-        const parsed = m && firstLink && secondLink
+        const amountDigits = m ? String(m[1] || "").replace(/[^0-9]/g, "") : "";
+        const amount = amountDigits ? parseInt(amountDigits, 10) : NaN;
+
+        const parsed = m && firstLink && secondLink && Number.isFinite(amount) && amount > 0
         ? {
             gifter: firstLink.textContent.trim(),
             recipient: secondLink.textContent.trim(),
-            amount: parseFloat(m[1])
+            amount
         }
         : {};
 
@@ -4996,13 +5019,32 @@ body.host-panel-dragging * {
             sponsorsInterval = null;
         }
 
+        // Freeze participant input before any payout computation. A queued/late
+        // entry must never alter stats or UI after the winner set is committed.
+        if (observer) {
+            observer.disconnect();
+            observer = null;
+        }
+
+        // Close the sponsor accounting window with one final synchronous API poll.
+        // The regular tracker runs every 10s, so without this a gift in the final
+        // seconds could be omitted from the pot. snapshotGiveaway() is suppressed
+        // while __ending is true, so this cannot resurrect the active snapshot.
+        if (window.__activeTracker && typeof window.__activeTracker.poll === "function") {
+            try {
+                await window.__activeTracker.poll();
+            } catch (e) {
+                logEvent("Final sponsor sync warning", String(e?.message || e));
+            }
+        }
+
         // no entries → no winners
         if (numberEntries.size === 0) {
             const emptyMessage = `Unfortunately, no one has entered the giveaway, so no one wins!`
-            sendMessage(emptyMessage)
+            await sendMessage(emptyMessage);
             logEvent("Giveaway ended", `Entrants=0 | Winners=0 | Host-funded=${fmtBON(giveawayData.amount)} BON | Sponsored=0 BON | Total=${fmtBON(giveawayData.amount)} BON`)
             try {
-                currentStatement = createStatementRecord({ winners: [], gross: [], net: [], donations: [], split: null, donationRetained: false, entrants: 0 });
+                currentStatement = createStatementRecord({ winners: [], gross: [], net: [], donations: [], split: null, poolStatus: "none", entrants: 0 });
                 if (currentStatement) { currentStatement.verification = "nothing to verify"; persistCurrentStatement(); }
             } catch (e) { /* statements are best-effort */ }
         } else {
@@ -5014,7 +5056,7 @@ body.host-panel-dragging * {
             // 1) sponsors shout-out
             if (giveawayData.sponsors.length > 0) {
                 const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
-                if (sponsorsMessage) sendMessage(sponsorsMessage);
+                if (sponsorsMessage) await sendMessage(sponsorsMessage);
             }
 
             // 2) build and sort entries by closeness to winningNumber
@@ -5031,7 +5073,7 @@ body.host-panel-dragging * {
             const ties = entries.filter(e => e.gap === entries[0].gap);
             if (ties.length > 1) {
                 const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
-                sendMessage(`${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`);
+                await sendMessage(`${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`);
             }
 
             // 3) pick top N winners
@@ -5055,7 +5097,7 @@ body.host-panel-dragging * {
                 allocated[0] += leftover;
             }
 
-            // 4b) BONanza fund split. `allocated` keeps the gross prize per winner;
+            // 4b) BON Pool split. `allocated` keeps the gross prize per winner;
             //     `net` is what each winner is actually gifted; the floored remainder
             //     is pooled into one donation. Host outlay never changes.
             const split = computeDonationSplit(allocated, giveawayData.donationPercent);
@@ -5125,7 +5167,7 @@ body.host-panel-dragging * {
                       `[color=#FB4F4F](off by ${fmtBON(diff)})[/color] ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
 
-                sendMessage([summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag);
+                await sendMessage([summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag);
             } else {
                 // multi‐winner public message
                 const lines = winners.map((w, i) => {
@@ -5138,7 +5180,7 @@ body.host-panel-dragging * {
                 });
                 const multiDonatedNote = donationActive ? `\n[color=#aaaaaa]Amounts shown are after the ${split.percent}% ${BONANZA.FUND_NAME} donation.[/color]` : "";
 
-                sendMessage([summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag);
+                await sendMessage([summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag);
             }
 
             const winnerNames = winners.map(w => sanitizeNick(w.author)).join(", ") || "none";
@@ -5330,7 +5372,7 @@ body.host-panel-dragging * {
             row.appendChild(giftCell);
         });
 
-        // BONanza fund row (only when a donation is in play)
+        // BON Pool row (only when a donation is in play)
         if (donation && donation.total > 0) {
             const fundRow = document.createElement("tr");
             fundRow.dataset.fundRow = "1";
@@ -5772,7 +5814,7 @@ body.host-panel-dragging * {
         return Math.floor(Math.random() * range) + min;
     }
 
-    // ───────────── BONanza fund helpers ─────────────
+    // ───────────── BON Pool helpers ─────────────
 
     /**
      * Split per-winner gross prizes into net prizes plus a pooled donation.
@@ -6191,7 +6233,7 @@ body.host-panel-dragging * {
             method: "GET",
             credentials: "include",
             cache: "no-store",
-            headers: { "Accept": "text/html", "X-Requested-With": "XMLHttpRequest" }
+            headers: { "Accept": "text/html" }
         }, BONANZA.FETCH_TIMEOUT_MS);
         if (!res.ok) throw new Error(`BON Pool GET failed: HTTP ${res.status}`);
         const html = await res.text();
@@ -6291,8 +6333,7 @@ body.host-panel-dragging * {
                 redirect: "follow",
                 headers: {
                     "Accept": "text/html",
-                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                    "X-Requested-With": "XMLHttpRequest"
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
                 },
                 body: data.toString()
             }, BONANZA.FETCH_TIMEOUT_MS);
@@ -6403,26 +6444,14 @@ body.host-panel-dragging * {
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         const csrfToken = csrfMeta && csrfMeta.content ? csrfMeta.content : null;
 
-        // Resolve the correct gift endpoint for this site
-
-        // Try to infer /users/<slug>/gifts from any visible "/users/" link
+        // Resolve UNIT3D's sender-scoped gift route:
+        // /users/{authenticated-user}/gifts. The recipient itself is carried in
+        // recipient_username, so never derive this URL from an arbitrary visible user.
         let giftUrl = null;
-        const userLink = Array.from(document.querySelectorAll('a[href*="/users/"]'))
-        .find(a => a.offsetParent !== null);
-
-        if (userLink) {
-            try {
-                const url = new URL(userLink.href, location.origin);
-                const parts = url.pathname.split("/").filter(Boolean);
-                const idx = parts.indexOf("users");
-                if (idx !== -1 && parts[idx + 1]) {
-                    const slug = parts[idx + 1];
-                    const endpointPath = getGiftEndpointPath(slug);
-                    giftUrl = endpointPath ? (location.origin + endpointPath) : null;
-                }
-            } catch (e) {
-                giftUrl = null;
-            }
+        const senderSlug = getAuthenticatedUserSlug();
+        if (senderSlug) {
+            const endpointPath = getGiftEndpointPath(senderSlug);
+            giftUrl = endpointPath ? (location.origin + endpointPath) : null;
         }
 
         // If we can't resolve the HTTP endpoint or token, fall back immediately.
@@ -6578,7 +6607,7 @@ body.host-panel-dragging * {
             user_id: Number(OT_USER_ID)
         };
 
-        const resp = await fetch(`/api/chat/messages`, {
+        const resp = await fetchWithTimeout(`/api/chat/messages`, {
             method: "POST",
             credentials: "include",
             headers: {
@@ -6587,7 +6616,7 @@ body.host-panel-dragging * {
                 "X-Requested-With": "XMLHttpRequest"
             },
             body: JSON.stringify(payload)
-        });
+        }, 7000);
 
         const respText = await resp.text();
         if (resp.ok) {
@@ -7062,7 +7091,7 @@ body.host-panel-dragging * {
                 hostRec.sponsorReceivedTotal = (hostRec.sponsorReceivedTotal || 0) + sponsorTotal;
             }
 
-            // BONanza fund donations generated by this host's giveaways
+            // BON Pool contributions generated by this host's giveaways
             if (donatedTotal > 0) {
                 hostRec.fundDonatedTotal = (hostRec.fundDonatedTotal || 0) + donatedTotal;
                 hostRec.fundDonationCount = (hostRec.fundDonationCount || 0) + 1;
