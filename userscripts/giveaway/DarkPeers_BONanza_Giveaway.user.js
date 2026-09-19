@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.4
+// @version      1.2.5
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -38,6 +38,8 @@
 //     verifies it before announcing success, and introduces authoritative URL
 //     markers so TLCC can prefer this fork over legacy heuristic classifiers.
 //   - v1.2.4 removes the obsolete fund-manager debug hook after the direct-pool migration.
+//   - v1.2.5 matches the verified DarkPeers BON Pool browser form exactly:
+//     application/x-www-form-urlencoded POST + preserved hidden fields + counter verification.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -6208,8 +6210,8 @@ body.host-panel-dragging * {
         return { form, action: action.href, total, mine };
     }
 
-    function formDataFromParsedForm(form) {
-        const data = new FormData();
+    function urlEncodedDataFromParsedForm(form) {
+        const data = new URLSearchParams();
         form.querySelectorAll("input, select, textarea").forEach(el => {
             if (!el.name || el.disabled) return;
             const type = String(el.type || "").toLowerCase();
@@ -6275,7 +6277,7 @@ body.host-panel-dragging * {
         };
         savePoolContributionAttempt(giveawayId, record);
     
-        const data = formDataFromParsedForm(before.form);
+        const data = urlEncodedDataFromParsedForm(before.form);
         data.set("type", "bon");
         data.set("contribution", String(safeAmount));
         data.set("contributionTokens", "");
@@ -6287,8 +6289,12 @@ body.host-panel-dragging * {
                 credentials: "include",
                 cache: "no-store",
                 redirect: "follow",
-                headers: { "Accept": "text/html", "X-Requested-With": "XMLHttpRequest" },
-                body: data
+                headers: {
+                    "Accept": "text/html",
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                body: data.toString()
             }, BONANZA.FETCH_TIMEOUT_MS);
             savePoolContributionAttempt(giveawayId, {
                 httpStatus: res.status,
@@ -8743,6 +8749,7 @@ body.host-panel-dragging * {
                 computeDonationSplit,
                 normalizeDonationPercent,
                 fetchBonPoolPage,
+                urlEncodedDataFromParsedForm,
                 contributeBonPool,
             }),
             Chat: Object.freeze({
