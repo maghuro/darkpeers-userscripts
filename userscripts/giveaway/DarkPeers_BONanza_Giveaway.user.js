@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         DarkPeers BONanza Giveaway
+// @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.11
+// @version      1.2.12
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -54,6 +54,8 @@
 //     them, and uses the scheduled endTs as the cutoff when a timer fires late.
 //   - v1.2.11 makes the selected BON Pool percentage exact at pot level:
 //     floor(total pot * pct / 100), while preserving at least 1 BON per winner.
+//   - v1.2.12 gives the userscript an unambiguous Tampermonkey display name:
+//     "DarkPeers BONanza Giveaway — Maghuro Fork".
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
