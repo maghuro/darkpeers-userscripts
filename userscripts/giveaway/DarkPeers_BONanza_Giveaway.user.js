@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.3
+// @version      1.3.4
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -75,6 +75,8 @@
 //   - v1.3.3 fixes UNIT3D gift-history timestamp matching so sponsor notes survive
 //     timezone differences, and makes machine bridge anchors empty/invisible on the
 //     DarkPeers website for every viewer, not only hosts running the userscript.
+//   - v1.3.4 persists matched sponsor gift notes in the active giveaway snapshot and
+//     final statement, including multiple gifts/messages per sponsor and final-poll gifts.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -2545,6 +2547,9 @@ body.host-panel-dragging * {
                     nextReminderSec: giveawayData.nextReminderSec,
                     sponsorContribs: giveawayData.sponsorContribs,
                     sponsors: giveawayData.sponsors,
+                    sponsorGiftMessages: Array.isArray(giveawayData.sponsorGiftMessages)
+                        ? giveawayData.sponsorGiftMessages
+                        : [],
                     lastAnnouncedWinners: giveawayData.lastAnnouncedWinners
                 },
                 entries: Array.from(numberEntries.entries()),
@@ -2620,6 +2625,9 @@ body.host-panel-dragging * {
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+            giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
+                ? giveawayData.sponsorGiftMessages
+                : [];
             // A pre-1.2.1 snapshot may contain a number drawn at start. Discard it:
             // v1.2.1 always draws a fresh winning number only after entries close.
             giveawayData.winningNumber = null;
@@ -3003,6 +3011,7 @@ body.host-panel-dragging * {
             nextReminderSec  : cadenceSec, // <- ditto (first reminder ETA)
             sponsorContribs: {},
             sponsors: [],
+            sponsorGiftMessages: [],
         };
         lastKnownGiveawayHostKey = normUserKey(giveawayData.host) || lastKnownGiveawayHostKey;
 
@@ -3830,6 +3839,40 @@ body.host-panel-dragging * {
             .length;
     }
 
+    function recordSponsorGiftMessage(data, event) {
+        if (!data || !event) return false;
+        const message = sanitizeSponsorGiftMessage(event.message);
+        const sponsor = String(event.gifter || "").trim();
+        const sponsorKey = normalizeUserKey(sponsor);
+        const amount = Math.max(0, Math.floor(Number(event.amount) || 0));
+        const createdAtTs = Number.isFinite(Number(event.createdAtTs))
+            ? Number(event.createdAtTs)
+            : null;
+
+        if (!message || !sponsorKey || !(amount > 0)) return false;
+        if (!Array.isArray(data.sponsorGiftMessages)) data.sponsorGiftMessages = [];
+
+        const duplicate = data.sponsorGiftMessages.some(item =>
+            normalizeUserKey(item?.sponsor) === sponsorKey &&
+            Math.max(0, Math.floor(Number(item?.amount) || 0)) === amount &&
+            String(item?.message || "") === message &&
+            (
+                createdAtTs === null ||
+                item?.createdAtTs == null ||
+                Math.abs(Number(item.createdAtTs) - createdAtTs) < 1000
+            )
+        );
+        if (duplicate) return false;
+
+        data.sponsorGiftMessages.push({
+            sponsor,
+            amount,
+            message,
+            createdAtTs
+        });
+        return true;
+    }
+
     class SponsorTracker {
         /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean}} opts */
         constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false }) {
@@ -3944,20 +3987,24 @@ body.host-panel-dragging * {
                 this.applyGift(gifter, cleanAmount); // update totals immediately
             }
 
-            // The SystemBot line omits the optional gift message. For live digests,
-            // enrich the new events from the host's own read-only gift history.
-            // Settlement-only polls skip this cosmetic lookup entirely.
-            const bufferedEvents = announce
+            // The SystemBot line omits the optional gift message. Enrich every new
+            // sponsor event from the host's own read-only gift history, including
+            // the final settlement poll. Chat announcement remains controlled by
+            // `announce`, but statement/audit data should not lose a last-second note.
+            const bufferedEvents = sponsorEvents.length
                 ? await this.enrichGiftEventsWithMessages(sponsorEvents)
                 : sponsorEvents;
 
+            let recordedGiftNote = false;
             for (const event of bufferedEvents) {
+                if (recordSponsorGiftMessage(this.data, event)) recordedGiftNote = true;
                 this.buffer.push({
                     gifter: event.gifter,
                     amount: event.amount,
                     message: event.message || ""
                 });
             }
+            if (recordedGiftNote) snapshotGiveaway();
 
             /* send ONE summary line if anything new arrived */
             if (this.buffer.length) {
@@ -6346,8 +6393,25 @@ body.host-panel-dragging * {
         if (!data) return null;
         const hostKey = normalizeUserKey(data.host);
         const potTotal = Math.max(0, Math.floor(Number(data.amount) || 0));
+        const sponsorGiftMessages = Array.isArray(data.sponsorGiftMessages)
+            ? data.sponsorGiftMessages
+            : [];
         const sponsors = Object.entries(data.sponsorContribs || {})
-            .map(([name, amt]) => ({ name, amount: Math.max(0, Math.floor(Number(amt) || 0)), isHost: normalizeUserKey(name) === hostKey }))
+            .map(([name, amt]) => ({
+                name,
+                amount: Math.max(0, Math.floor(Number(amt) || 0)),
+                isHost: normalizeUserKey(name) === hostKey,
+                messages: sponsorGiftMessages
+                    .filter(item => normalizeUserKey(item?.sponsor) === normalizeUserKey(name))
+                    .map(item => ({
+                        amount: Math.max(0, Math.floor(Number(item?.amount) || 0)),
+                        message: sanitizeSponsorGiftMessage(item?.message),
+                        createdAtTs: Number.isFinite(Number(item?.createdAtTs))
+                            ? Number(item.createdAtTs)
+                            : null
+                    }))
+                    .filter(item => item.message)
+            }))
             .filter(x => x.amount > 0)
             .sort((a, b) => b.amount - a.amount);
         const sponsoredTotal = sponsors.filter(x => !x.isHost).reduce((s, x) => s + x.amount, 0);
@@ -6436,7 +6500,14 @@ body.host-panel-dragging * {
         L.push(line("-"));
         L.push(`Host funded     : ${money(rec.hostFunded)}${rec.hostTopUps > 0 ? ` (includes ${money(rec.hostTopUps)} added by host during the giveaway)` : ""}`);
         L.push(`Sponsored       : ${money(rec.sponsoredTotal)}`);
-        rec.sponsors.filter(x => !x.isHost).forEach(x => L.push(`  ${padR(x.name, 28)} ${padL(money(x.amount), 16)}`));
+        rec.sponsors.filter(x => !x.isHost).forEach(x => {
+            L.push(`  ${padR(x.name, 28)} ${padL(money(x.amount), 16)}`);
+            const messages = Array.isArray(x.messages) ? x.messages : [];
+            messages.forEach(item => {
+                const giftAmount = Number(item?.amount) > 0 ? ` [${money(item.amount)}]` : "";
+                L.push(`    Message${giftAmount}: "${String(item?.message || "")}"`);
+            });
+        });
         L.push(`TOTAL POT       : ${money(rec.potTotal)}`);
         L.push("");
         L.push(line("-"));
