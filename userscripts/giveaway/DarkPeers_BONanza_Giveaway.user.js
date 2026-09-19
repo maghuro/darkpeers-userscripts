@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.4
+// @version      1.3.5
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -77,6 +77,8 @@
 //     DarkPeers website for every viewer, not only hosts running the userscript.
 //   - v1.3.4 persists matched sponsor gift notes in the active giveaway snapshot and
 //     final statement, including multiple gifts/messages per sponsor and final-poll gifts.
+//   - v1.3.5 reads sponsor notes primarily from the host's UNIT3D notifications page
+//     (sender + amount + note + UTC timestamp), with gift history retained as fallback.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3814,6 +3816,50 @@ body.host-panel-dragging * {
             );
     }
 
+    function parseGiftNotificationsPage(html, hostName) {
+        if (!html) return [];
+        const doc = giftDOMParser.parseFromString(html, "text/html");
+        const host = String(hostName || "").trim();
+
+        return Array.from(doc.querySelectorAll("table.data-table tbody tr"))
+            .map(row => {
+                const cells = row.querySelectorAll("td");
+                if (cells.length < 3) return null;
+
+                const title = String(cells[0].textContent || "").replace(/\s+/g, " ").trim();
+                const body = String(cells[1].textContent || "").replace(/\s+/g, " ").trim();
+                const timeEl = cells[2].querySelector("time");
+                const createdAtTs = parseUnit3dTimestamp(timeEl?.getAttribute("datetime") || "");
+
+                const titleMatch = title.match(/^(.+?)\s+Has Gifted You\s+([0-9]+(?:\.[0-9]+)?)\s+BON$/i);
+                const bodyMatch = body.match(/^(.+?)\s+has gifted you\s+([0-9]+(?:\.[0-9]+)?)\s+BON\s+with the following note:\s*(.*)$/i);
+                if (!titleMatch || !bodyMatch) return null;
+
+                const sender = String(bodyMatch[1] || titleMatch[1] || "").trim();
+                const titleAmount = Number(titleMatch[2]);
+                const bodyAmount = Number(bodyMatch[2]);
+                if (!sender || !Number.isFinite(titleAmount) || !Number.isFinite(bodyAmount)) return null;
+                if (Math.abs(titleAmount - bodyAmount) > 0.001) return null;
+
+                const rawNote = String(bodyMatch[3] || "").replace(/\s+/g, " ").trim();
+                const message = /^no note$/i.test(rawNote) ? "" : rawNote;
+
+                return {
+                    sender,
+                    recipient: host,
+                    amount: bodyAmount,
+                    message,
+                    createdAtTs
+                };
+            })
+            .filter(item =>
+                item &&
+                item.sender &&
+                Number.isFinite(item.amount) &&
+                item.amount > 0
+            );
+    }
+
     function sanitizeSponsorGiftMessage(value) {
         return String(value || "")
             .replace(/\s+/g, " ")
@@ -4020,6 +4066,20 @@ body.host-panel-dragging * {
             return parseGiftMessage(html);
         }
 
+        async fetchRecentGiftNotifications() {
+            const senderSlug = getAuthenticatedUserSlug();
+            if (!senderSlug) return [];
+
+            const notificationsPath = `/users/${encodeURIComponent(decodeURIComponent(senderSlug))}/notifications`;
+            const res = await fetchWithTimeout(
+                location.origin + notificationsPath,
+                { credentials: "same-origin" },
+                7000
+            );
+            if (!res.ok) throw new Error(`Gift notifications HTTP ${res.status}`);
+            return parseGiftNotificationsPage(await res.text(), this.data?.host || "");
+        }
+
         async fetchRecentGiftHistory() {
             const senderSlug = getAuthenticatedUserSlug();
             const endpointPath = getGiftEndpointPath(senderSlug);
@@ -4037,14 +4097,27 @@ body.host-panel-dragging * {
         async enrichGiftEventsWithMessages(events) {
             if (!Array.isArray(events) || !events.length) return [];
 
-            let history;
+            let history = [];
             try {
-                history = await this.fetchRecentGiftHistory();
+                history = await this.fetchRecentGiftNotifications();
             } catch (e) {
                 if (DEBUG_SETTINGS.log_chat_messages) {
-                    console.warn("Sponsor gift-message lookup failed:", e);
+                    console.warn("Sponsor notification lookup failed:", e);
                 }
-                return events;
+            }
+
+            // Notifications are the canonical source for gift notes. Keep the
+            // gift-history page as a read-only fallback for tracker variants where
+            // notification markup or availability differs.
+            if (!Array.isArray(history) || !history.length) {
+                try {
+                    history = await this.fetchRecentGiftHistory();
+                } catch (e) {
+                    if (DEBUG_SETTINGS.log_chat_messages) {
+                        console.warn("Sponsor gift-history fallback failed:", e);
+                    }
+                    return events;
+                }
             }
 
             if (!Array.isArray(history) || !history.length) return events;
@@ -9338,6 +9411,7 @@ body.host-panel-dragging * {
                 SponsorTracker,
                 parseGiftMessage,
                 parseGiftHistoryPage,
+                parseGiftNotificationsPage,
                 parseUnit3dTimestamp,
             }),
             Stats: Object.freeze({
