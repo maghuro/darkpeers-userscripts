@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.7
+// @version      1.2.8
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -44,6 +44,8 @@
 //     bounded chat API sends, robust gift parsing, and exact BON Pool request semantics.
 //   - v1.2.7 makes the persisted sponsor cursor authoritative client-side even
 //     when UNIT3D ignores after_id, and retries the final sponsor sync three times.
+//   - v1.2.8 guarantees every announced winner can receive at least 1 BON by
+//     validating manual winner counts and capping sponsor-driven scaling to the pot.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -2834,6 +2836,16 @@ body.host-panel-dragging * {
             return;
         }
 
+        const requestedWinners = Math.max(1, Math.min(MAX_WINNERS, parseInt(winnersInput.value, 10) || 1));
+        const minimumPotForRequestedWinners = minimumPotForWeightedWinners(requestedWinners);
+        if (amountInt < minimumPotForRequestedWinners) {
+            window.alert(
+                `GIVEAWAY ERROR: ${fmtBON(requestedWinners)} weighted winner(s) need a pot of at least ` +
+                `${fmtBON(minimumPotForRequestedWinners)} BON so every winner receives at least 1 BON.`
+            );
+            return;
+        }
+
         // Claim ownership BEFORE mutating UI/state. Never steal a fresh lock from
         // another tab: that is the primary cross-tab double-payout defence.
         if (!acquireTabLock()) {
@@ -2873,7 +2885,7 @@ body.host-panel-dragging * {
         if (isNaN(reminderNum) || reminderNum < 0) reminderNum = 0;
         const schedule = getReminderSchedule(totalTimeMin, reminderNum);
         const cadenceSec = (reminderNum > 0) ? totalTimeMin * 60 / (reminderNum + 1) : 0;
-        let winnersNum = parseInt(winnersInput.value, 10);
+        let winnersNum = requestedWinners;
         const scaleWinnersWithSponsors = !!(scaleWinnersToggleInput && scaleWinnersToggleInput.checked);
         const hostMaxScaledWinners = scaleWinnersWithSponsors
         ? Math.floor(Number(maxScaledWinnersRawValue || maxScaledWinnersInput.value) || winnersNum)
@@ -4599,6 +4611,15 @@ body.host-panel-dragging * {
                 return;
             }
 
+            const minimumPot = minimumPotForWeightedWinners(newCount);
+            if (Math.floor(Number(giveawayData.amount) || 0) < minimumPot) {
+                reply(
+                    `[color=red]Cannot set ${fmtBON(newCount)} winners with the current ${fmtBON(giveawayData.amount)} BON pot. ` +
+                    `Weighted payouts require at least ${fmtBON(minimumPot)} BON.[/color]`
+                );
+                return;
+            }
+
             // Snapshot previous effective so we can announce the change in chat
             // (host-driven adjustment, symmetric to the scaling-increase announcement).
             const prevEffective = Math.max(
@@ -5842,6 +5863,26 @@ body.host-panel-dragging * {
             // Statistically unreachable (each rejection has probability < 0.5); fall through.
         }
         return Math.floor(Math.random() * range) + min;
+    }
+
+    /**
+     * Minimum gross pot needed for the weighted N..1 payout scheme to give every
+     * announced winner at least 1 BON. The last rank has weight 1, so the exact
+     * threshold is the triangular number N(N+1)/2.
+     */
+    function minimumPotForWeightedWinners(count) {
+        const n = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(count) || 1)));
+        return (n * (n + 1)) / 2;
+    }
+
+    function maxWeightedWinnersForPot(pot) {
+        const available = Math.max(0, Math.floor(Number(pot) || 0));
+        let max = 0;
+        for (let n = 1; n <= MAX_WINNERS; n++) {
+            if (minimumPotForWeightedWinners(n) > available) break;
+            max = n;
+        }
+        return Math.max(1, max);
     }
 
     // ───────────── BON Pool helpers ─────────────
@@ -7872,13 +7913,15 @@ body.host-panel-dragging * {
         const configuredMax = Math.max(baseWinners, Math.min(Math.floor(Number(data.hostMaxScaledWinners) || baseWinners), hardMax));
         data.hostMaxScaledWinners = configuredMax;
 
-        let effective = baseWinners;
+        const fundableMax = maxWeightedWinnersForPot(data.amount);
+
+        let effective = Math.min(baseWinners, fundableMax);
         if (data.scaleWinnersWithSponsors) {
             const baseBonPerWinner = getScalingBonPerWinner(data);
             const totalContribForScaling = getTotalContribForScaling(data);
             const extraWinnersFromSponsors = Math.floor(totalContribForScaling / baseBonPerWinner);
             const scaledWinners = baseWinners + extraWinnersFromSponsors;
-            effective = Math.max(1, Math.min(scaledWinners, Math.min(configuredMax, hardMax)));
+            effective = Math.max(1, Math.min(scaledWinners, configuredMax, hardMax, fundableMax));
         }
 
         data.effectiveWinnersNum = effective;
