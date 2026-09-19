@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.5
+// @version      1.3.6
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -77,8 +77,10 @@
 //     DarkPeers website for every viewer, not only hosts running the userscript.
 //   - v1.3.4 persists matched sponsor gift notes in the active giveaway snapshot and
 //     final statement, including multiple gifts/messages per sponsor and final-poll gifts.
-//   - v1.3.5 reads sponsor notes primarily from the host's UNIT3D notifications page
-//     (sender + amount + note + UTC timestamp), with gift history retained as fallback.
+//   - v1.3.5 added UNIT3D notification parsing for sponsor notes.
+//   - v1.3.6 makes the persistent Gift History the canonical sponsor-note source and
+//     uses notifications only per-event as fallback. UNIT3D can suppress/queue BON
+//     notifications, while every successful gift is stored with its message first.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -4094,46 +4096,26 @@ body.host-panel-dragging * {
             return parseGiftHistoryPage(await res.text());
         }
 
-        async enrichGiftEventsWithMessages(events) {
+        matchGiftEventsToRows(events, rows) {
             if (!Array.isArray(events) || !events.length) return [];
-
-            let history = [];
-            try {
-                history = await this.fetchRecentGiftNotifications();
-            } catch (e) {
-                if (DEBUG_SETTINGS.log_chat_messages) {
-                    console.warn("Sponsor notification lookup failed:", e);
-                }
+            if (!Array.isArray(rows) || !rows.length) {
+                return events.map(event => ({ ...event, _noteSourceMatched: false }));
             }
 
-            // Notifications are the canonical source for gift notes. Keep the
-            // gift-history page as a read-only fallback for tracker variants where
-            // notification markup or availability differs.
-            if (!Array.isArray(history) || !history.length) {
-                try {
-                    history = await this.fetchRecentGiftHistory();
-                } catch (e) {
-                    if (DEBUG_SETTINGS.log_chat_messages) {
-                        console.warn("Sponsor gift-history fallback failed:", e);
-                    }
-                    return events;
-                }
-            }
-
-            if (!Array.isArray(history) || !history.length) return events;
-
-            const usedHistoryRows = new Set();
+            const usedRows = new Set();
             const MATCH_WINDOW_MS = 120_000;
 
             return events.map(event => {
-                if (!Number.isFinite(event.createdAtTs) || !Number.isFinite(event.rawAmount)) return event;
+                if (!Number.isFinite(event.createdAtTs) || !Number.isFinite(event.rawAmount)) {
+                    return { ...event, _noteSourceMatched: false };
+                }
 
                 let bestIndex = -1;
                 let bestDelta = Infinity;
 
-                for (let i = 0; i < history.length; i++) {
-                    if (usedHistoryRows.has(i)) continue;
-                    const item = history[i];
+                for (let i = 0; i < rows.length; i++) {
+                    if (usedRows.has(i)) continue;
+                    const item = rows[i];
                     if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
                     if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
                     if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
@@ -4145,14 +4127,13 @@ body.host-panel-dragging * {
                     bestIndex = i;
                 }
 
-                // If a timestamp is unavailable or a site's timezone formatting is
-                // non-standard, accept only an unambiguous exact sender/receiver/amount
-                // candidate. Never guess between multiple historical gifts.
+                // If timestamps are unavailable/non-standard, accept only one exact
+                // sender/recipient/amount candidate. Never guess between duplicates.
                 if (bestIndex === -1) {
                     const exactCandidates = [];
-                    for (let i = 0; i < history.length; i++) {
-                        if (usedHistoryRows.has(i)) continue;
-                        const item = history[i];
+                    for (let i = 0; i < rows.length; i++) {
+                        if (usedRows.has(i)) continue;
+                        const item = rows[i];
                         if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
                         if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
                         if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
@@ -4161,12 +4142,66 @@ body.host-panel-dragging * {
                     if (exactCandidates.length === 1) bestIndex = exactCandidates[0];
                 }
 
-                if (bestIndex === -1) return event;
-                usedHistoryRows.add(bestIndex);
+                if (bestIndex === -1) return { ...event, _noteSourceMatched: false };
+                usedRows.add(bestIndex);
 
-                const message = sanitizeSponsorGiftMessage(history[bestIndex].message);
-                return message ? { ...event, message } : event;
+                const message = sanitizeSponsorGiftMessage(rows[bestIndex].message);
+                return {
+                    ...event,
+                    message,
+                    _noteSourceMatched: true
+                };
             });
+        }
+
+        async enrichGiftEventsWithMessages(events) {
+            if (!Array.isArray(events) || !events.length) return [];
+
+            // Canonical source: Gift History is backed directly by UNIT3D's Gift
+            // records. The gift is persisted with its message before any notification
+            // is queued/suppressed, so use history first.
+            let historyRows = [];
+            try {
+                historyRows = await this.fetchRecentGiftHistory();
+            } catch (e) {
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Sponsor gift-history lookup failed:", e);
+                }
+            }
+
+            let enriched = this.matchGiftEventsToRows(events, historyRows);
+
+            // Notifications are only a fallback for events that Gift History could
+            // not match. UNIT3D notifications can be disabled by recipient settings,
+            // blocked by sender group, or delayed by the queue.
+            const unmatchedIndexes = [];
+            const unmatchedEvents = [];
+            enriched.forEach((event, index) => {
+                if (!event._noteSourceMatched) {
+                    unmatchedIndexes.push(index);
+                    unmatchedEvents.push(events[index]);
+                }
+            });
+
+            if (unmatchedEvents.length) {
+                let notificationRows = [];
+                try {
+                    notificationRows = await this.fetchRecentGiftNotifications();
+                } catch (e) {
+                    if (DEBUG_SETTINGS.log_chat_messages) {
+                        console.warn("Sponsor notification fallback failed:", e);
+                    }
+                }
+
+                if (notificationRows.length) {
+                    const fallbackMatches = this.matchGiftEventsToRows(unmatchedEvents, notificationRows);
+                    fallbackMatches.forEach((event, i) => {
+                        if (event._noteSourceMatched) enriched[unmatchedIndexes[i]] = event;
+                    });
+                }
+            }
+
+            return enriched.map(({ _noteSourceMatched, ...event }) => event);
         }
 
         /* ---- update pot + per-sponsor running totals ---- */
