@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.1
+// @version      1.3.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -70,6 +70,8 @@
 //   - v1.3.0 promotes the live-tested fork: sponsor gift notes, multi-gift digest
 //     correlation, authoritative TLCC markers and direct BON Pool settlement are
 //     now the stable 1.3 baseline. Monetary BON values use the official ฿ symbol.
+//   - v1.3.2 prefixes the self-duplicate-entry rejection with 🚫 so bridge clients
+//     and TLCC can classify it unambiguously like the other rejected entry states.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3506,7 +3508,7 @@ body.host-panel-dragging * {
         const existing = numberEntries.get(author);
         if (existing !== undefined) {
             const repeatMessage =
-                  `Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]you[/color] already entered with number [color=#DC3D1D][b]${existing}[/b][/color]!`;
+                  `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]you[/color] already entered with number [color=#DC3D1D][b]${existing}[/b][/color]!`;
             if (canSendUserFeedback(author, "entry-repeat")) sendCommandResponse(author, repeatMessage);
             return;
         }
