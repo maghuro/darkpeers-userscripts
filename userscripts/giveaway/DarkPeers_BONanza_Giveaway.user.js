@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.9
+// @version      1.3.10
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -90,6 +90,9 @@
 //   - v1.3.9 makes authenticated UNIT3D Gift History the primary sponsor source for
 //     sender, recipient, BON, note and event discovery. Chat API/SystemBot is now
 //     fallback-only (history outage/recovery and exact final-cutoff disambiguation).
+//   - v1.3.10 forces fresh Gift History/notification reads and guarantees matched
+//     sponsor notes are never silently dropped by digest-length trimming: notes stay
+//     inline when they fit and overflow into marked sponsor-note continuations.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -4381,9 +4384,14 @@ body.host-panel-dragging * {
             if (!senderSlug) return [];
 
             const notificationsPath = `/users/${encodeURIComponent(decodeURIComponent(senderSlug))}/notifications`;
+            const notificationsUrl = new URL(notificationsPath, location.origin);
+            notificationsUrl.searchParams.set("_dpgw", String(Date.now()));
             const res = await fetchWithTimeout(
-                location.origin + notificationsPath,
-                { credentials: "same-origin" },
+                notificationsUrl,
+                {
+                    credentials: "same-origin",
+                    cache: "no-store"
+                },
                 7000
             );
             if (!res.ok) throw new Error(`Gift notifications HTTP ${res.status}`);
@@ -4395,9 +4403,14 @@ body.host-panel-dragging * {
             const endpointPath = getGiftEndpointPath(senderSlug);
             if (!endpointPath) return [];
 
+            const historyUrl = new URL(endpointPath, location.origin);
+            historyUrl.searchParams.set("_dpgw", String(Date.now()));
             const res = await fetchWithTimeout(
-                location.origin + endpointPath,
-                { credentials: "same-origin" },
+                historyUrl,
+                {
+                    credentials: "same-origin",
+                    cache: "no-store"
+                },
                 7000
             );
             if (!res.ok) throw new Error(`Gift history HTTP ${res.status}`);
@@ -4769,11 +4782,18 @@ body.host-panel-dragging * {
             const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
             const maxNotes = Math.max(0, Math.floor(Number(SPONSOR_ANNOUNCE.max_notes_per_sponsor) || 0));
             const shownParts = [];
+            const overflowNotes = [];
             let shownCount = 0;
 
             for (const e of entries) {
-                if (shownCount >= topN) break;
-                if (sponsorCount > 1 && e.amt < minPerUser) continue;
+                if (shownCount >= topN) {
+                    if (e.messages.length) overflowNotes.push(e);
+                    continue;
+                }
+                if (sponsorCount > 1 && e.amt < minPerUser) {
+                    if (e.messages.length) overflowNotes.push(e);
+                    continue;
+                }
 
                 const basePart =
                     `[color=#1DDC5D][b]${sanitizeNick(e.name)}[/b][/color] ` +
@@ -4812,10 +4832,11 @@ body.host-panel-dragging * {
                 if (visibleChatLength(candidateBase) <= maxVisible) {
                     shownParts.push(basePart);
                     shownCount += 1;
+                    if (notes.length) overflowNotes.push(e);
                     continue;
                 }
 
-                break;
+                if (notes.length) overflowNotes.push(e);
             }
 
             const othersCount = Math.max(0, sponsorCount - shownCount);
@@ -4829,8 +4850,56 @@ body.host-panel-dragging * {
 
             msg += suffix;
 
+            const noteContinuationMessages = [];
+            if (overflowNotes.length) {
+                const noteParts = [];
+
+                for (const e of overflowNotes) {
+                    const notes = e.messages
+                        .slice(0, maxNotes)
+                        .map(note => truncateSponsorGiftMessage(note))
+                        .filter(Boolean);
+                    if (!notes.length) continue;
+
+                    const noteText = notes.length === 1
+                        ? `[color=#1DDC5D][b]${sanitizeNick(e.name)}[/b][/color]: [i]"${notes[0]}"[/i]`
+                        : `[color=#1DDC5D][b]${sanitizeNick(e.name)}[/b][/color]: ` +
+                            notes.map(note => `[i]"${note}"[/i]`).join(", ");
+
+                    noteParts.push(noteText);
+                }
+
+                const continuationPrefix = `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "💬")} Sponsor message`;
+                let currentParts = [];
+
+                const flushNoteChunk = () => {
+                    if (!currentParts.length) return;
+                    noteContinuationMessages.push(
+                        `${continuationPrefix}${currentParts.length === 1 ? "" : "s"}: ` +
+                        currentParts.join(" | ") + "."
+                    );
+                    currentParts = [];
+                };
+
+                for (const part of noteParts) {
+                    const candidateParts = currentParts.concat(part);
+                    const candidate =
+                        `${continuationPrefix}${candidateParts.length === 1 ? "" : "s"}: ` +
+                        candidateParts.join(" | ") + ".";
+
+                    if (currentParts.length && visibleChatLength(candidate) > maxVisible) {
+                        flushNoteChunk();
+                    }
+                    currentParts.push(part);
+                }
+                flushNoteChunk();
+            }
+
             if (announce) {
                 sendMessage(msg);
+                for (const noteMessage of noteContinuationMessages) {
+                    sendMessage(noteMessage);
+                }
                 flashPotTotalUI();
                 this.announceWinnerScalingIfNeeded();
             }
