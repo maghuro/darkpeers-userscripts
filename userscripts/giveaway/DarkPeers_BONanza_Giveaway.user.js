@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.12
+// @version      1.2.13
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -56,6 +56,9 @@
 //     floor(total pot * pct / 100), while preserving at least 1 BON per winner.
 //   - v1.2.12 gives the userscript an unambiguous Tampermonkey display name:
 //     "DarkPeers BONanza Giveaway — Maghuro Fork".
+//   - v1.2.13 makes bridge markers machine-only: the semantic emoji stays plain,
+//     marker anchors self-label with their URL for clean IRC conversion, and giveaway
+//     starts distinguish standard, BON Pool and Rigged Taxes structurally.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -252,6 +255,8 @@
     const BRIDGE_MARKER_PREFIX = `${location.origin}/#dpgw-v1-`;
     const BRIDGE_MARKERS = Object.freeze({
         START: "start",
+        START_POOL: "start-pool",
+        START_TAXES: "start-taxes",
         SPONSORS: "sponsors",
         ENTRIES: "entries",
         STATS: "stats",
@@ -267,7 +272,12 @@
 
     function bridgeMarker(kind, visible) {
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
-        return `[url=${BRIDGE_MARKER_PREFIX}${safeKind}]${visible}[/url]`;
+        const markerUrl = `${BRIDGE_MARKER_PREFIX}${safeKind}`;
+
+        // Keep the semantic emoji outside the link. The anchor labels itself with
+        // its URL so HTML→IRC converters do not need to append " (URL)" after an
+        // unrelated emoji. Website/TLCC CSS hides the machine-only marker anchor.
+        return `${visible} [url=${markerUrl}]${markerUrl}[/url]`;
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
@@ -279,6 +289,12 @@
     let conflictWatchTimer = null;
 
     const BUTTON_CSS = `
+/* Machine-only giveaway bridge markers: keep them in the DOM for the bridge,
+   never show their URL in the DarkPeers website chat. */
+.chatbox-message__content a[href*="#dpgw-v1-"] {
+  display: none !important;
+}
+
 /* ── Toolbar button: "Neon Edge" (fx-94), sized for the chat header ── */
 #chatbox_header .bonanza-btn {
   /* Theme tokens — override these to recolour the button */
@@ -3011,11 +3027,14 @@ body.host-panel-dragging * {
             };
 
             const donationPct = normalizeDonationPercent(giveawayData.donationPercent);
+            const startMarker = donationPct > 0
+                ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
+                : BRIDGE_MARKERS.START;
             const introHeader = donationPct > 0
                 ? (riggedMode
-                    ? `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b]\nI am hosting a giveaway for `
-                    : `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} 🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} CONTRIBUTION GIVEAWAY[/color][/b] 🧡\nI am hosting a giveaway for `)
-                : `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} I am hosting a giveaway for `;
+                    ? `${bridgeMarker(startMarker, "🎁")} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b]\nI am hosting a giveaway for `
+                    : `${bridgeMarker(startMarker, "🎁")} 🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} CONTRIBUTION GIVEAWAY[/color][/b] 🧡\nI am hosting a giveaway for `)
+                : `${bridgeMarker(startMarker, "🎁")} I am hosting a giveaway for `;
             const donationIntroLine = donationPct > 0
                 ? (riggedMode
                     ? `\n[b][color=#FF4F9A]${donationPct}% rigging tax[/color][/b] will be taken from the final pot (including sponsor gifts) and paid directly into the [b]${BONANZA.FUND_NAME}[/b]. Winners keep the remaining ${100 - donationPct}%. Entirely legitimate accounting. 😈`
@@ -6306,8 +6325,11 @@ body.host-panel-dragging * {
                 ? `🧾 [b][color=#FF4F9A]Rigging taxes: ${reminderPct}% to the ${BONANZA.FUND_NAME}[/color][/b] 🧾\n`
                 : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution giveaway (${reminderPct}% to the pool)[/color][/b] 🧡\n`)
             : "";
+        const reminderStartMarker = reminderPct > 0
+            ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
+            : BRIDGE_MARKERS.START;
         const msg = reminderPrefix +
-              `${bridgeMarker(BRIDGE_MARKERS.START, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
+              `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
