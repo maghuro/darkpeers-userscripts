@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.6
+// @version      1.2.7
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -42,6 +42,8 @@
 //   - v1.2.6 audit-hardens live settlement: final sponsor sync, frozen entries,
 //     authenticated gift endpoint resolution, ordered critical announcements,
 //     bounded chat API sends, robust gift parsing, and exact BON Pool request semantics.
+//   - v1.2.7 makes the persisted sponsor cursor authoritative client-side even
+//     when UNIT3D ignores after_id, and retries the final sponsor sync three times.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3669,6 +3671,8 @@ body.host-panel-dragging * {
         /* ---- poll for any chat messages since last cursor ---- */
         async fetchNew() {
             const url = new URL(`/api/chat/messages/${this.chatroomId}`, location.origin);
+            // Some UNIT3D versions ignore after_id. Send it as an optimization,
+            // but poll() also enforces lastMsgId locally for correctness.
             if (this.lastMsgId) url.searchParams.set("after_id", this.lastMsgId);
 
             const res = await fetchWithTimeout(url, { credentials: "include" }, 7000);
@@ -3704,13 +3708,19 @@ body.host-panel-dragging * {
                 messages = await this.fetchNew();
             } catch (e) {
                 if (DEBUG_SETTINGS.log_chat_messages) console.error("Sponsor API error:", e);
-                return;
+                return false;
             }
             this.cursorInitialized = true;
 
             /* — filter new, unprocessed gift messages — */
             const gifts = [];
+            const cursorAtPollStart = this.lastMsgId;
             for (const m of messages) {
+                const numericId = Math.floor(Number(m && m.id));
+
+                // Correctness boundary: never replay a message at/before the persisted
+                // cursor. This protects reloads even if the server ignores after_id.
+                if (this.cursorInitialized && Number.isFinite(numericId) && numericId <= cursorAtPollStart) continue;
                 if (this.processedIds.has(m.id)) continue;
                 if (Date.parse(m.created_at) <= this.giveawayStartTs) continue;
 
@@ -3739,6 +3749,7 @@ body.host-panel-dragging * {
             /* send ONE summary line if anything new arrived */
             if (this.buffer.length) this.maybeFlush();
             if (PERF) perfMeasure('sponsor_poll', perfStart);
+            return true;
         }
 
         /* ---- pull gifter / recipient / amount from the HTML blob ---- */
@@ -5031,10 +5042,29 @@ body.host-panel-dragging * {
         // seconds could be omitted from the pot. snapshotGiveaway() is suppressed
         // while __ending is true, so this cannot resurrect the active snapshot.
         if (window.__activeTracker && typeof window.__activeTracker.poll === "function") {
-            try {
-                await window.__activeTracker.poll();
-            } catch (e) {
-                logEvent("Final sponsor sync warning", String(e?.message || e));
+            let finalSponsorSyncOk = false;
+            for (let attempt = 1; attempt <= 3 && !finalSponsorSyncOk; attempt++) {
+                try {
+                    finalSponsorSyncOk = (await window.__activeTracker.poll()) === true;
+                } catch (e) {
+                    finalSponsorSyncOk = false;
+                    logEvent("Final sponsor sync retry", `Attempt ${attempt}/3: ${String(e?.message || e)}`);
+                }
+                if (!finalSponsorSyncOk && attempt < 3) {
+                    await new Promise(resolve => setTimeout(resolve, 1200));
+                }
+            }
+            if (!finalSponsorSyncOk) {
+                logEvent(
+                    "Final sponsor sync warning",
+                    "Could not refresh the chat API after 3 attempts; settling with the last confirmed sponsor state."
+                );
+                try {
+                    window.alert(
+                        "Giveaway warning: final sponsor sync failed after 3 attempts. " +
+                        "Settlement will use the last confirmed sponsor total; verify any very recent gifts manually."
+                    );
+                } catch {}
             }
         }
 
