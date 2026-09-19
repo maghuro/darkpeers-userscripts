@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.15
+// @version      1.2.16
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -62,6 +62,9 @@
 //   - v1.2.14 introduced a dedicated gift marker.
 //   - v1.2.15 moves that marker to the actual standalone "/gift" help response;
 //     giveaway announcement/reminder continuations remain part of GIVEAWAY.
+//   - v1.2.16 enriches sponsor digests with matched gift-history messages, keeps
+//     multi-gift/multi-sponsor notes attached to the correct donor, aligns digest
+//     accounting to whole BON, improves punctuation, and marks host pot top-ups.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -261,6 +264,7 @@
         START_POOL: "start-pool",
         START_TAXES: "start-taxes",
         GIFT: "gift",
+        POT: "pot",
         SPONSORS: "sponsors",
         ENTRIES: "entries",
         STATS: "stats",
@@ -3723,6 +3727,65 @@ body.host-panel-dragging * {
         return parsed;
     }
 
+    function giftHistoryUsernameFromCell(cell) {
+        if (!cell) return "";
+        const link = cell.querySelector('a[href*="/users/"]');
+        if (link) {
+            try {
+                const url = new URL(link.getAttribute("href") || link.href || "", location.origin);
+                const parts = url.pathname.split("/").filter(Boolean);
+                const idx = parts.findIndex(part => part.toLowerCase() === "users");
+                if (idx !== -1 && parts[idx + 1]) return decodeURIComponent(parts[idx + 1]);
+            } catch {}
+        }
+        return String(cell.textContent || "").trim();
+    }
+
+    // Parse the logged-in user's gift-history table. UNIT3D stores the gift
+    // message here, but deliberately omits it from the public SystemBot line.
+    function parseGiftHistoryPage(html) {
+        if (!html) return [];
+        const doc = giftDOMParser.parseFromString(html, "text/html");
+        return Array.from(doc.querySelectorAll("table.data-table tbody tr"))
+            .map(row => {
+                const cells = row.querySelectorAll("td");
+                if (cells.length < 5) return null;
+
+                const amountText = String(cells[2].textContent || "")
+                    .replace(/[\s\u00A0]+/g, "")
+                    .replace(/,/g, "");
+                const amount = Number(amountText);
+                const timeEl = cells[4].querySelector("time");
+                const createdAtTs = Date.parse(timeEl?.getAttribute("datetime") || "");
+
+                return {
+                    sender: giftHistoryUsernameFromCell(cells[0]),
+                    recipient: giftHistoryUsernameFromCell(cells[1]),
+                    amount,
+                    message: String(cells[3].textContent || "").replace(/\s+/g, " ").trim(),
+                    createdAtTs
+                };
+            })
+            .filter(item =>
+                item &&
+                item.sender &&
+                item.recipient &&
+                Number.isFinite(item.amount) &&
+                item.amount > 0
+            );
+    }
+
+    function sanitizeSponsorGiftMessage(value) {
+        return String(value || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 255)
+            // Gift messages are user-controlled. Neutralize BBCode delimiters
+            // before echoing them into a userscript-generated chat message.
+            .replace(/\[/g, "［")
+            .replace(/\]/g, "］");
+    }
+
     class SponsorTracker {
         /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean}} opts */
         constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false }) {
@@ -3816,15 +3879,40 @@ body.host-panel-dragging * {
                 if (Number.isFinite(id) && id > this.lastMsgId) this.lastMsgId = id;
             }
 
-            /* parse & buffer gifts */
+            /* parse gifts and update accounting immediately */
+            const sponsorEvents = [];
             for (const msg of gifts) {
                 this.processedIds.add(msg.id);
 
                 const { gifter, recipient, amount } = this.parseGiftMsg(msg.message);
                 if (!gifter || normalizeUserKey(recipient) !== normalizeUserKey(this.data.host)) continue; // only gifts to this host
 
-                this.buffer.push({ gifter, amount });
-                this.applyGift(gifter, amount); // update totals immediately
+                const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
+                if (!(cleanAmount > 0)) continue;
+
+                sponsorEvents.push({
+                    gifter,
+                    recipient,
+                    amount: cleanAmount,
+                    rawAmount: Number(amount),
+                    createdAtTs: Date.parse(msg.created_at)
+                });
+                this.applyGift(gifter, cleanAmount); // update totals immediately
+            }
+
+            // The SystemBot line omits the optional gift message. For live digests,
+            // enrich the new events from the host's own read-only gift history.
+            // Settlement-only polls skip this cosmetic lookup entirely.
+            const bufferedEvents = announce
+                ? await this.enrichGiftEventsWithMessages(sponsorEvents)
+                : sponsorEvents;
+
+            for (const event of bufferedEvents) {
+                this.buffer.push({
+                    gifter: event.gifter,
+                    amount: event.amount,
+                    message: event.message || ""
+                });
             }
 
             /* send ONE summary line if anything new arrived */
@@ -3839,6 +3927,66 @@ body.host-panel-dragging * {
         /* ---- pull gifter / recipient / amount from the HTML blob ---- */
         parseGiftMsg(html) {
             return parseGiftMessage(html);
+        }
+
+        async fetchRecentGiftHistory() {
+            const senderSlug = getAuthenticatedUserSlug();
+            const endpointPath = getGiftEndpointPath(senderSlug);
+            if (!endpointPath) return [];
+
+            const res = await fetchWithTimeout(
+                location.origin + endpointPath,
+                { credentials: "same-origin" },
+                7000
+            );
+            if (!res.ok) throw new Error(`Gift history HTTP ${res.status}`);
+            return parseGiftHistoryPage(await res.text());
+        }
+
+        async enrichGiftEventsWithMessages(events) {
+            if (!Array.isArray(events) || !events.length) return [];
+
+            let history;
+            try {
+                history = await this.fetchRecentGiftHistory();
+            } catch (e) {
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Sponsor gift-message lookup failed:", e);
+                }
+                return events;
+            }
+
+            if (!Array.isArray(history) || !history.length) return events;
+
+            const usedHistoryRows = new Set();
+            const MATCH_WINDOW_MS = 120_000;
+
+            return events.map(event => {
+                if (!Number.isFinite(event.createdAtTs) || !Number.isFinite(event.rawAmount)) return event;
+
+                let bestIndex = -1;
+                let bestDelta = Infinity;
+
+                for (let i = 0; i < history.length; i++) {
+                    if (usedHistoryRows.has(i)) continue;
+                    const item = history[i];
+                    if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
+                    if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
+                    if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
+                    if (!Number.isFinite(item.createdAtTs)) continue;
+
+                    const delta = Math.abs(item.createdAtTs - event.createdAtTs);
+                    if (delta > MATCH_WINDOW_MS || delta >= bestDelta) continue;
+                    bestDelta = delta;
+                    bestIndex = i;
+                }
+
+                if (bestIndex === -1) return event;
+                usedHistoryRows.add(bestIndex);
+
+                const message = sanitizeSponsorGiftMessage(history[bestIndex].message);
+                return message ? { ...event, message } : event;
+            });
         }
 
         /* ---- update pot + per-sponsor running totals ---- */
@@ -3946,13 +4094,26 @@ body.host-panel-dragging * {
             const announce = !(options && options.announce === false);
             if (!this.buffer.length) return;
 
-            const grouped = this.buffer.reduce((acc, { gifter, amount }) => {
-                acc[gifter] = (acc[gifter] || 0) + (Number(amount) || 0);
+            const grouped = this.buffer.reduce((acc, { gifter, amount, message }) => {
+                const key = normalizeUserKey(gifter);
+                if (!key) return acc;
+                if (!acc[key]) acc[key] = { name: gifter, amt: 0, messages: [] };
+
+                acc[key].amt += Number(amount) || 0;
+
+                const cleanMessage = sanitizeSponsorGiftMessage(message);
+                if (cleanMessage && !acc[key].messages.includes(cleanMessage)) {
+                    acc[key].messages.push(cleanMessage);
+                }
                 return acc;
             }, {});
 
-            const entries = Object.entries(grouped)
-            .map(([name, amt]) => ({ name, amt: Number(amt) || 0 }))
+            const entries = Object.values(grouped)
+            .map(entry => ({
+                name: entry.name,
+                amt: Number(entry.amt) || 0,
+                messages: Array.isArray(entry.messages) ? entry.messages : []
+            }))
             .filter(e => e.name && e.amt > 0)
             .sort((a, b) => b.amt - a.amt);
 
@@ -3985,10 +4146,19 @@ body.host-panel-dragging * {
                 shownSum += e.amt;
             }
 
-            const parts = shown.map(e =>
-                                    `[color=#1DDC5D][b]${e.name}[/b][/color] ` +
-                                    `([color=#DC3D1D][b]${fmtBON(e.amt)}[/b][/color])`
-                                   );
+            const parts = shown.map(e => {
+                let part =
+                    `[color=#1DDC5D][b]${e.name}[/b][/color] ` +
+                    `([color=#DC3D1D][b]${fmtBON(e.amt)}[/b][/color])`;
+
+                if (e.messages.length === 1) {
+                    part += ` with the message [i]"${e.messages[0]}"[/i]`;
+                } else if (e.messages.length > 1) {
+                    part += ` with the messages ` +
+                        e.messages.map(note => `[i]"${note}"[/i]`).join(", ");
+                }
+                return part;
+            });
 
             const othersCount = Math.max(0, sponsorCount - shown.length);
 
@@ -3999,10 +4169,10 @@ body.host-panel-dragging * {
             if (parts.length) {
                 msg += parts.join(", ");
                 if (othersCount > 0) msg += `, [i]+${othersCount} more[/i]`;
-                msg += " ";
+                msg += ". ";
             }
 
-            msg += `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b]`;
+            msg += `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].`;
 
             const nextWinnerLine = getSponsorshipNextWinnerLine(this.data);
             if (nextWinnerLine) msg += ` ${nextWinnerLine}`;
@@ -5016,7 +5186,10 @@ body.host-panel-dragging * {
             }
         }
 
-        sendMessage([addedPart, totalPart, scalingPart].filter(Boolean).join(" "));
+        sendMessage(
+            `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
+            [addedPart, totalPart, scalingPart].filter(Boolean).join(" ")
+        );
         snapshotGiveaway();
     }
 
@@ -8206,7 +8379,7 @@ body.host-panel-dragging * {
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
         return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
             `[color=#ffc00a][b]${fmtBON(sponsorTotal)} BON[/b][/color]. ` +
-            safe.join(", ");
+            safe.join(", ") + ".";
     }
 
     function bindSettingsSectionToggleButtons() {
