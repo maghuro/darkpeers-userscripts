@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.8
+// @version      1.2.9
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -46,6 +46,10 @@
 //     when UNIT3D ignores after_id, and retries the final sponsor sync three times.
 //   - v1.2.8 guarantees every announced winner can receive at least 1 BON by
 //     validating manual winner counts and capping sponsor-driven scaling to the pot.
+//   - v1.2.9 makes giveaway closure a strict temporal boundary: the final sponsor
+//     sync counts only gifts created before closure and never emits a racing digest.
+//     It also normalizes fractional sponsor gifts to whole BON and narrows the
+//     pre-draw crash window by keeping the active snapshot until sponsor sync ends.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -575,7 +579,7 @@
     const normalizeLower = (value) => String(value || "").trim().toLowerCase();
     const CHAT_MESSAGE_SELECTOR = '.chatbox-message';
     const CHATROOM_MESSAGES_SELECTOR = '.chatroom__messages';
-    const GIFT_AMOUNT_RE = /has gifted\s*([\d\s,.'’]+?)\s*BON/i;
+    const GIFT_AMOUNT_RE = /has gifted\s*([0-9]+(?:\.[0-9]{1,2})?)\s*BON/i;
     const giftDOMParser = new DOMParser();
 
     let entriesTableEl = null;
@@ -3646,8 +3650,7 @@ body.host-panel-dragging * {
         const text = doc.body.textContent || "";
         const m = text.match(GIFT_AMOUNT_RE);
 
-        const amountDigits = m ? String(m[1] || "").replace(/[^0-9]/g, "") : "";
-        const amount = amountDigits ? parseInt(amountDigits, 10) : NaN;
+        const amount = m ? Number(m[1]) : NaN;
 
         const parsed = m && firstLink && secondLink && Number.isFinite(amount) && amount > 0
         ? {
@@ -3713,8 +3716,12 @@ body.host-panel-dragging * {
         }
 
         /* ---- called by the 10-second timer ---- */
-        async poll() {
+        async poll(options = {}) {
             const perfStart = PERF ? performance.now() : 0;
+            const maxCreatedAtTs = Number.isFinite(Number(options.maxCreatedAtTs))
+                ? Number(options.maxCreatedAtTs)
+                : null;
+            const announce = options.announce !== false;
             let messages;
             try {
                 messages = await this.fetchNew();
@@ -3734,7 +3741,10 @@ body.host-panel-dragging * {
                 // cursor. This protects reloads even if the server ignores after_id.
                 if (this.cursorInitialized && Number.isFinite(numericId) && numericId <= cursorAtPollStart) continue;
                 if (this.processedIds.has(m.id)) continue;
-                if (Date.parse(m.created_at) <= this.giveawayStartTs) continue;
+
+                const createdAtTs = Date.parse(m.created_at);
+                if (Number.isFinite(createdAtTs) && createdAtTs <= this.giveawayStartTs) continue;
+                if (maxCreatedAtTs !== null && Number.isFinite(createdAtTs) && createdAtTs > maxCreatedAtTs) continue;
 
                 const msgText = m.message || "";
                 const isSystemBot = !!m.bot?.is_systembot;
@@ -3759,7 +3769,10 @@ body.host-panel-dragging * {
             }
 
             /* send ONE summary line if anything new arrived */
-            if (this.buffer.length) this.maybeFlush();
+            if (this.buffer.length) {
+                if (announce) this.maybeFlush();
+                else this.flushBuffer(Date.now(), { announce: false });
+            }
             if (PERF) perfMeasure('sponsor_poll', perfStart);
             return true;
         }
@@ -3771,7 +3784,7 @@ body.host-panel-dragging * {
 
         /* ---- update pot + per-sponsor running totals ---- */
         applyGift(gifter, amount) {
-            const cleanAmount = Math.max(0, Number(amount) || 0);
+            const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
             const sponsorKey = normalizeUserKey(gifter);
             if (!sponsorKey || !(cleanAmount > 0)) return;
 
@@ -5006,6 +5019,7 @@ body.host-panel-dragging * {
         if (!giveawayData) return;
         if (giveawayData.__ending) return;
         giveawayData.__ending = true;
+        const settlementCutoffTs = Date.now();
 
         // ---- cross-tab guard ----
         // If another tab currently owns the giveaway (fresh heartbeat in the last
@@ -5022,15 +5036,6 @@ body.host-panel-dragging * {
             giveawayData.__ending = false;
             return;
         }
-
-        // ---- crash-safety: clear the active-giveaway snapshot up front ----
-        // The snapshot is meant to recover an *in-progress* giveaway. Once we've
-        // committed to ending and paying out, recovering this state would re-trigger
-        // payout. Clearing first means: a crash anywhere from here onwards leaves
-        // nothing to restore, which is the safe outcome (under-pay + verifier warns
-        // > over-pay silently). Per-recipient idempotency in giftBon catches anything
-        // that slips through.
-        try { clearGiveawaySnapshot(); } catch {}
 
         // Stop additional triggers ASAP (but don't clear entries/state yet)
         try {
@@ -5066,7 +5071,10 @@ body.host-panel-dragging * {
             let finalSponsorSyncOk = false;
             for (let attempt = 1; attempt <= 3 && !finalSponsorSyncOk; attempt++) {
                 try {
-                    finalSponsorSyncOk = (await window.__activeTracker.poll()) === true;
+                    finalSponsorSyncOk = (await window.__activeTracker.poll({
+                        maxCreatedAtTs: settlementCutoffTs,
+                        announce: false
+                    })) === true;
                 } catch (e) {
                     finalSponsorSyncOk = false;
                     logEvent("Final sponsor sync retry", `Attempt ${attempt}/3: ${String(e?.message || e)}`);
@@ -5088,6 +5096,11 @@ body.host-panel-dragging * {
                 } catch {}
             }
         }
+
+        // Sponsor accounting is now frozen. From this point onward an automatic
+        // restore must never re-run settlement or redraw a result, so retire the
+        // active snapshot immediately before committing the outcome.
+        try { clearGiveawaySnapshot(); } catch {}
 
         // no entries → no winners
         if (numberEntries.size === 0) {
