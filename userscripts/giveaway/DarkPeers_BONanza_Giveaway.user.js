@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway
-// @namespace    https://darkpeers.org/
+// @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.0
-// @author       🤖T.R.A.V.I.S
+// @version      1.2.1
+// @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
+// @homepageURL  https://github.com/maghuro/darkpeers-userscripts
+// @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
+// @updateURL    https://raw.githubusercontent.com/maghuro/darkpeers-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/maghuro/darkpeers-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
 // @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -26,7 +30,11 @@
 //     giveaway (Save .txt / Copy in the panel); the last two are kept locally.
 //   - Player stats share the original script's localStorage record, so a host's
 //     history carries across; a pre-1.2.0 fork record is merged in once.
-// Fork maintained by TRAVIS for the DarkPeers staff.
+//   - v1.2.1 hardens reload/multi-tab safety, persists sponsor/stat cursors,
+//     draws the winning number only at payout time, makes !random range-safe,
+//     and strengthens payout verification against stale gift messages.
+// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
+// Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
 // Original credits (Blutopia BON Giveaway)
 // @Nums - original author
@@ -74,6 +82,7 @@
     });const RIG_DENY_COOLDOWN_MS = 10000; // 10s per-user cooldown for funny !rig/!unrig denial messages
     const MAX_WINNERS = 50; // central location to update max allowable number of winners
     const MAX_REMINDERS = 6; //maximum number of reminders allowed
+    const PAYOUT_GIFT_GAP_MS = 150; // small spacing between sequential payout requests
 
     // Persistent stats (saved in localStorage on this site)
     // GM store is per-script anyway; the v2 suffix retires the pre-1.2.0 copy so it can
@@ -2296,18 +2305,62 @@ body.host-panel-dragging * {
     // Giveaway persistence — survive page reloads mid-giveaway
     // ───────────────────────────────────────────────────────────
 
-    /** Claim the tab lock — marks this tab as the active giveaway owner. */
-    function acquireTabLock() {
+    /** Read and validate the shared cross-tab lock. */
+    function readTabLock() {
         try {
-            localStorage.setItem(LS_TAB_LOCK, JSON.stringify({ tabId: TAB_ID, ts: Date.now() }));
-        } catch {}
-        // Start heartbeat so other tabs know we're alive
+            const raw = localStorage.getItem(LS_TAB_LOCK);
+            if (!raw) return null;
+            const lock = JSON.parse(raw);
+            if (!lock || typeof lock.tabId !== "string" || !Number.isFinite(Number(lock.ts))) return null;
+            return { tabId: lock.tabId, ts: Number(lock.ts) };
+        } catch {
+            return null;
+        }
+    }
+
+    function isFreshTabLock(lock, now = Date.now()) {
+        return !!(lock && (now - Number(lock.ts)) < TAB_LOCK_STALE_MS);
+    }
+
+    function startTabLockHeartbeat() {
         if (tabLockHeartbeatTimer) clearInterval(tabLockHeartbeatTimer);
         tabLockHeartbeatTimer = setInterval(() => {
             try {
+                const lock = readTabLock();
+
+                // Never overwrite a lock that another live tab acquired after us.
+                if (!lock || lock.tabId !== TAB_ID) {
+                    clearInterval(tabLockHeartbeatTimer);
+                    tabLockHeartbeatTimer = null;
+                    return;
+                }
+
                 localStorage.setItem(LS_TAB_LOCK, JSON.stringify({ tabId: TAB_ID, ts: Date.now() }));
             } catch {}
         }, TAB_LOCK_HEARTBEAT_MS);
+    }
+
+    /**
+     * Try to claim the tab lock without stealing a fresh lock from another tab.
+     * Returns true only if our claim is visible after the write.
+     */
+    function acquireTabLock() {
+        try {
+            const now = Date.now();
+            const existing = readTabLock();
+            if (existing && existing.tabId !== TAB_ID && isFreshTabLock(existing, now)) {
+                return false;
+            }
+
+            localStorage.setItem(LS_TAB_LOCK, JSON.stringify({ tabId: TAB_ID, ts: now }));
+            const verified = readTabLock();
+            if (!verified || verified.tabId !== TAB_ID) return false;
+
+            startTabLockHeartbeat();
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /** Release the tab lock and stop the heartbeat. */
@@ -2315,26 +2368,47 @@ body.host-panel-dragging * {
         if (tabLockHeartbeatTimer) { clearInterval(tabLockHeartbeatTimer); tabLockHeartbeatTimer = null; }
         try {
             // Only remove if we still own it
-            const raw = localStorage.getItem(LS_TAB_LOCK);
-            if (raw) {
-                const lock = JSON.parse(raw);
-                if (lock.tabId === TAB_ID) localStorage.removeItem(LS_TAB_LOCK);
-            }
+            const lock = readTabLock();
+            if (lock && lock.tabId === TAB_ID) localStorage.removeItem(LS_TAB_LOCK);
         } catch {}
     }
 
     /** Check if another tab currently owns the giveaway (fresh heartbeat). */
     function isLockedByAnotherTab() {
-        try {
-            const raw = localStorage.getItem(LS_TAB_LOCK);
-            if (!raw) return false;
-            const lock = JSON.parse(raw);
-            if (lock.tabId === TAB_ID) return false; // we own it
-            return (Date.now() - lock.ts) < TAB_LOCK_STALE_MS; // fresh = another tab is alive
-        } catch {
-            return false;
-        }
+        const lock = readTabLock();
+        if (!lock || lock.tabId === TAB_ID) return false;
+        return isFreshTabLock(lock);
     }
+
+    // Release the localStorage lock only when this document really leaves.
+    // This makes a normal reload recover immediately instead of leaving the new
+    // document blocked behind the previous document's fresh heartbeat.
+    function handleGiveawayPageHide() {
+        if (!giveawayData) return;
+
+        const lock = readTabLock();
+        if (!lock || lock.tabId !== TAB_ID) return; // never overwrite another tab's snapshot
+
+        try {
+            flushStatsNow();
+            if (!giveawayData.__ending) snapshotGiveaway();
+        } catch {}
+        releaseTabLock();
+    }
+
+    // BFCache can restore the exact same JS document after pagehide. Reclaim the
+    // lock on pageshow; if another tab legitimately owns it now, reload into a
+    // passive page rather than running two copies of the giveaway.
+    function handleGiveawayPageShow(event) {
+        if (!event || !event.persisted || !giveawayData || giveawayData.__ending) return;
+        if (acquireTabLock()) return;
+
+        window.onbeforeunload = null;
+        window.location.reload();
+    }
+
+    window.addEventListener("pagehide", handleGiveawayPageHide);
+    window.addEventListener("pageshow", handleGiveawayPageShow);
 
     /**
      * Serialize the active giveaway state to localStorage.
@@ -2374,6 +2448,15 @@ body.host-panel-dragging * {
                 entries: Array.from(numberEntries.entries()),
                 takenBy: Array.from(numberTakenBy.entries()),
                 fancyNameEntries: Array.from(fancyNames.entries()),
+                liveStats: {
+                    entered: Array.from(liveEnteredThisGiveaway),
+                    sponsorSeen: Array.from(liveSponsorSeenThisGiveaway),
+                    sponsorTotals: Array.from(liveSponsorTotalThisGiveaway.entries())
+                },
+                sponsorTracker: window.__activeTracker ? {
+                    lastMsgId: Math.max(0, Math.floor(Number(window.__activeTracker.lastMsgId) || 0)),
+                    cursorInitialized: !!window.__activeTracker.cursorInitialized
+                } : null,
                 riggedMode: riggedMode,
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
                 savedAt: Date.now()
@@ -2416,9 +2499,19 @@ body.host-panel-dragging * {
     function restoreGiveawayFromSnapshot(snap) {
         if (!snap || !snap.giveawayData) return false;
 
+        // Re-check and claim ownership before touching any in-memory state. The
+        // caller already checks, but another tab can race us between those steps.
+        if (!acquireTabLock()) {
+            console.info("[BON Giveaway] Restore cancelled: another tab owns the active giveaway lock.");
+            return false;
+        }
+
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+            // A pre-1.2.1 snapshot may contain a number drawn at start. Discard it:
+            // v1.2.1 always draws a fresh winning number only after entries close.
+            giveawayData.winningNumber = null;
             giveawayData.donationPercent = normalizeDonationPercent(giveawayData.donationPercent);
             if (donationPercentInput) donationPercentInput.value = String(giveawayData.donationPercent);
             updateDonationHint();
@@ -2428,6 +2521,7 @@ body.host-panel-dragging * {
             if (giveawayData.timeLeft <= 0) {
                 giveawayData = null;
                 clearGiveawaySnapshot();
+                releaseTabLock();
                 return false;
             }
 
@@ -2451,6 +2545,47 @@ body.host-panel-dragging * {
                 }
             }
 
+            // Restore the live-stat bookkeeping too. Without this, a reload would
+            // make recordGiveawayStats() believe entries/sponsors had never been
+            // counted and could increment them again at payout time.
+            liveEnteredThisGiveaway.clear();
+            liveSponsorSeenThisGiveaway.clear();
+            liveSponsorTotalThisGiveaway.clear();
+
+            if (snap.liveStats && typeof snap.liveStats === "object") {
+                for (const key of (Array.isArray(snap.liveStats.entered) ? snap.liveStats.entered : [])) {
+                    const normalized = normalizeUserKey(key);
+                    if (normalized) liveEnteredThisGiveaway.add(normalized);
+                }
+                for (const key of (Array.isArray(snap.liveStats.sponsorSeen) ? snap.liveStats.sponsorSeen : [])) {
+                    const normalized = normalizeUserKey(key);
+                    if (normalized) liveSponsorSeenThisGiveaway.add(normalized);
+                }
+                for (const pair of (Array.isArray(snap.liveStats.sponsorTotals) ? snap.liveStats.sponsorTotals : [])) {
+                    if (!Array.isArray(pair) || pair.length < 2) continue;
+                    const key = normalizeUserKey(pair[0]);
+                    const amount = Math.max(0, Math.floor(Number(pair[1]) || 0));
+                    if (key && amount > 0) liveSponsorTotalThisGiveaway.set(key, amount);
+                }
+            } else {
+                // Back-compat for a pre-1.2.1 snapshot. The old script flushed live
+                // stats on unload, so seed the bookkeeping from the restored state to
+                // avoid the much worse failure mode: double-counting everything.
+                for (const author of numberEntries.keys()) {
+                    const key = normalizeUserKey(author);
+                    if (key) liveEnteredThisGiveaway.add(key);
+                }
+                if (giveawayData.sponsorContribs && typeof giveawayData.sponsorContribs === "object") {
+                    for (const [name, rawAmount] of Object.entries(giveawayData.sponsorContribs)) {
+                        const key = normalizeUserKey(name);
+                        const amount = Math.max(0, Math.floor(Number(rawAmount) || 0));
+                        if (!key || !amount) continue;
+                        liveSponsorSeenThisGiveaway.add(key);
+                        liveSponsorTotalThisGiveaway.set(key, (liveSponsorTotalThisGiveaway.get(key) || 0) + amount);
+                    }
+                }
+            }
+
             // 3) Restore rigged mode
             riggedMode = !!snap.riggedMode;
             if (riggedMode) {
@@ -2463,8 +2598,6 @@ body.host-panel-dragging * {
             giveawayStartTime = snap.startTime ? new Date(snap.startTime) : new Date();
 
             lastKnownGiveawayHostKey = normUserKey(giveawayData.host) || lastKnownGiveawayHostKey;
-
-            acquireTabLock();
 
             // 5) Lock form fields
             startButton.disabled = false;
@@ -2500,9 +2633,26 @@ body.host-panel-dragging * {
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
             if (window.__activeTracker) window.__activeTracker = null;
-            const tracker = new SponsorTracker({ chatroomId, giveawayStartTime, giveawayData });
+            const savedTracker = (snap.sponsorTracker && typeof snap.sponsorTracker === "object") ? snap.sponsorTracker : null;
+            const tracker = new SponsorTracker({
+                chatroomId,
+                giveawayStartTime,
+                giveawayData,
+                lastMsgId: savedTracker ? savedTracker.lastMsgId : 0,
+                cursorInitialized: savedTracker ? !!savedTracker.cursorInitialized : false
+            });
             window.__activeTracker = tracker;
-            tracker.poll().catch(console.error);
+
+            if (savedTracker) {
+                // v1.2.1+ snapshot: continue exactly after the last processed API message.
+                tracker.poll().catch(console.error);
+            } else {
+                // Legacy snapshot: the old fork did not persist its API cursor. Replaying
+                // the current chat window could re-add already-counted BON, so establish a
+                // fresh cursor without applying historical gifts. This may conservatively
+                // miss an unpolled gift during an in-place upgrade, but never duplicates BON.
+                tracker.bootstrapCursor().catch(console.error);
+            }
             sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
 
             // 10) Re-start countdown timer
@@ -2516,7 +2666,10 @@ body.host-panel-dragging * {
 
             // 12) Set up beforeunload guard
             window.onbeforeunload = function (e) {
-                try { flushStatsNow(); snapshotGiveaway(); } catch {}
+                try {
+                    flushStatsNow();
+                    if (giveawayData && !giveawayData.__ending) snapshotGiveaway();
+                } catch {}
                 e.preventDefault();
                 e.returnValue = "";
                 return "";
@@ -2538,6 +2691,7 @@ body.host-panel-dragging * {
         } catch (e) {
             console.error("Giveaway restore failed:", e);
             clearGiveawaySnapshot();
+            releaseTabLock();
             return false;
         }
     }
@@ -2631,6 +2785,13 @@ body.host-panel-dragging * {
             return;
         }
 
+        // Claim ownership BEFORE mutating UI/state. Never steal a fresh lock from
+        // another tab: that is the primary cross-tab double-payout defence.
+        if (!acquireTabLock()) {
+            window.alert("Another DarkPeers tab is already running an active giveaway. End it there (or wait for its lock to expire) before starting another one.");
+            return;
+        }
+
         if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
         if (observer) { observer.disconnect(); observer = null; }
 
@@ -2704,7 +2865,6 @@ body.host-panel-dragging * {
         };
         lastKnownGiveawayHostKey = normUserKey(giveawayData.host) || lastKnownGiveawayHostKey;
 
-        acquireTabLock();
         updateRigToggleUI();
         const currentBon = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
 
@@ -2735,10 +2895,15 @@ body.host-panel-dragging * {
                 "Giveaway started",
                 `Host=${sanitizeNick(giveawayData.host)} | Host-funded=${fmtBON(giveawayData.initialPotVerifiedAtStart)} BON | Base winners=${fmtBON(giveawayData.baseWinnersAtStart)} | Time=${fmtBON(totalTimeMin)} min | ${BONANZA.FUND_NAME}=${giveawayData.donationPercent}%${isFundManagerName(giveawayData.host) ? " (host is fund manager, retained)" : ""} | Flags: silent=${GENERAL_SETTINGS.silent_mode ? "on" : "off"}, rigged=${riggedMode ? "on" : "off"}, scale=${giveawayData.scaleWinnersWithSponsors ? "on" : "off"}${giveawayData.scaleWinnersWithSponsors ? `, max winners=${fmtBON(giveawayData.hostMaxScaledWinners)}` : ""}`
             );
-            giveawayData.winningNumber = getRandomInt(giveawayData.startNum, giveawayData.endNum);
+            // The winning number is deliberately NOT drawn here. It is generated
+            // only when endGiveaway() commits to payout, so DevTools/localStorage
+            // cannot reveal the result while entries are still open.
 
             window.onbeforeunload = function (e) {
-                try { flushStatsNow(); snapshotGiveaway(); } catch {}
+                try {
+                    flushStatsNow();
+                    if (giveawayData && !giveawayData.__ending) snapshotGiveaway();
+                } catch {}
                 e.preventDefault();
                 e.returnValue = "";
                 return "";
@@ -2783,7 +2948,7 @@ body.host-panel-dragging * {
             if (window.__activeTracker) window.__activeTracker = null;
             let tracker = new SponsorTracker({ chatroomId, giveawayStartTime, giveawayData });
             window.__activeTracker = tracker;
-            tracker.poll().catch(console.error);
+            try { await tracker.poll(); } catch (e) { console.error(e); }
             sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
 
             if (observer) {
@@ -3159,8 +3324,8 @@ body.host-panel-dragging * {
      * Host and staff are always allowed through.
      */
     function isNaughtyBlocked(author, fancyName, giveawayData) {
-        if (!naughtySet.has(author.toLowerCase())) return false;
-        const isHost = giveawayData && author === giveawayData.host;
+        if (!naughtySet.has(normalizeUserKey(author))) return false;
+        const isHost = giveawayData && normalizeUserKey(author) === normalizeUserKey(giveawayData.host);
         if (isHost || isAdmin(fancyName)) return false;
 
         if (!naughtyWarned.has(author)) {
@@ -3433,17 +3598,22 @@ body.host-panel-dragging * {
     }
 
     class SponsorTracker {
-        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object}} opts */
-        constructor({ chatroomId, giveawayStartTime, giveawayData }) {
+        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean}} opts */
+        constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false }) {
             this.chatroomId = chatroomId;
             this.giveawayStartTs = giveawayStartTime.getTime();
             this.data = giveawayData;
 
-            this.lastMsgId = 0; // API cursor
-            this.processedIds = new Set(); // de-dupe
+            this.lastMsgId = Math.max(0, Math.floor(Number(lastMsgId) || 0)); // persisted API cursor
+            this.cursorInitialized = !!cursorInitialized;
+            this.processedIds = new Set(); // de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
             this.sponsorWindowStartAt = 0; // digest window start (ms)
-            this.sponsorSet = new Set(Array.isArray(giveawayData.sponsors) ? giveawayData.sponsors : []);
+            this.sponsorSet = new Set(
+                (Array.isArray(giveawayData.sponsors) ? giveawayData.sponsors : [])
+                    .map(normalizeUserKey)
+                    .filter(Boolean)
+            );
         }
 
         /* ---- poll for any chat messages since last cursor ---- */
@@ -3454,7 +3624,26 @@ body.host-panel-dragging * {
             const res = await fetchWithTimeout(url, { credentials: "include" }, 7000);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-            return (await res.json()).data;
+            const payload = await res.json();
+            return Array.isArray(payload && payload.data) ? payload.data : [];
+        }
+
+        /**
+         * Establish a cursor without applying messages. Used only for legacy
+         * snapshots that pre-date cursor persistence, preventing sponsor replay.
+         */
+        async bootstrapCursor() {
+            const url = new URL(`/api/chat/messages/${this.chatroomId}`, location.origin);
+            const res = await fetchWithTimeout(url, { credentials: "include" }, 7000);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const payload = await res.json();
+            const messages = Array.isArray(payload && payload.data) ? payload.data : [];
+            for (const m of messages) {
+                const id = Math.floor(Number(m && m.id));
+                if (Number.isFinite(id) && id > this.lastMsgId) this.lastMsgId = id;
+            }
+            this.cursorInitialized = true;
+            snapshotGiveaway();
         }
 
         /* ---- called by the 10-second timer ---- */
@@ -3467,6 +3656,8 @@ body.host-panel-dragging * {
                 if (DEBUG_SETTINGS.log_chat_messages) console.error("Sponsor API error:", e);
                 return;
             }
+            this.cursorInitialized = true;
+
             /* — filter new, unprocessed gift messages — */
             const gifts = [];
             for (const m of messages) {
@@ -3478,9 +3669,10 @@ body.host-panel-dragging * {
                 if (isSystemBot && msgText.includes("has gifted")) gifts.push(m);
             }
 
-            // advance cursor for all messages, like before
+            // Advance cursor for every message, not just gifts.
             for (const m of messages) {
-                if (m.id > this.lastMsgId) this.lastMsgId = m.id;
+                const id = Math.floor(Number(m && m.id));
+                if (Number.isFinite(id) && id > this.lastMsgId) this.lastMsgId = id;
             }
 
             /* parse & buffer gifts */
@@ -3488,7 +3680,7 @@ body.host-panel-dragging * {
                 this.processedIds.add(msg.id);
 
                 const { gifter, recipient, amount } = this.parseGiftMsg(msg.message);
-                if (!gifter || recipient !== this.data.host) continue; // only count gifts to the host
+                if (!gifter || normalizeUserKey(recipient) !== normalizeUserKey(this.data.host)) continue; // only gifts to this host
 
                 this.buffer.push({ gifter, amount });
                 this.applyGift(gifter, amount); // update totals immediately
@@ -3506,21 +3698,31 @@ body.host-panel-dragging * {
 
         /* ---- update pot + per-sponsor running totals ---- */
         applyGift(gifter, amount) {
-            this.data.amount += amount;
-            this.data.sponsorContribs[gifter] =
-                (this.data.sponsorContribs[gifter] || 0) + amount;
+            const cleanAmount = Math.max(0, Number(amount) || 0);
+            const sponsorKey = normalizeUserKey(gifter);
+            if (!sponsorKey || !(cleanAmount > 0)) return;
+
+            this.data.amount += cleanAmount;
+
+            // Preserve the first-seen display casing while merging later gifts from
+            // the same username case-insensitively.
+            const existingName = Object.keys(this.data.sponsorContribs || {})
+                .find(name => normalizeUserKey(name) === sponsorKey) || gifter;
+            this.data.sponsorContribs[existingName] =
+                (Number(this.data.sponsorContribs[existingName]) || 0) + cleanAmount;
+
             recomputeEffectiveWinners(this.data);
             flashPotTotalUI();
 
             const totalSponsoredNow = sumSponsorContribs(this.data.sponsorContribs, this.data.host);
-            logEvent("Sponsorship recorded", `${sanitizeNick(gifter)} added ${fmtBON(amount)} BON | Total sponsored=${fmtBON(totalSponsoredNow)} BON`);
+            logEvent("Sponsorship recorded", `${sanitizeNick(gifter)} added ${fmtBON(cleanAmount)} BON | Total sponsored=${fmtBON(totalSponsoredNow)} BON`);
 
-            if (!this.sponsorSet.has(gifter)) {
-                this.sponsorSet.add(gifter);
+            if (!this.sponsorSet.has(sponsorKey)) {
+                this.sponsorSet.add(sponsorKey);
                 this.data.sponsors.push(gifter);
             }
 
-            recordLiveSponsorGift(gifter, amount); // ✅ live sponsor stats update
+            recordLiveSponsorGift(gifter, cleanAmount); // live sponsor stats update
             snapshotGiveaway();
         }
 
@@ -3889,7 +4091,7 @@ body.host-panel-dragging * {
 
             const action = (args[0] || "").toLowerCase(); // "add" / "remove"
             const minutes = parseFloat(args[1]);
-            const isPriv = author === giveawayData.host || isAdmin(fancyName);
+            const isPriv = normalizeUserKey(author) === normalizeUserKey(giveawayData.host) || isAdmin(fancyName);
 
             if (!isPriv) return; // silently ignore non-host/non-admin
 
@@ -4276,16 +4478,11 @@ body.host-panel-dragging * {
                 return;
             }
 
-            const takenNumbers = new Set(numberEntries.values());
-            const availableNumbers = [];
-            for (let n = giveawayData.startNum; n <= giveawayData.endNum; ++n) {
-                if (!takenNumbers.has(n)) availableNumbers.push(n);
-            }
-            if (availableNumbers.length === 0) {
+            const randomNum = pickRandomFreeNumber(giveawayData);
+            if (randomNum === null) {
                 reply("All numbers are taken — no free numbers left!");
                 return;
             }
-            const randomNum = availableNumbers[Math.floor(Math.random() * availableNumbers.length)];
 
             addNewEntry(author, fancyName, randomNum);
             const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
@@ -4450,8 +4647,6 @@ body.host-panel-dragging * {
 
             if (effective >= cap) {
                 msg += `[b]Max winners reached[/b] (${cap}).`;
-            } else if (progress === 0 && totalContrib > 0) {
-                msg += `Next threshold: [b]reached[/b] — waiting for recompute.`;
             } else {
                 msg += `[b]${fmtBON(remaining)} BON[/b] needed for next winner (${fmtBON(progress)}/${fmtBON(threshold)}). Max: [b]${cap}[/b].`;
             }
@@ -4469,13 +4664,13 @@ body.host-panel-dragging * {
             const sub = (args.shift() || "").toLowerCase();
             const target = (args.shift() || "");
 
-            const key = target.toLowerCase(); // key we store/match on
+            const key = normalizeUserKey(target); // canonical key we store/match on
 
             switch (sub) {
                 case "add": {
                     if (!key) { reply("[color=red]Usage:[/color] !naughty add username"); return; }
 
-                    if (key === giveawayData.host.toLowerCase()) {
+                    if (key === normalizeUserKey(giveawayData.host)) {
                         reply(
                             `[color=red][b]The host can't be added to the naughty list![/b][/color]`
                         );
@@ -4493,7 +4688,7 @@ body.host-panel-dragging * {
                         removedUser = target;
                     } else {
                         for (const user of numberEntries.keys()) {
-                            if (user.toLowerCase() === key) {
+                            if (normalizeUserKey(user) === key) {
                                 removedUser = user;
                                 break;
                             }
@@ -4536,14 +4731,14 @@ body.host-panel-dragging * {
         end(ctx) {
             const { author, fancyName, args, giveawayData, reply } = ctx;
             // If host, always allow
-            if (author === giveawayData.host) {
+            if (normalizeUserKey(author) === normalizeUserKey(giveawayData.host)) {
                 logEvent("Giveaway stop requested", `Requested by host ${sanitizeNick(author)} via !end.`);
                 endGiveaway();
                 return;
             }
             // If admin (not host), must specify whose to end
             if (isAdmin(fancyName)) {
-                if (!args.length || args[0] !== giveawayData.host) {
+                if (!args.length || normalizeUserKey(args[0]) !== normalizeUserKey(giveawayData.host)) {
                     reply(`[color=red]Admins must specify whose giveaway to end. Example: !end ${sanitizeNick(giveawayData.host)}[/color]`);
                     return;
                 }
@@ -4554,7 +4749,7 @@ body.host-panel-dragging * {
     });
 
     function isHostOrAdmin(author, fancyName, host) {
-        return author === host || isAdmin(fancyName);
+        return normalizeUserKey(author) === normalizeUserKey(host) || isAdmin(fancyName);
     }
 
     function showHelp(ctx) {
@@ -4602,7 +4797,7 @@ body.host-panel-dragging * {
 
     async function hostAddBon(ctx) {
         const { author, args, giveawayData, reply } = ctx;
-        if (author !== giveawayData.host) return;
+        if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
 
         const raw = args[0];
         const clean = String(raw ?? "").replace(/[^0-9]/g, "");
@@ -4724,7 +4919,7 @@ body.host-panel-dragging * {
     // ───────────────────────────────────────────────────────────
     // SECTION 11: Winner Selection and Payouts
     // ───────────────────────────────────────────────────────────
-    function endGiveaway() {
+    async function endGiveaway() {
         // ---- re-entry guard (prevents double gifting) ----
         if (!giveawayData) return;
         if (giveawayData.__ending) return;
@@ -4784,6 +4979,11 @@ body.host-panel-dragging * {
                 if (currentStatement) { currentStatement.verification = "nothing to verify"; persistCurrentStatement(); }
             } catch (e) { /* statements are best-effort */ }
         } else {
+            // Draw only after entries are closed and payout has been committed.
+            // This keeps the result out of localStorage/DevTools during the giveaway.
+            giveawayData.winningNumber = getRandomInt(giveawayData.startNum, giveawayData.endNum);
+            logEvent("Winning number drawn", `Winning number=${giveawayData.winningNumber}`);
+
             // 1) sponsors shout-out
             if (giveawayData.sponsors.length > 0) {
                 const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
@@ -4930,35 +5130,44 @@ body.host-panel-dragging * {
                 `Entrants=${fmtBON(entrantsTotal)} | Winners=${fmtBON(N)} | Host-funded=${fmtBON(hostFundedTotal)} BON | Sponsored=${fmtBON(sponsoredTotal)} BON | Total=${fmtBON(potTotal)} BON${donationLog} | Winners list=${winnerNames}${payoutPerWinner ? ` | Payouts=${payoutPerWinner}` : ""}`
             );
 
-            // 6) send the gifts
+            // 6) Send gifts sequentially. Capture a chat cursor immediately before
+            // payout so verification cannot accidentally match an older identical gift.
             const selfKeys = resolveSelfKeys(giveawayData.host);
             const expectedGifts = [];
+            const payoutNotBeforeTs = Date.now();
+            const payoutAfterMessageId = await getLatestChatMessageId();
 
-            winners.forEach((w, i) => {
+            for (let i = 0; i < winners.length; i++) {
+                const w = winners[i];
                 const amt = net[i];
                 if (!amt || amt <= 0) {
                     // Possible only if a tiny prize was entirely consumed by the donation floor;
                     // computeDonationSplit guarantees net >= 1 whenever gross >= 1, so this is defensive.
-                    return;
+                    continue;
                 }
                 if (selfKeys.size && selfKeys.has(normalizeUserKey(w.author))) {
                     // Host winner — cannot gift to self
                     markWinnerGiftSelf(w.author);
-                    return;
+                    continue;
                 }
 
                 const msg = (winners.length === 1)
                     ? `🎉 You won! Enjoy your ${amt} BON!`
                     : `🎉 Congratulations on placing ${ordinal(i + 1)}!`;
-                giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
+
+                await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
                 expectedGifts.push({ recipient: w.author, amount: amt, purpose: GIFT_PURPOSE.WINNER });
-            });
+
+                if (PAYOUT_GIFT_GAP_MS > 0) {
+                    await new Promise(resolve => setTimeout(resolve, PAYOUT_GIFT_GAP_MS));
+                }
+            }
 
             // 6a) BONanza fund donation: one aggregated gift after the winners.
             //     Skipped (retained) when the host *is* the fund manager, since the
             //     BON is already in their balance and the site blocks self-gifts.
             if (donationActive && !donationRetained) {
-                giftBon(
+                await giftBon(
                     BONANZA.FUND_MANAGER,
                     split.total,
                     `🧡 ${BONANZA.FUND_NAME} donation (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host})`,
@@ -4978,7 +5187,10 @@ body.host-panel-dragging * {
             } catch (e) { /* statements are best-effort */ }
 
             // 6b) Verify that the gifts actually show up in chat via the API
-            verifyWinnerGifts(expectedGifts, giveawayData.host);
+            verifyWinnerGifts(expectedGifts, giveawayData.host, {
+                afterId: payoutAfterMessageId,
+                notBeforeTs: payoutNotBeforeTs
+            });
         }
 
         // 7) clean up timers & state
@@ -5231,6 +5443,25 @@ body.host-panel-dragging * {
         }
     }
 
+    async function getLatestChatMessageId() {
+        try {
+            const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+            const res = await fetchWithTimeout(url, { credentials: "include" }, 5000);
+            if (!res || !res.ok) return null;
+            const payload = await res.json();
+            const messages = Array.isArray(payload && payload.data) ? payload.data : [];
+            let maxId = null;
+            for (const m of messages) {
+                const id = Math.floor(Number(m && m.id));
+                if (!Number.isFinite(id)) continue;
+                if (maxId === null || id > maxId) maxId = id;
+            }
+            return maxId;
+        } catch {
+            return null;
+        }
+    }
+
     /**
      * After gifts are sent, poll the chat API a few times to confirm that the
      * expected host→recipient gift messages appeared. If we can't confirm them,
@@ -5242,9 +5473,16 @@ body.host-panel-dragging * {
      *
      * @param {Array<{recipient:string, amount:number, purpose:string}>} expectedGifts
      * @param {string} hostName
+     * @param {{afterId?:number|null, notBeforeTs?:number|null}} verificationContext
      */
-    function verifyWinnerGifts(expectedGifts, hostName) {
+    function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
         try {
+            const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
+                ? Math.floor(Number(verificationContext.afterId))
+                : null;
+            const notBeforeTs = Number.isFinite(Number(verificationContext && verificationContext.notBeforeTs))
+                ? Number(verificationContext.notBeforeTs)
+                : null;
             const selfKeys = resolveSelfKeys(hostName);
             if (!selfKeys.size) {
                 // If UI is showing pending spinners, don’t leave them stuck
@@ -5324,6 +5562,7 @@ body.host-panel-dragging * {
 
                 try {
                     const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+                    if (afterId !== null) url.searchParams.set("after_id", String(afterId));
                     const res = await fetchWithTimeout(url, { credentials: "include" }, fetchTimeoutMs);
 
                     if (res && res.ok) {
@@ -5331,6 +5570,12 @@ body.host-panel-dragging * {
                         const messages = Array.isArray(payload.data) ? payload.data : [];
 
                         for (const m of messages) {
+                            const numericMsgId = Math.floor(Number(m && m.id));
+                            if (afterId !== null && Number.isFinite(numericMsgId) && numericMsgId <= afterId) continue;
+
+                            const createdAt = Date.parse(m && m.created_at);
+                            if (notBeforeTs !== null && Number.isFinite(createdAt) && createdAt < (notBeforeTs - 5000)) continue;
+
                             const msgId = m && m.id != null ? String(m.id) : null;
                             if (msgId && consumedMessageIds.has(msgId)) continue;
 
@@ -5386,6 +5631,37 @@ body.host-panel-dragging * {
         return elapsed >= 0 && elapsed < ENTRY_IGNORE_WINDOW_MS;
     }
 
+    /**
+     * Uniformly pick one FREE number without materialising the entire numeric range.
+     * Complexity depends on the number of existing entries, not on end-start.
+     */
+    function pickRandomFreeNumber(data) {
+        if (!data) return null;
+        const start = Math.ceil(Number(data.startNum));
+        const end = Math.floor(Number(data.endNum));
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+
+        const taken = Array.from(new Set(numberEntries.values()))
+            .map(Number)
+            .filter(n => Number.isInteger(n) && n >= start && n <= end)
+            .sort((a, b) => a - b);
+
+        const totalSlots = end - start + 1;
+        const freeCount = totalSlots - taken.length;
+        if (freeCount <= 0) return null;
+
+        // Pick a zero-based rank among free numbers, then map that rank back into
+        // the full interval by skipping occupied values. This is exactly uniform.
+        const freeRank = getRandomInt(0, freeCount - 1);
+        let candidate = start + freeRank;
+        for (const occupied of taken) {
+            if (occupied <= candidate) candidate++;
+            else break;
+        }
+
+        return candidate <= end ? candidate : null;
+    }
+
     // Return a small random sample of free numbers in the current range
     // (used by both !free and the "number already taken" messages)
     function getFreeNumberSample(giveawayData, sampleSize = 5) {
@@ -5405,7 +5681,7 @@ body.host-panel-dragging * {
 
             while (sample.size < sampleSize && attempts < maxAttempts) {
                 attempts++;
-                const candidate = Math.floor(Math.random() * totalSlots) + startNum;
+                const candidate = getRandomInt(startNum, endNum);
                 if (!taken.has(candidate)) sample.add(candidate);
             }
 
@@ -5889,14 +6165,15 @@ body.host-panel-dragging * {
      * fails the host gets a warning and can resend manually. Better to under-pay
      * and warn than to over-pay silently.
      */
-    function giftBon(recipient, amount, messageText, purpose = GIFT_PURPOSE.WINNER) {
+    async function giftBon(recipient, amount, messageText, purpose = GIFT_PURPOSE.WINNER) {
         const safeRecipient = (recipient || "").trim();
-        const safeAmount = Math.max(1, Math.floor(Number(amount) || 0));
+        const numericAmount = Math.floor(Number(amount));
         const safeMessage = (messageText || "").trim();
 
-        if (!safeRecipient || !safeAmount) {
-            return; // nothing to do
+        if (!safeRecipient || !Number.isFinite(numericAmount) || numericAmount <= 0) {
+            return { attempted: false, reason: "invalid" };
         }
+        const safeAmount = numericAmount;
 
         // ── Idempotency check ─────────────────────────────────────────────
         const giveawayId = getActiveGiveawayId();
@@ -5905,17 +6182,17 @@ body.host-panel-dragging * {
                 "Gift skipped (duplicate)",
                 `Already attempted: ${sanitizeNick(safeRecipient)} for ${fmtBON(safeAmount)} BON (${purpose}) in this giveaway.`
             );
-            return;
+            return { attempted: false, reason: "duplicate" };
         }
         // Record BEFORE sending — if the send half-completes we still want
         // future calls (this tab, another tab, post-restore) to skip.
         recordGiftAttempt(giveawayId, safeRecipient, safeAmount, purpose);
 
-        function fallbackToChat() {
+        async function fallbackToChat() {
             const cmd = safeMessage
                 ? `/gift ${safeRecipient} ${safeAmount} ${safeMessage}`
                 : `/gift ${safeRecipient} ${safeAmount}`;
-            sendMessage(cmd);
+            await sendMessage(cmd);
         }
 
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
@@ -5946,8 +6223,8 @@ body.host-panel-dragging * {
         // If we can't resolve the HTTP endpoint or token, fall back immediately.
         // This is safe: we haven't sent anything yet, so /gift is the first attempt.
         if (!csrfToken || !giftUrl) {
-            fallbackToChat();
-            return;
+            await fallbackToChat();
+            return { attempted: true, transport: "chat" };
         }
 
         const formData = new FormData();
@@ -5968,42 +6245,40 @@ body.host-panel-dragging * {
         const SAFE_FALLBACK_STATUSES = new Set([400, 401, 403, 404, 422]);
 
         try {
-            fetch(giftUrl, {
+            const resp = await fetchWithTimeout(giftUrl, {
                 method: "POST",
                 credentials: "same-origin",
                 body: formData
-            }).then(function (resp) {
-                if (resp && SAFE_FALLBACK_STATUSES.has(resp.status)) {
-                    logEvent(
-                        "Gift HTTP rejected, falling back",
-                        `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp.status}`
-                    );
-                    fallbackToChat();
-                } else if (!resp || resp.status >= 400) {
-                    // Ambiguous failure — server may or may not have processed it.
-                    // Do NOT fall back. verifyWinnerGifts will confirm via chat API
-                    // and warn the host if the gift never lands.
-                    logEvent(
-                        "Gift HTTP ambiguous (no fallback)",
-                        `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp ? resp.status : "no-response"} | will verify via chat poll`
-                    );
-                }
-            }).catch(function (err) {
-                // Network error / abort — request may have reached the server.
-                // Do NOT fall back. Log so the host can investigate if verifier flags it.
+            }, 10_000);
+
+            if (resp && SAFE_FALLBACK_STATUSES.has(resp.status)) {
                 logEvent(
-                    "Gift HTTP network error (no fallback)",
-                    `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | ${err && err.message ? err.message : "unknown error"} | will verify via chat poll`
+                    "Gift HTTP rejected, falling back",
+                    `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp.status}`
                 );
-            });
+                await fallbackToChat();
+                return { attempted: true, transport: "chat-fallback", httpStatus: resp.status };
+            }
+
+            if (!resp || resp.status >= 400) {
+                // Ambiguous failure — server may or may not have processed it.
+                // Do NOT fall back. verifyWinnerGifts will confirm via chat API.
+                logEvent(
+                    "Gift HTTP ambiguous (no fallback)",
+                    `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp ? resp.status : "no-response"} | will verify via chat poll`
+                );
+                return { attempted: true, transport: "http-ambiguous", httpStatus: resp ? resp.status : null };
+            }
+
+            return { attempted: true, transport: "http", httpStatus: resp.status };
         } catch (e) {
-            // Synchronous throw before the request was dispatched: nothing was sent,
-            // so /gift fallback is safe (and matches the original behavior).
+            // A thrown fetch/network error is ambiguous: the server may have received
+            // the request. Do NOT replay it via /gift; let verification decide.
             logEvent(
-                "Gift HTTP threw synchronously, falling back",
-                `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | ${e && e.message ? e.message : "unknown"}`
+                "Gift HTTP network error (no fallback)",
+                `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | ${e && e.message ? e.message : "unknown error"} | will verify via chat poll`
             );
-            fallbackToChat();
+            return { attempted: true, transport: "http-ambiguous", error: e && e.message ? e.message : "unknown" };
         }
     }
 
@@ -6904,7 +7179,7 @@ body.host-panel-dragging * {
             prev = current;
         }
 
-        if (!bestPick || bestLen <= 0) return null;
+        if (bestPick === null || bestLen <= 0) return null;
 
         // Clamp just in case
         if (bestPick < start) bestPick = start;
@@ -6987,7 +7262,7 @@ body.host-panel-dragging * {
             const text = getChatMsgText(msgNode);
 
             if (
-                author === giveawayData.host &&
+                normalizeUserKey(author) === normalizeUserKey(giveawayData.host) &&
                 text.includes("Gift the host to add to the pot")
             ) {
                 return false; // Recent visible reminder by host exists
