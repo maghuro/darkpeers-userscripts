@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.9
+// @version      1.2.10
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -50,6 +50,8 @@
 //     sync counts only gifts created before closure and never emits a racing digest.
 //     It also normalizes fractional sponsor gifts to whole BON and narrows the
 //     pre-draw crash window by keeping the active snapshot until sponsor sync ends.
+//   - v1.2.10 recovers recently-expired snapshots instead of silently abandoning
+//     them, and uses the scheduled endTs as the cutoff when a timer fires late.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -404,6 +406,7 @@
     const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const TAB_LOCK_HEARTBEAT_MS = 5000;   // update lock every 5s
     const TAB_LOCK_STALE_MS = 15000;      // lock is stale if no heartbeat for 15s
+    const EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS = 60 * 60 * 1000; // 1h after scheduled end
     let tabLockHeartbeatTimer = null;
 
     function readStoredBooleanSetting(key, fallback = false, persistFallback = false) {
@@ -2527,7 +2530,7 @@ body.host-panel-dragging * {
         try { localStorage.removeItem(LS_ACTIVE_GIVEAWAY); } catch {}
     }
 
-    /** Check for a saved giveaway that hasn't expired yet. Returns the parsed snapshot or null. */
+    /** Load a saved giveaway. Recently-expired snapshots are restored and settled. */
     function loadGiveawaySnapshot() {
         try {
             const raw = localStorage.getItem(LS_ACTIVE_GIVEAWAY);
@@ -2535,11 +2538,20 @@ body.host-panel-dragging * {
             const snap = JSON.parse(raw);
             if (!snap || !snap.giveawayData) return null;
 
-            // Expired?
-            if (snap.giveawayData.endTs <= Date.now()) {
+            const endTs = Number(snap.giveawayData.endTs);
+            if (!Number.isFinite(endTs) || endTs <= 0) {
                 clearGiveawaySnapshot();
                 return null;
             }
+
+            const overdueMs = Date.now() - endTs;
+            if (overdueMs > EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS) {
+                console.warn("[BON Giveaway] Discarding stale expired snapshot; automatic settlement grace exceeded.");
+                clearGiveawaySnapshot();
+                return null;
+            }
+
+            snap.__expiredAtLoad = overdueMs >= 0;
             return snap;
         } catch {
             clearGiveawaySnapshot();
@@ -2571,14 +2583,10 @@ body.host-panel-dragging * {
             if (donationPercentInput) donationPercentInput.value = String(giveawayData.donationPercent);
             updateDonationHint();
 
-            // Recalculate timeLeft from the stored endTs
+            // Recalculate timeLeft from the stored endTs. If it already expired
+            // within the recovery grace, rebuild state first and settle immediately.
             giveawayData.timeLeft = Math.max(Math.ceil((giveawayData.endTs - Date.now()) / 1000), 0);
-            if (giveawayData.timeLeft <= 0) {
-                giveawayData = null;
-                clearGiveawaySnapshot();
-                releaseTabLock();
-                return false;
-            }
+            const expiredOnRestore = giveawayData.timeLeft <= 0 || snap.__expiredAtLoad === true;
 
             // 2) Restore entries
             numberEntries.clear();
@@ -2681,9 +2689,9 @@ body.host-panel-dragging * {
             }
             cacheChatContext();
 
-            // 8) Re-start observer
+            // 8) Re-start observer only while entries are still open.
             if (observer) { observer.disconnect(); observer = null; }
-            addObserver(giveawayData);
+            if (!expiredOnRestore) addObserver(giveawayData);
 
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
@@ -2698,26 +2706,39 @@ body.host-panel-dragging * {
             });
             window.__activeTracker = tracker;
 
+            let expiredLegacyBootstrap = Promise.resolve();
             if (savedTracker) {
-                // v1.2.1+ snapshot: continue exactly after the last processed API message.
-                tracker.poll().catch(console.error);
+                // Current snapshots have a persisted cursor. For an expired restore,
+                // endGiveaway() performs the one authoritative final poll itself.
+                if (!expiredOnRestore) tracker.poll().catch(console.error);
             } else {
-                // Legacy snapshot: the old fork did not persist its API cursor. Replaying
-                // the current chat window could re-add already-counted BON, so establish a
-                // fresh cursor without applying historical gifts. This may conservatively
-                // miss an unpolled gift during an in-place upgrade, but never duplicates BON.
-                tracker.bootstrapCursor().catch(console.error);
+                // Legacy snapshots had no cursor. Bootstrap without replaying old
+                // gifts; this favors under-count + manual verification over duplicates.
+                const p = tracker.bootstrapCursor().catch(console.error);
+                if (expiredOnRestore) expiredLegacyBootstrap = p;
             }
-            sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
+            if (!expiredOnRestore) {
+                sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
+            }
 
-            // 10) Re-start countdown timer
-            giveawayData.countdownTimerID = countdownTimer(countdownHeader, giveawayData);
+            // 10) Re-start countdown timer only for a still-active giveaway.
+            if (!expiredOnRestore) {
+                giveawayData.countdownTimerID = countdownTimer(countdownHeader, giveawayData);
+            } else {
+                giveawayData.countdownTimerID = null;
+                countdownHeader.hidden = false;
+                countdownHeader.textContent = "00:00";
+            }
 
-            // 11) Re-start pot updater
-            giveawayData.potUpdater = setInterval(() => {
-                coinHeader.innerHTML = `${fmtBON(cleanPotString(giveawayData.amount))} BON`;
-                coinHeader.prepend(goldCoins.cloneNode(false));
-            }, 5000);
+            // 11) Re-start pot updater only while active.
+            if (!expiredOnRestore) {
+                giveawayData.potUpdater = setInterval(() => {
+                    coinHeader.innerHTML = `${fmtBON(cleanPotString(giveawayData.amount))} BON`;
+                    coinHeader.prepend(goldCoins.cloneNode(false));
+                }, 5000);
+            } else {
+                giveawayData.potUpdater = null;
+            }
 
             // 12) Set up beforeunload guard
             window.onbeforeunload = function (e) {
@@ -2739,8 +2760,19 @@ body.host-panel-dragging * {
                 endGiveaway();
             };
 
-            logEvent("Giveaway restored", `Recovered ${numberEntries.size} entries after page reload. Time left: ${parseTime(giveawayData.timeLeft * 1000)}`);
+            logEvent(
+                expiredOnRestore ? "Expired giveaway restored for settlement" : "Giveaway restored",
+                `Recovered ${numberEntries.size} entries after page reload. Time left: ${parseTime(giveawayData.timeLeft * 1000) || "expired"}`
+            );
             updateHostPanelUI();
+
+            if (expiredOnRestore) {
+                Promise.resolve(expiredLegacyBootstrap).finally(() => {
+                    setTimeout(() => {
+                        if (giveawayData && !giveawayData.__ending) endGiveaway();
+                    }, 0);
+                });
+            }
 
             return true;
         } catch (e) {
@@ -5019,7 +5051,11 @@ body.host-panel-dragging * {
         if (!giveawayData) return;
         if (giveawayData.__ending) return;
         giveawayData.__ending = true;
-        const settlementCutoffTs = Date.now();
+        const nowAtSettlement = Date.now();
+        const scheduledEndTs = Number(giveawayData.endTs);
+        const settlementCutoffTs = Number.isFinite(scheduledEndTs)
+            ? Math.min(nowAtSettlement, scheduledEndTs)
+            : nowAtSettlement;
 
         // ---- cross-tab guard ----
         // If another tab currently owns the giveaway (fresh heartbeat in the last
