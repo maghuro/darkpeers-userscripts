@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.3
+// @version      1.2.4
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -37,6 +37,7 @@
 //   - v1.2.3 contributes the selected share directly to DarkPeers /bon-pool,
 //     verifies it before announcing success, and introduces authoritative URL
 //     markers so TLCC can prefer this fork over legacy heuristic classifiers.
+//   - v1.2.4 removes the obsolete fund-manager debug hook after the direct-pool migration.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -8738,10 +8739,11 @@ body.host-panel-dragging * {
     if (DEBUG_SETTINGS && DEBUG_SETTINGS.expose_modules === true) {
         window.BON_GIVEAWAY = Object.freeze({
             BONANZA,
-            Fund: Object.freeze({
+            Pool: Object.freeze({
                 computeDonationSplit,
                 normalizeDonationPercent,
-                isFundManagerName,
+                fetchBonPoolPage,
+                contributeBonPool,
             }),
             Chat: Object.freeze({
                 parseMessage,
