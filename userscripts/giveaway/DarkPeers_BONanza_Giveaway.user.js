@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.14
+// @version      1.2.15
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -59,8 +59,9 @@
 //   - v1.2.13 makes bridge markers machine-only: the semantic emoji stays plain,
 //     marker anchors self-label with their URL for clean IRC conversion, and giveaway
 //     starts distinguish standard, BON Pool and Rigged Taxes structurally.
-//   - v1.2.14 gives the built-in "/gift HOST AMOUNT MESSAGE" contribution hint its
-//     own structural marker so TLCC cannot mistake it for a sponsor event.
+//   - v1.2.14 introduced a dedicated gift marker.
+//   - v1.2.15 moves that marker to the actual standalone "/gift" help response;
+//     giveaway announcement/reminder continuations remain part of GIVEAWAY.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3050,7 +3051,7 @@ body.host-panel-dragging * {
                 `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
                 `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]` +
                 donationIntroLine + `\n` +
-                `${bridgeMarker(BRIDGE_MARKERS.GIFT, "✨")}[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨`;
+                `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨`;
 
             if (riggedMode) {
                 introMessage += `\n[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
@@ -4439,7 +4440,7 @@ body.host-panel-dragging * {
 
         gift({ giveawayData, reply }) {
             const giftHost = getGiftSyntaxHostName();
-            reply(`To send a gift type: /gift ${giftHost} amount message`);
+            reply(`${bridgeMarker(BRIDGE_MARKERS.GIFT, "✨")} To send a gift type: /gift ${giftHost} amount message`);
         },
 
         bon({ giveawayData , reply}) {
@@ -6337,7 +6338,7 @@ body.host-panel-dragging * {
               `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
               `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
-              `${bridgeMarker(BRIDGE_MARKERS.GIFT, "✨")}[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨` +
+              `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}](/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE)[/color][/color][/b]✨` +
               silentLine +
               rigLine;
         sendMessage(msg);
