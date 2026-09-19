@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.16
+// @version      1.2.17
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -65,6 +65,8 @@
 //   - v1.2.16 enriches sponsor digests with matched gift-history messages, keeps
 //     multi-gift/multi-sponsor notes attached to the correct donor, aligns digest
 //     accounting to whole BON, improves punctuation, and marks host pot top-ups.
+//   - v1.2.17 bounds sponsor digest detail so gift notes and multi-sponsor bursts
+//     stay in one logical chat/IRC message instead of provoking bridge [1/2] splits.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -151,7 +153,10 @@
         flush_min_total: 250,
         max_pending_events: 50,
         show_top_n: Infinity,
-        show_min_per_user: 0
+        show_min_per_user: 0,
+        max_visible_chars: 300,
+        max_note_chars: 72,
+        max_notes_per_sponsor: 2
     };
 
     const GENERAL_SETTINGS = {
@@ -3786,6 +3791,20 @@ body.host-panel-dragging * {
             .replace(/\]/g, "］");
     }
 
+    function truncateSponsorGiftMessage(value, maxChars = SPONSOR_ANNOUNCE.max_note_chars) {
+        const clean = sanitizeSponsorGiftMessage(value);
+        const limit = Math.max(8, Math.floor(Number(maxChars) || 0));
+        if (!clean || clean.length <= limit) return clean;
+        return clean.slice(0, Math.max(1, limit - 1)).trimEnd() + "…";
+    }
+
+    function visibleChatLength(value) {
+        return String(value || "")
+            .replace(/\[[^\]]+\]/g, "")
+            .replace(/\u200B/g, "")
+            .length;
+    }
+
     class SponsorTracker {
         /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean}} opts */
         constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false }) {
@@ -4133,49 +4152,76 @@ body.host-panel-dragging * {
             const topN = Math.max(0, Number(SPONSOR_ANNOUNCE.show_top_n) || 0);
             const minPerUser = Math.max(0, Number(SPONSOR_ANNOUNCE.show_min_per_user) || 0);
 
-            const shown = [];
-            let shownSum = 0;
-
-            for (const e of entries) {
-                if (shown.length >= topN) break;
-
-                // In multi-sponsor bursts, omit tiny sponsors from the name list (still included in totals)
-                if (sponsorCount > 1 && e.amt < minPerUser) continue;
-
-                shown.push(e);
-                shownSum += e.amt;
-            }
-
-            const parts = shown.map(e => {
-                let part =
-                    `[color=#1DDC5D][b]${e.name}[/b][/color] ` +
-                    `([color=#DC3D1D][b]${fmtBON(e.amt)}[/b][/color])`;
-
-                if (e.messages.length === 1) {
-                    part += ` with the message [i]"${e.messages[0]}"[/i]`;
-                } else if (e.messages.length > 1) {
-                    part += ` with the messages ` +
-                        e.messages.map(note => `[i]"${note}"[/i]`).join(", ");
-                }
-                return part;
-            });
-
-            const othersCount = Math.max(0, sponsorCount - shown.length);
-
-            let msg =
+            const nextWinnerLine = getSponsorshipNextWinnerLine(this.data);
+            const prefix =
                 `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
                 `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
+            const suffix =
+                `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].` +
+                (nextWinnerLine ? ` ${nextWinnerLine}` : "");
 
-            if (parts.length) {
-                msg += parts.join(", ");
+            const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
+            const maxNotes = Math.max(0, Math.floor(Number(SPONSOR_ANNOUNCE.max_notes_per_sponsor) || 0));
+            const shownParts = [];
+            let shownCount = 0;
+
+            for (const e of entries) {
+                if (shownCount >= topN) break;
+                if (sponsorCount > 1 && e.amt < minPerUser) continue;
+
+                const basePart =
+                    `[color=#1DDC5D][b]${sanitizeNick(e.name)}[/b][/color] ` +
+                    `([color=#DC3D1D][b]${fmtBON(e.amt)}[/b][/color])`;
+
+                const notes = e.messages
+                    .slice(0, maxNotes)
+                    .map(note => truncateSponsorGiftMessage(note))
+                    .filter(Boolean);
+
+                let detailedPart = basePart;
+                if (notes.length === 1) {
+                    detailedPart += ` with the message [i]"${notes[0]}"[/i]`;
+                } else if (notes.length > 1) {
+                    detailedPart += ` with the messages ` +
+                        notes.map(note => `[i]"${note}"[/i]`).join(", ");
+                    if (e.messages.length > notes.length) {
+                        detailedPart += ` [i](+${e.messages.length - notes.length} more)[/i]`;
+                    }
+                }
+
+                const separator = shownParts.length ? ", " : "";
+                const remainingAfterThis = sponsorCount - (shownCount + 1);
+                const candidateTail = remainingAfterThis > 0 ? `, [i]+${remainingAfterThis} more[/i]. ` : ". ";
+                const candidateDetailed =
+                    prefix + shownParts.join(", ") + separator + detailedPart + candidateTail + suffix;
+
+                if (visibleChatLength(candidateDetailed) <= maxVisible) {
+                    shownParts.push(detailedPart);
+                    shownCount += 1;
+                    continue;
+                }
+
+                const candidateBase =
+                    prefix + shownParts.join(", ") + separator + basePart + candidateTail + suffix;
+                if (visibleChatLength(candidateBase) <= maxVisible) {
+                    shownParts.push(basePart);
+                    shownCount += 1;
+                    continue;
+                }
+
+                break;
+            }
+
+            const othersCount = Math.max(0, sponsorCount - shownCount);
+            let msg = prefix;
+
+            if (shownParts.length) {
+                msg += shownParts.join(", ");
                 if (othersCount > 0) msg += `, [i]+${othersCount} more[/i]`;
                 msg += ". ";
             }
 
-            msg += `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].`;
-
-            const nextWinnerLine = getSponsorshipNextWinnerLine(this.data);
-            if (nextWinnerLine) msg += ` ${nextWinnerLine}`;
+            msg += suffix;
 
             if (announce) {
                 sendMessage(msg);
