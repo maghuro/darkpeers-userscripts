@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.6
+// @version      1.3.7
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -81,6 +81,9 @@
 //   - v1.3.6 makes the persistent Gift History the canonical sponsor-note source and
 //     uses notifications only per-event as fallback. UNIT3D can suppress/queue BON
 //     notifications, while every successful gift is stored with its message first.
+//   - v1.3.7 fixes real DarkPeers Gift History parsing: BON cells include a "Points"
+//     suffix, "No note" is treated as no message, and naive history timestamps are
+//     matched safely using both browser-local and UTC interpretations.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3774,14 +3777,19 @@ body.host-panel-dragging * {
         const raw = String(value || "").trim();
         if (!raw) return NaN;
 
-        // Eloquent/Blade commonly renders Carbon as "YYYY-MM-DD HH:MM:SS" with
-        // no timezone suffix. UNIT3D stores timestamps in UTC, while Date.parse()
-        // otherwise treats this form as browser-local time (e.g. +01:00), which
-        // breaks chat↔gift correlation by an hour.
+        // DarkPeers Gift History currently renders Carbon timestamps without a
+        // timezone suffix. Treat that representation as browser-local first;
+        // matching also tries UTC as a fallback for other UNIT3D configurations.
         const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
-        if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}Z`);
+        if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}`);
 
         return Date.parse(raw);
+    }
+
+    function parseUnit3dTimestampUtcFallback(value) {
+        const raw = String(value || "").trim();
+        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
+        return dbStyle ? Date.parse(`${dbStyle[1]}T${dbStyle[2]}Z`) : NaN;
     }
 
     // Parse the logged-in user's gift-history table. UNIT3D stores the gift
@@ -3797,16 +3805,26 @@ body.host-panel-dragging * {
                 const amountText = String(cells[2].textContent || "")
                     .replace(/[\s\u00A0]+/g, "")
                     .replace(/,/g, "");
-                const amount = Number(amountText);
+                const amountMatch = amountText.match(/[0-9]+(?:\.[0-9]+)?/);
+                const amount = amountMatch ? Number(amountMatch[0]) : NaN;
+
                 const timeEl = cells[4].querySelector("time");
-                const createdAtTs = parseUnit3dTimestamp(timeEl?.getAttribute("datetime") || "");
+                const rawTimestamp = timeEl?.getAttribute("datetime") || "";
+                const createdAtTs = parseUnit3dTimestamp(rawTimestamp);
+                const createdAtAltTs = parseUnit3dTimestampUtcFallback(rawTimestamp);
+
+                const rawMessage = String(cells[3].textContent || "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                const message = /^no note$/i.test(rawMessage) ? "" : rawMessage;
 
                 return {
                     sender: giftHistoryUsernameFromCell(cells[0]),
                     recipient: giftHistoryUsernameFromCell(cells[1]),
                     amount,
-                    message: String(cells[3].textContent || "").replace(/\s+/g, " ").trim(),
-                    createdAtTs
+                    message,
+                    createdAtTs,
+                    createdAtAltTs
                 };
             })
             .filter(item =>
@@ -3831,7 +3849,9 @@ body.host-panel-dragging * {
                 const title = String(cells[0].textContent || "").replace(/\s+/g, " ").trim();
                 const body = String(cells[1].textContent || "").replace(/\s+/g, " ").trim();
                 const timeEl = cells[2].querySelector("time");
-                const createdAtTs = parseUnit3dTimestamp(timeEl?.getAttribute("datetime") || "");
+                const rawTimestamp = timeEl?.getAttribute("datetime") || "";
+                const createdAtTs = parseUnit3dTimestamp(rawTimestamp);
+                const createdAtAltTs = parseUnit3dTimestampUtcFallback(rawTimestamp);
 
                 const titleMatch = title.match(/^(.+?)\s+Has Gifted You\s+([0-9]+(?:\.[0-9]+)?)\s+BON$/i);
                 const bodyMatch = body.match(/^(.+?)\s+has gifted you\s+([0-9]+(?:\.[0-9]+)?)\s+BON\s+with the following note:\s*(.*)$/i);
@@ -3851,7 +3871,8 @@ body.host-panel-dragging * {
                     recipient: host,
                     amount: bodyAmount,
                     message,
-                    createdAtTs
+                    createdAtTs,
+                    createdAtAltTs
                 };
             })
             .filter(item =>
@@ -4119,9 +4140,15 @@ body.host-panel-dragging * {
                     if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
                     if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
                     if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
-                    if (!Number.isFinite(item.createdAtTs)) continue;
+                    const timestampCandidates = [
+                        Number(item.createdAtTs),
+                        Number(item.createdAtAltTs)
+                    ].filter(Number.isFinite);
+                    if (!timestampCandidates.length) continue;
 
-                    const delta = Math.abs(item.createdAtTs - event.createdAtTs);
+                    const delta = Math.min(
+                        ...timestampCandidates.map(ts => Math.abs(ts - event.createdAtTs))
+                    );
                     if (delta > MATCH_WINDOW_MS || delta >= bestDelta) continue;
                     bestDelta = delta;
                     bestIndex = i;
@@ -9448,6 +9475,7 @@ body.host-panel-dragging * {
                 parseGiftHistoryPage,
                 parseGiftNotificationsPage,
                 parseUnit3dTimestamp,
+                parseUnit3dTimestampUtcFallback,
             }),
             Stats: Object.freeze({
                 loadGiveawayStats,
