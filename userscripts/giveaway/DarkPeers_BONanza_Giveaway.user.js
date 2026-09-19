@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.2
+// @version      1.3.3
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -72,6 +72,9 @@
 //     now the stable 1.3 baseline. Monetary BON values use the official ฿ symbol.
 //   - v1.3.2 prefixes the self-duplicate-entry rejection with 🚫 so bridge clients
 //     and TLCC can classify it unambiguously like the other rejected entry states.
+//   - v1.3.3 fixes UNIT3D gift-history timestamp matching so sponsor notes survive
+//     timezone differences, and makes machine bridge anchors empty/invisible on the
+//     DarkPeers website for every viewer, not only hosts running the userscript.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -293,10 +296,12 @@
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
         const markerUrl = `${BRIDGE_MARKER_PREFIX}${safeKind}`;
 
-        // Keep the semantic emoji outside the link. The anchor labels itself with
-        // its URL so HTML→IRC converters do not need to append " (URL)" after an
-        // unrelated emoji. Website/TLCC CSS hides the machine-only marker anchor.
-        return `${visible} [url=${markerUrl}]${markerUrl}[/url]`;
+        // Keep the semantic emoji visible and the structural anchor empty.
+        // UNIT3D renders an empty <a>, so the marker occupies no space and exposes
+        // no technical URL to ordinary website users. Bridge clients may preserve
+        // the href for authoritative TLCC classification; emoji heuristics remain
+        // the compatibility fallback if an HTML→IRC converter drops empty links.
+        return `${visible}[url=${markerUrl}][/url]`;
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
@@ -3752,6 +3757,20 @@ body.host-panel-dragging * {
         return String(cell.textContent || "").trim();
     }
 
+    function parseUnit3dTimestamp(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return NaN;
+
+        // Eloquent/Blade commonly renders Carbon as "YYYY-MM-DD HH:MM:SS" with
+        // no timezone suffix. UNIT3D stores timestamps in UTC, while Date.parse()
+        // otherwise treats this form as browser-local time (e.g. +01:00), which
+        // breaks chat↔gift correlation by an hour.
+        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
+        if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}Z`);
+
+        return Date.parse(raw);
+    }
+
     // Parse the logged-in user's gift-history table. UNIT3D stores the gift
     // message here, but deliberately omits it from the public SystemBot line.
     function parseGiftHistoryPage(html) {
@@ -3767,7 +3786,7 @@ body.host-panel-dragging * {
                     .replace(/,/g, "");
                 const amount = Number(amountText);
                 const timeEl = cells[4].querySelector("time");
-                const createdAtTs = Date.parse(timeEl?.getAttribute("datetime") || "");
+                const createdAtTs = parseUnit3dTimestamp(timeEl?.getAttribute("datetime") || "");
 
                 return {
                     sender: giftHistoryUsernameFromCell(cells[0]),
@@ -3920,7 +3939,7 @@ body.host-panel-dragging * {
                     recipient,
                     amount: cleanAmount,
                     rawAmount: Number(amount),
-                    createdAtTs: Date.parse(msg.created_at)
+                    createdAtTs: parseUnit3dTimestamp(msg.created_at)
                 });
                 this.applyGift(gifter, cleanAmount); // update totals immediately
             }
@@ -4004,6 +4023,22 @@ body.host-panel-dragging * {
                     if (delta > MATCH_WINDOW_MS || delta >= bestDelta) continue;
                     bestDelta = delta;
                     bestIndex = i;
+                }
+
+                // If a timestamp is unavailable or a site's timezone formatting is
+                // non-standard, accept only an unambiguous exact sender/receiver/amount
+                // candidate. Never guess between multiple historical gifts.
+                if (bestIndex === -1) {
+                    const exactCandidates = [];
+                    for (let i = 0; i < history.length; i++) {
+                        if (usedHistoryRows.has(i)) continue;
+                        const item = history[i];
+                        if (normalizeUserKey(item.sender) !== normalizeUserKey(event.gifter)) continue;
+                        if (normalizeUserKey(item.recipient) !== normalizeUserKey(event.recipient)) continue;
+                        if (Math.abs(Number(item.amount) - Number(event.rawAmount)) > 0.001) continue;
+                        exactCandidates.push(i);
+                    }
+                    if (exactCandidates.length === 1) bestIndex = exactCandidates[0];
                 }
 
                 if (bestIndex === -1) return event;
@@ -9231,6 +9266,8 @@ body.host-panel-dragging * {
             Sponsors: Object.freeze({
                 SponsorTracker,
                 parseGiftMessage,
+                parseGiftHistoryPage,
+                parseUnit3dTimestamp,
             }),
             Stats: Object.freeze({
                 loadGiveawayStats,
