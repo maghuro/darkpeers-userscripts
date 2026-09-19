@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.2.17
+// @version      1.3.0
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -67,6 +67,9 @@
 //     accounting to whole BON, improves punctuation, and marks host pot top-ups.
 //   - v1.2.17 bounds sponsor digest detail so gift notes and multi-sponsor bursts
 //     stay in one logical chat/IRC message instead of provoking bridge [1/2] splits.
+//   - v1.3.0 promotes the live-tested fork: sponsor gift notes, multi-gift digest
+//     correlation, authoritative TLCC markers and direct BON Pool settlement are
+//     now the stable 1.3 baseline. Monetary BON values use the official ฿ symbol.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -135,6 +138,7 @@
     const DEFAULT_CUSTOM_MESSAGE = "";
     const GIFT_HINT_COLOR = "#F3D34A";
     const SCALING_ACCENT_COLOR = "#7C4DFF";
+    const BON_SYMBOL = "฿";
 
     const ENTRY_IGNORE_WINDOW_MS = 2000;
 
@@ -2113,7 +2117,7 @@ body.host-panel-dragging * {
 
         coinHeader = document.getElementById("coinHeader");
         const hostBalance = readHostBalance();
-        coinHeader.textContent = fmtBON(hostBalance);
+        coinHeader.textContent = `${fmtBONCurrency(hostBalance)} BON`;
         coinHeader.prepend(goldCoins.cloneNode(false));
 
         coinInput = document.getElementById("giveawayAmount");
@@ -2712,7 +2716,7 @@ body.host-panel-dragging * {
             entriesWrapper.hidden = false;
 
             // 6) Update UI
-            coinHeader.innerHTML = `${fmtBON(cleanPotString(giveawayData.amount))} BON`;
+            coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
             coinHeader.prepend(goldCoins.cloneNode(false));
             updateEntries();
 
@@ -2766,7 +2770,7 @@ body.host-panel-dragging * {
             // 11) Re-start pot updater only while active.
             if (!expiredOnRestore) {
                 giveawayData.potUpdater = setInterval(() => {
-                    coinHeader.innerHTML = `${fmtBON(cleanPotString(giveawayData.amount))} BON`;
+                    coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
                     coinHeader.prepend(goldCoins.cloneNode(false));
                 }, 5000);
             } else {
@@ -2910,7 +2914,7 @@ body.host-panel-dragging * {
         if (amountInt < minimumPotForRequestedWinners) {
             window.alert(
                 `GIVEAWAY ERROR: ${fmtBON(requestedWinners)} weighted winner(s) need a pot of at least ` +
-                `${fmtBON(minimumPotForRequestedWinners)} BON so every winner receives at least 1 BON.`
+                `${fmtBONCurrency(minimumPotForRequestedWinners)} BON so every winner receives at least 1 BON.`
             );
             return;
         }
@@ -3009,7 +3013,7 @@ body.host-panel-dragging * {
         }
 
         if (currentBon < giveawayData.amount) {
-            const startErr = `Entered amount ${fmtBON(giveawayData.amount)} exceeds current BON ${fmtBON(currentBon)}.`;
+            const startErr = `Entered amount ${fmtBONCurrency(giveawayData.amount)} exceeds current BON ${fmtBONCurrency(currentBon)}.`;
             logEvent("Start aborted", startErr);
             window.alert(
                 `GIVEAWAY ERROR: The amount entered (${giveawayData.amount}), is above your current BON (${currentBon}).`
@@ -3023,7 +3027,7 @@ body.host-panel-dragging * {
             initializeScaledWinnersAnnouncementState(giveawayData);
             logEvent(
                 "Giveaway started",
-                `Host=${sanitizeNick(giveawayData.host)} | Host-funded=${fmtBON(giveawayData.initialPotVerifiedAtStart)} BON | Base winners=${fmtBON(giveawayData.baseWinnersAtStart)} | Time=${fmtBON(totalTimeMin)} min | ${BONANZA.FUND_NAME}=${giveawayData.donationPercent}% | Flags: silent=${GENERAL_SETTINGS.silent_mode ? "on" : "off"}, rigged=${riggedMode ? "on" : "off"}, scale=${giveawayData.scaleWinnersWithSponsors ? "on" : "off"}${giveawayData.scaleWinnersWithSponsors ? `, max winners=${fmtBON(giveawayData.hostMaxScaledWinners)}` : ""}`
+                `Host=${sanitizeNick(giveawayData.host)} | Host-funded=${fmtBONCurrency(giveawayData.initialPotVerifiedAtStart)} BON | Base winners=${fmtBON(giveawayData.baseWinnersAtStart)} | Time=${fmtBON(totalTimeMin)} min | ${BONANZA.FUND_NAME}=${giveawayData.donationPercent}% | Flags: silent=${GENERAL_SETTINGS.silent_mode ? "on" : "off"}, rigged=${riggedMode ? "on" : "off"}, scale=${giveawayData.scaleWinnersWithSponsors ? "on" : "off"}${giveawayData.scaleWinnersWithSponsors ? `, max winners=${fmtBON(giveawayData.hostMaxScaledWinners)}` : ""}`
             );
             // The winning number is deliberately NOT drawn here. It is generated
             // only when endGiveaway() commits to payout, so DevTools/localStorage
@@ -3054,7 +3058,7 @@ body.host-panel-dragging * {
                     : `\n[b][color=${BONANZA.ACCENT_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b]. Winners receive the remaining ${100 - donationPct}%.`)
                 : "";
 
-            let introMessage = `${introHeader}[b][color=#ffc00a]${fmtBON(giveawayData.amount)} BON[/color][/b] | ` +
+            let introMessage = `${introHeader}[b][color=#ffc00a]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b] | ` +
                 `${buildWinnersAnnouncementLine(giveawayData)} | ` +
                 `Open for [b][color=#1DDC5D]${parseTime(totalTimeMs)}[/color][/b]. ` +
                 `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
@@ -3093,7 +3097,7 @@ body.host-panel-dragging * {
             giveawayData.countdownTimerID = countdownTimer(countdownHeader, giveawayData);
 
             giveawayData.potUpdater = setInterval(() => {
-                coinHeader.innerHTML = `${fmtBON(cleanPotString(giveawayData.amount))} BON`;
+                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
                 coinHeader.prepend(goldCoins.cloneNode(false));
             }, 5000);
 
@@ -3157,7 +3161,7 @@ body.host-panel-dragging * {
         const hostBalance = readHostBalance();
 
         // update the header
-        coinHeader.textContent = fmtBON(hostBalance);
+        coinHeader.textContent = `${fmtBONCurrency(hostBalance)} BON`;
         coinHeader.prepend(goldCoins.cloneNode(false));
 
 
@@ -4027,7 +4031,7 @@ body.host-panel-dragging * {
             flashPotTotalUI();
 
             const totalSponsoredNow = sumSponsorContribs(this.data.sponsorContribs, this.data.host);
-            logEvent("Sponsorship recorded", `${sanitizeNick(gifter)} added ${fmtBON(cleanAmount)} BON | Total sponsored=${fmtBON(totalSponsoredNow)} BON`);
+            logEvent("Sponsorship recorded", `${sanitizeNick(gifter)} added ${fmtBONCurrency(cleanAmount)} BON | Total sponsored=${fmtBONCurrency(totalSponsoredNow)} BON`);
 
             if (!this.sponsorSet.has(sponsorKey)) {
                 this.sponsorSet.add(sponsorKey);
@@ -4059,8 +4063,8 @@ body.host-panel-dragging * {
 
             let message =
                 `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b]: ${oldWinners} → ${newWinners} (+${delta}). ` +
-                `Total scaling contributions: ${fmtBON(totalContribForScaling)} BON. ` +
-                `Threshold: ${fmtBON(threshold)} BON/winner.`;
+                `Total scaling contributions: ${fmtBONCurrency(totalContribForScaling)} BON. ` +
+                `Threshold: ${fmtBONCurrency(threshold)} BON/winner.`;
 
             const reachedCap = newWinners >= cap;
             if (reachedCap) {
@@ -4145,8 +4149,8 @@ body.host-panel-dragging * {
                 return;
             }
 
-            const deltaTotal = fmtBON(deltaTotalNum);
-            const potTotal = fmtBON(cleanPotString(this.data.amount));
+            const deltaTotal = fmtBONCurrency(deltaTotalNum);
+            const potTotal = fmtBONCurrency(cleanPotString(this.data.amount));
 
             // Keep the line short: show only the biggest contributors in this digest
             const topN = Math.max(0, Number(SPONSOR_ANNOUNCE.show_top_n) || 0);
@@ -4171,7 +4175,7 @@ body.host-panel-dragging * {
 
                 const basePart =
                     `[color=#1DDC5D][b]${sanitizeNick(e.name)}[/b][/color] ` +
-                    `([color=#DC3D1D][b]${fmtBON(e.amt)}[/b][/color])`;
+                    `([color=#DC3D1D][b]${fmtBONCurrency(e.amt)}[/b][/color])`;
 
                 const notes = e.messages
                     .slice(0, maxNotes)
@@ -4536,17 +4540,17 @@ body.host-panel-dragging * {
                 `WR [color=#1DDC5D]${wr}%[/color]`
             ];
 
-            if (rec.totalWon) parts.push(`Won [color=#ffc00a]${fmtBON(rec.totalWon)} BON[/color]`);
-            if (rec.biggestWin) parts.push(`Best [color=#ffc00a]${fmtBON(rec.biggestWin)} BON[/color]`);
-            if (rec.sponsoredTotal) parts.push(`Sponsored [color=#00abff]${fmtBON(rec.sponsoredTotal)} BON[/color]`);
+            if (rec.totalWon) parts.push(`Won [color=#ffc00a]${fmtBONCurrency(rec.totalWon)} BON[/color]`);
+            if (rec.biggestWin) parts.push(`Best [color=#ffc00a]${fmtBONCurrency(rec.biggestWin)} BON[/color]`);
+            if (rec.sponsoredTotal) parts.push(`Sponsored [color=#00abff]${fmtBONCurrency(rec.sponsoredTotal)} BON[/color]`);
             if (rec.hosted) parts.push(`Hosted ${fmtBON(rec.hosted)}`);
 
             if (isHostCaller && isSelfQuery) {
-                parts.push(`Given [color=#ffc00a]${fmtBON(rec.hostedTotal || 0)} BON[/color]`);
-                parts.push(`Sponsors received [color=#00abff]${fmtBON(rec.sponsorReceivedTotal || 0)} BON[/color]`);
+                parts.push(`Given [color=#ffc00a]${fmtBONCurrency(rec.hostedTotal || 0)} BON[/color]`);
+                parts.push(`Sponsors received [color=#00abff]${fmtBONCurrency(rec.sponsorReceivedTotal || 0)} BON[/color]`);
                 const thisSponsor = sumSponsorContribs(ctx.giveawayData?.sponsorContribs, ctx.giveawayData?.host);
                 if (thisSponsor > 0) {
-                    parts.push(`Current sponsors [color=#00abff]${fmtBON(thisSponsor)} BON[/color]`);
+                    parts.push(`Current sponsors [color=#00abff]${fmtBONCurrency(thisSponsor)} BON[/color]`);
                 }
             }
 
@@ -4561,7 +4565,7 @@ body.host-panel-dragging * {
             format: (u, i) =>
                 `${i + 1}) [color=#d85e27]${safeNameForChat(u.name)}[/color] - ` +
                 `[color=#1DDC5D]${fmtBON(u.wins)}W[/color] • ` +
-                `[color=#ffc00a]${fmtBON(u.totalWon)} BON[/color]`
+                `[color=#ffc00a]${fmtBONCurrency(u.totalWon)} BON[/color]`
         }),
 
         most:     makeLeaderboardCommand({
@@ -4570,7 +4574,7 @@ body.host-panel-dragging * {
             filter: u => (u.totalWon || 0) > 0,
             format: (u, i) =>
                 `${i + 1}) [color=#d85e27]${safeNameForChat(u.name)}[/color] - ` +
-                `[color=#ffc00a]${fmtBON(u.totalWon)} BON[/color] • ` +
+                `[color=#ffc00a]${fmtBONCurrency(u.totalWon)} BON[/color] • ` +
                 `[color=#1DDC5D]${fmtBON(u.wins)}W[/color]`
         }),
 
@@ -4580,7 +4584,7 @@ body.host-panel-dragging * {
             filter: u => (u.sponsoredTotal || 0) > 0,
             format: (u, i) =>
                 `${i + 1}) [color=#d85e27]${safeNameForChat(u.name)}[/color] - ` +
-                `[color=#ffc00a]${fmtBON(u.sponsoredTotal)} BON[/color] • ` +
+                `[color=#ffc00a]${fmtBONCurrency(u.sponsoredTotal)} BON[/color] • ` +
                 `[color=#1DDC5D]${fmtBON(u.sponsorCount)}x[/color]`
         }),
 
@@ -4645,7 +4649,7 @@ body.host-panel-dragging * {
             }
 
             const out = top.map((g, i) => {
-                const amt = fmtBON(getAmt(g));
+                const amt = fmtBONCurrency(getAmt(g));
                 const d = fmtEndedDate(g);
                 return `${i + 1}) [color=#ffc00a]${amt} BON[/color] [color=#9aa0a6](${d})[/color]`;
             });
@@ -4662,7 +4666,7 @@ body.host-panel-dragging * {
         bon({ giveawayData , reply}) {
             const rigTag = rigNote("(pot size [b]carefully curated[/b] by our rigging department)");
             reply(
-                `Giveaway Amount: [b][color=#FFB700]${fmtBON(giveawayData.amount)}[/color][/b]` +
+                `Giveaway Amount: [b][color=#FFB700]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b]` +
                 rigTag
             );
         },
@@ -4902,8 +4906,8 @@ body.host-panel-dragging * {
             const minimumPot = minimumPotForWeightedWinners(newCount);
             if (Math.floor(Number(giveawayData.amount) || 0) < minimumPot) {
                 reply(
-                    `[color=red]Cannot set ${fmtBON(newCount)} winners with the current ${fmtBON(giveawayData.amount)} BON pot. ` +
-                    `Weighted payouts require at least ${fmtBON(minimumPot)} BON.[/color]`
+                    `[color=red]Cannot set ${fmtBON(newCount)} winners with the current ${fmtBONCurrency(giveawayData.amount)} BON pot. ` +
+                    `Weighted payouts require at least ${fmtBONCurrency(minimumPot)} BON.[/color]`
                 );
                 return;
             }
@@ -5011,14 +5015,14 @@ body.host-panel-dragging * {
             let msg = `[b][color=${SCALING_ACCENT_COLOR}]Scaling Status:[/color][/b] ` +
                 `Winners: [b][color=#5DE2E7]${effective}[/color][/b] (base ${baseWinners}` +
                 (extraWinners > 0 ? ` + ${extraWinners} from sponsorships` : ``) + `). ` +
-                `Threshold: [b]${fmtBON(threshold)} BON[/b]/winner` +
+                `Threshold: [b]${fmtBONCurrency(threshold)} BON[/b]/winner` +
                 (isCustomThreshold ? ` (custom)` : ``) + `. ` +
-                `Total contributions: [b][color=#ffc00a]${fmtBON(totalContrib)} BON[/color][/b]. `;
+                `Total contributions: [b][color=#ffc00a]${fmtBONCurrency(totalContrib)} BON[/color][/b]. `;
 
             if (effective >= cap) {
                 msg += `[b]Max winners reached[/b] (${cap}).`;
             } else {
-                msg += `[b]${fmtBON(remaining)} BON[/b] needed for next winner (${fmtBON(progress)}/${fmtBON(threshold)}). Max: [b]${cap}[/b].`;
+                msg += `[b]${fmtBONCurrency(remaining)} BON[/b] needed for next winner (${fmtBONCurrency(progress)}/${fmtBONCurrency(threshold)}). Max: [b]${cap}[/b].`;
             }
 
             reply(msg);
@@ -5194,7 +5198,7 @@ body.host-panel-dragging * {
 
         if (currentBon < newTotal) {
             reply(
-                `[b][color=red]You only have ${fmtBON(currentBon)} BON right now, so you can't increase the pot to ${fmtBON(newTotal)}. ` +
+                `[b][color=red]You only have ${fmtBONCurrency(currentBon)} BON right now, so you can't increase the pot to ${fmtBONCurrency(newTotal)} BON. ` +
                 `Wait for more BON (or sponsor gifts) and try again.[/color][/b]`
             );
             return;
@@ -5220,8 +5224,8 @@ body.host-panel-dragging * {
             flashWinnersUI();
         }
 
-        const addedPart = `Host added [color=#DC3D1D][b]${fmtBON(amount)} BON[/b][/color].`;
-        const totalPart = `Total pot: [b][color=#ffc00a]${fmtBON(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
+        const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
+        const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
 
         let scalingPart = "";
         if (giveawayData.scaleWinnersWithSponsors) {
@@ -5388,7 +5392,7 @@ body.host-panel-dragging * {
         if (numberEntries.size === 0) {
             const emptyMessage = `Unfortunately, no one has entered the giveaway, so no one wins!`
             await sendMessage(emptyMessage);
-            logEvent("Giveaway ended", `Entrants=0 | Winners=0 | Host-funded=${fmtBON(giveawayData.amount)} BON | Sponsored=0 BON | Total=${fmtBON(giveawayData.amount)} BON`)
+            logEvent("Giveaway ended", `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(giveawayData.amount)} BON | Sponsored=0 BON | Total=${fmtBONCurrency(giveawayData.amount)} BON`)
             try {
                 currentStatement = createStatementRecord({ winners: [], gross: [], net: [], donations: [], split: null, poolStatus: "none", entrants: 0 });
                 if (currentStatement) { currentStatement.verification = "nothing to verify"; persistCurrentStatement(); }
@@ -5488,24 +5492,24 @@ body.host-panel-dragging * {
                   `Winners drawn: [b][color=#5DE2E7]${fmtBON(N)}[/color][/b]. ` +
                   `Total entrants: [b][color=#5DE2E7]${fmtBON(entrantsTotal)}[/color][/b].`;
             const fundingLine =
-                  `Funding — Host-funded: [b][color=#ffc00a]${fmtBON(hostFundedTotal)} BON[/color][/b] | ` +
-                  `Sponsored: [b][color=#00abff]${fmtBON(sponsoredTotal)} BON[/color][/b] | ` +
-                  `Total pot: [b][color=#FFC00A]${fmtBON(potTotal)} BON[/color][/b].`;
+                  `Funding — Host-funded: [b][color=#ffc00a]${fmtBONCurrency(hostFundedTotal)} BON[/color][/b] | ` +
+                  `Sponsored: [b][color=#00abff]${fmtBONCurrency(sponsoredTotal)} BON[/color][/b] | ` +
+                  `Total pot: [b][color=#FFC00A]${fmtBONCurrency(potTotal)} BON[/color][/b].`;
             const scalingLine = (giveawayData.scaleWinnersWithSponsors && scaleIncrease > 0)
             ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b] by [b][color=#5DE2E7]+${fmtBON(scaleIncrease)}[/color][/b] due to sponsorships.`
             : "";
             const donationLine = donationActive
                 ? (riggedMode
-                    ? `🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct payment into the [b]${BONANZA.FUND_NAME}[/b]. Confirmation follows after settlement.`
-                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution. Confirmation follows after the pool records it.`)
+                    ? `🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct payment into the [b]${BONANZA.FUND_NAME}[/b]. Confirmation follows after settlement.`
+                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution. Confirmation follows after the pool records it.`)
                 : "";
 
             if (winners.length === 1) {
                 // single‐winner public message
                 const w = winners[0];
                 const diff = Math.abs(w.guess - winNum);
-                const prize = fmtBON(net[0]);
-                const donatedNote = donationActive ? ` [color=#aaaaaa](${fmtBON(allocated[0])} BON prize, ${fmtBON(split.donations[0])} BON to the fund)[/color]` : "";
+                const prize = fmtBONCurrency(net[0]);
+                const donatedNote = donationActive ? ` [color=#aaaaaa](${fmtBONCurrency(allocated[0])} BON prize, ${fmtBONCurrency(split.donations[0])} BON to the fund)[/color]` : "";
 
                 const winnerLine =
                       `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
@@ -5518,7 +5522,7 @@ body.host-panel-dragging * {
                 // multi‐winner public message
                 const lines = winners.map((w, i) => {
                     const diff = Math.abs(w.guess - winNum);
-                    const prize = fmtBON(net[i]);
+                    const prize = fmtBONCurrency(net[i]);
                     const medal = medals[i] || `${i + 1}.`;
                     return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
                         `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ([color=#FB4F4F]${fmtBON(diff)}[/color]) ` +
@@ -5530,13 +5534,13 @@ body.host-panel-dragging * {
             }
 
             const winnerNames = winners.map(w => sanitizeNick(w.author)).join(", ") || "none";
-            const payoutPerWinner = net.map((amt, i) => `${sanitizeNick(winners[i]?.author || "unknown")}: ${fmtBON(amt)} BON`).join(", ");
+            const payoutPerWinner = net.map((amt, i) => `${sanitizeNick(winners[i]?.author || "unknown")}: ${fmtBONCurrency(amt)} BON`).join(", ");
             const donationLog = donationActive
-                ? ` | ${BONANZA.FUND_NAME}=${fmtBON(split.total)} BON (${split.percent}%, direct contribution pending)`
+                ? ` | ${BONANZA.FUND_NAME}=${fmtBONCurrency(split.total)} BON (${split.percent}%, direct contribution pending)`
                 : " | Contribution=0%";
             logEvent(
                 "Giveaway ended",
-                `Entrants=${fmtBON(entrantsTotal)} | Winners=${fmtBON(N)} | Host-funded=${fmtBON(hostFundedTotal)} BON | Sponsored=${fmtBON(sponsoredTotal)} BON | Total=${fmtBON(potTotal)} BON${donationLog} | Winners list=${winnerNames}${payoutPerWinner ? ` | Payouts=${payoutPerWinner}` : ""}`
+                `Entrants=${fmtBON(entrantsTotal)} | Winners=${fmtBON(N)} | Host-funded=${fmtBONCurrency(hostFundedTotal)} BON | Sponsored=${fmtBONCurrency(sponsoredTotal)} BON | Total=${fmtBONCurrency(potTotal)} BON${donationLog} | Winners list=${winnerNames}${payoutPerWinner ? ` | Payouts=${payoutPerWinner}` : ""}`
             );
 
             // 6) Send gifts sequentially. Capture a chat cursor immediately before
@@ -5582,14 +5586,14 @@ body.host-panel-dragging * {
                 if (poolResult.confirmed) {
                     markFundGiftStatus("confirmed");
                     const paidMessage = riggedMode
-                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
-                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "🧡")} [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] paid directly into the pool. Thank you for supporting the event! ✨`;
+                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
+                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "🧡")} [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool. Thank you for supporting the event! ✨`;
                     await sendMessage(paidMessage);
                 } else {
                     markFundGiftStatus("failed");
-                    logEvent("BON Pool verification warning", `Direct contribution of ${fmtBON(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
+                    logEvent("BON Pool verification warning", `Direct contribution of ${fmtBONCurrency(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
                     try {
-                        window.alert(`BON Pool warning: the ${fmtBON(split.total)} BON contribution could not be confirmed. Check /bon-pool manually before retrying anything.`);
+                        window.alert(`BON Pool warning: the ${fmtBONCurrency(split.total)} BON contribution could not be confirmed. Check /bon-pool manually before retrying anything.`);
                     } catch {}
                 }
             }
@@ -5928,7 +5932,7 @@ body.host-panel-dragging * {
             let attempts = 0;
             let done = false;
 
-            const describe = g => `${sanitizeNick(g.recipient)} (${fmtBON(g.amount)} BON)`;
+            const describe = g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`;
 
             function markConfirmed(g) {
                 markWinnerGiftConfirmed(g.recipient);
@@ -6372,7 +6376,7 @@ body.host-panel-dragging * {
         if (!rec) return "";
         const L = [];
         const line = (ch = "=") => ch.repeat(72);
-        const money = n => `${fmtBON(n)} BON`;
+        const money = n => `${fmtBONCurrency(n)} BON`;
         const padR = (t, n) => String(t).padEnd(n);
         const padL = (t, n) => String(t).padStart(n);
 
@@ -6447,8 +6451,8 @@ body.host-panel-dragging * {
         list.forEach((rec, i) => {
             const opt = document.createElement("option");
             opt.value = String(rec.id);
-            const fund = rec.donationTotal > 0 ? ` | ${BONANZA.FUND_NAME} ${fmtBON(rec.donationTotal)} BON (${rec.donationPercent}%)` : " | no donation";
-            opt.textContent = `${i === 0 ? "Latest: " : ""}${statementTimestamp(rec.endedAt)} | ${rec.host} | pot ${fmtBON(rec.potTotal)} BON${fund}`;
+            const fund = rec.donationTotal > 0 ? ` | ${BONANZA.FUND_NAME} ${fmtBONCurrency(rec.donationTotal)} BON (${rec.donationPercent}%)` : " | no donation";
+            opt.textContent = `${i === 0 ? "Latest: " : ""}${statementTimestamp(rec.endedAt)} | ${rec.host} | pot ${fmtBONCurrency(rec.potTotal)} BON${fund}`;
             select.appendChild(opt);
         });
         if (!selectLatest && previous && Array.from(select.options).some(o => o.value === previous)) select.value = previous;
@@ -6516,7 +6520,7 @@ body.host-panel-dragging * {
         const potRaw = coinInput ? String(coinInput.value || "").replace(/[^0-9]/g, "") : "";
         const pot = potRaw ? parseInt(potRaw, 10) : 0;
         const est = pot > 0 ? Math.floor(pot * pct / 100) : 0;
-        const estText = pot > 0 ? ` About <b>${fmtBON(est)} BON</b> of a ${fmtBON(pot)} BON pot (more if sponsored).` : "";
+        const estText = pot > 0 ? ` About <b>${fmtBONCurrency(est)} BON</b> of a ${fmtBONCurrency(pot)} BON pot (more if sponsored).` : "";
         donationHint.innerHTML = riggedMode
             ? `🧾 <b style="color:#FF4F9A;">${pct}% rigging taxes</b> will be taken from the final pot (host + sponsors) and paid <b>directly</b> into the ${BONANZA.FUND_NAME}. Your outlay is unchanged.${estText}`
             : `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) will be contributed <b>directly</b> to the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
@@ -6552,7 +6556,7 @@ body.host-panel-dragging * {
             ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
             : BRIDGE_MARKERS.START;
         const msg = reminderPrefix +
-              `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
+              `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
@@ -6779,7 +6783,7 @@ body.host-panel-dragging * {
             });
             logEvent(
                 "BON Pool contribution confirmed",
-                `${fmtBON(safeAmount)} BON | Mine ${fmtBON(before.mine)} -> ${fmtBON(checked.snapshot.mine)} | Total ${fmtBON(before.total)} -> ${fmtBON(checked.snapshot.total)}`
+                `${fmtBONCurrency(safeAmount)} BON | Mine ${fmtBONCurrency(before.mine)} -> ${fmtBONCurrency(checked.snapshot.mine)} | Total ${fmtBONCurrency(before.total)} -> ${fmtBONCurrency(checked.snapshot.total)}`
             );
             return { attempted: true, confirmed: true, before, after: checked.snapshot };
         }
@@ -6846,7 +6850,7 @@ body.host-panel-dragging * {
         if (hasGiftBeenAttempted(giveawayId, safeRecipient, safeAmount, purpose)) {
             logEvent(
                 "Gift skipped (duplicate)",
-                `Already attempted: ${sanitizeNick(safeRecipient)} for ${fmtBON(safeAmount)} BON (${purpose}) in this giveaway.`
+                `Already attempted: ${sanitizeNick(safeRecipient)} for ${fmtBONCurrency(safeAmount)} BON (${purpose}) in this giveaway.`
             );
             return { attempted: false, reason: "duplicate" };
         }
@@ -6908,7 +6912,7 @@ body.host-panel-dragging * {
             if (resp && SAFE_FALLBACK_STATUSES.has(resp.status)) {
                 logEvent(
                     "Gift HTTP rejected, falling back",
-                    `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp.status}`
+                    `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | status=${resp.status}`
                 );
                 await fallbackToChat();
                 return { attempted: true, transport: "chat-fallback", httpStatus: resp.status };
@@ -6919,7 +6923,7 @@ body.host-panel-dragging * {
                 // Do NOT fall back. verifyWinnerGifts will confirm via chat API.
                 logEvent(
                     "Gift HTTP ambiguous (no fallback)",
-                    `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | status=${resp ? resp.status : "no-response"} | will verify via chat poll`
+                    `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | status=${resp ? resp.status : "no-response"} | will verify via chat poll`
                 );
                 return { attempted: true, transport: "http-ambiguous", httpStatus: resp ? resp.status : null };
             }
@@ -6930,7 +6934,7 @@ body.host-panel-dragging * {
             // the request. Do NOT replay it via /gift; let verification decide.
             logEvent(
                 "Gift HTTP network error (no fallback)",
-                `${sanitizeNick(safeRecipient)} ${fmtBON(safeAmount)} BON | ${e && e.message ? e.message : "unknown error"} | will verify via chat poll`
+                `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | ${e && e.message ? e.message : "unknown error"} | will verify via chat poll`
             );
             return { attempted: true, transport: "http-ambiguous", error: e && e.message ? e.message : "unknown" };
         }
@@ -7602,6 +7606,12 @@ body.host-panel-dragging * {
             n = Number.isNaN(parseInt(digitsOnly || "0", 10)) ? 0 : parseInt(digitsOnly || "0", 10);
         }
         return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    }
+
+    // Monetary display only. Counts, ranges and winning numbers still use fmtBON().
+    // DarkPeers' official BON symbol is ฿; money uses PT-style thousands dots.
+    function fmtBONCurrency(value) {
+        return BON_SYMBOL + fmtBON(value).replace(/ /g, ".");
     }
 
     function safeNameForChat(name) {
@@ -8376,8 +8386,8 @@ body.host-panel-dragging * {
         }
 
         return options.plain
-            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: ${fmtBON(remaining)}.`
-        : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]BON needed to increase # of winners[/b]: ${fmtBON(remaining)}.[/color][/i]`;
+            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.`
+        : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.[/color][/i]`;
     }
 
     function flashUIElement(el, durationMs = 950) {
@@ -8417,14 +8427,14 @@ body.host-panel-dragging * {
               a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
              )
         .map(({ name, amount }) =>
-             `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBON(amount)} BON[/b][/color])`
+             `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
             );
 
         if (!safe.length) return "";
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
         return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
-            `[color=#ffc00a][b]${fmtBON(sponsorTotal)} BON[/b][/color]. ` +
+            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color]. ` +
             safe.join(", ") + ".";
     }
 
