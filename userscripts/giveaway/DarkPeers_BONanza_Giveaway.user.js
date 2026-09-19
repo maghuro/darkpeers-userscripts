@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional donation to the BONanza fund
-// @version      1.2.1
+// @version      1.2.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -33,6 +33,9 @@
 //   - v1.2.1 hardens reload/multi-tab safety, persists sponsor/stat cursors,
 //     draws the winning number only at payout time, makes !random range-safe,
 //     and strengthens payout verification against stale gift messages.
+//   - v1.2.2 formalizes stable DP -> IRC bridge emoji signatures for TLCC,
+//     adds an unambiguous final-result marker, and labels BONanza donations as
+//     cosmetic "taxes" while Rigged Mode is active (the fund transfer is unchanged).
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -203,6 +206,25 @@
         PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
         MAX_PERCENT: 30,
         ACCENT_COLOR: "#FF8C42"
+    });
+
+    // Stable website -> DP -> IRC -> The Lounge bridge contract.
+    // TLCC is CSS-only after the bridge has flattened BBCode, so these surviving
+    // emoji signatures are intentionally treated like a tiny public API:
+    //   🎁 + ✨ + ✨  main giveaway / reminder
+    //   🧡 + 💫       fork sponsor summary
+    //   📋            entries
+    //   📊            user stats
+    //   ⏳            time
+    //   🥳            final sponsor thank-you
+    //   🏆 + 🎯       final result (🎯 disambiguates it from !top)
+    //   ⚠️            tie (adjacent to result)
+    //   😈 / 😒       rigged / unrigged
+    //   👮            naughty-list add
+    // Keep these signatures stable unless TLCC is updated in the same change.
+    const BRIDGE_MARKERS = Object.freeze({
+        RESULT: "🎯",
+        TAXES: "🧾"
     });
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
@@ -2912,14 +2934,22 @@ body.host-panel-dragging * {
             const donationPct = normalizeDonationPercent(giveawayData.donationPercent);
             const hostIsFundManager = isFundManagerName(giveawayData.host);
             const introHeader = donationPct > 0
-                ? `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} DONATION GIVEAWAY[/color][/b] 🧡\n🎁 I am hosting a giveaway for `
+                ? (riggedMode
+                    ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b] ${BRIDGE_MARKERS.TAXES}\n🎁 I am hosting a giveaway for `
+                    : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} DONATION GIVEAWAY[/color][/b] 🧡\n🎁 I am hosting a giveaway for `)
                 : `🎁 I am hosting a giveaway for `;
             const donationIntroLine = donationPct > 0
-                ? `\n[b][color=${BONANZA.ACCENT_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) ` +
-                  (hostIsFundManager
-                      ? `stays in the [b]${BONANZA.FUND_NAME}[/b] (hosted by the fund manager). `
-                      : `goes to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. `) +
-                  `Winners receive the remaining ${100 - donationPct}%.`
+                ? (riggedMode
+                    ? `\n[b][color=#FF4F9A]${donationPct}% rigging tax[/color][/b] will be skimmed from the final pot (including sponsor gifts) and ` +
+                      (hostIsFundManager
+                          ? `retained in the [b]${BONANZA.FUND_NAME}[/b] because the host manages the fund. `
+                          : `sent to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. `) +
+                      `Winners keep the remaining ${100 - donationPct}%. Entirely legitimate accounting. 😈`
+                    : `\n[b][color=${BONANZA.ACCENT_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) ` +
+                      (hostIsFundManager
+                          ? `stays in the [b]${BONANZA.FUND_NAME}[/b] (hosted by the fund manager). `
+                          : `goes to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. `) +
+                      `Winners receive the remaining ${100 - donationPct}%.`)
                 : "";
 
             let introMessage = `${introHeader}[b][color=#ffc00a]${fmtBON(giveawayData.amount)} BON[/color][/b] | ` +
@@ -5075,7 +5105,7 @@ body.host-panel-dragging * {
             const rigTag = rigNote(" (Rigged mode was active, but winners were still chosen [b]fairly[/b]… allegedly.) 👀");
 
             const summaryLine =
-                  `🏆 Winning number: [b][color=#1DDC5D]${fmtBON(winNum)}[/color][/b]. ` +
+                  `🏆 ${BRIDGE_MARKERS.RESULT} Winning number: [b][color=#1DDC5D]${fmtBON(winNum)}[/color][/b]. ` +
                   `Winners drawn: [b][color=#5DE2E7]${fmtBON(N)}[/color][/b]. ` +
                   `Total entrants: [b][color=#5DE2E7]${fmtBON(entrantsTotal)}[/color][/b].`;
             const fundingLine =
@@ -5086,9 +5116,13 @@ body.host-panel-dragging * {
             ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b] by [b][color=#5DE2E7]+${fmtBON(scaleIncrease)}[/color][/b] due to sponsorships.`
             : "";
             const donationLine = donationActive
-            ? (donationRetained
-                ? `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) retained in the fund, as the host is the fund manager.`
-                : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) donated to [b]${BONANZA.FUND_MANAGER}[/b]. Thank you for supporting the ${BONANZA.FUND_NAME}! 🧡`)
+            ? (riggedMode
+                ? (donationRetained
+                    ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) retained in the [b]${BONANZA.FUND_NAME}[/b], since the host is the fund manager. The taxman approves. 😈`
+                    : `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) levied and sent to [b]${BONANZA.FUND_MANAGER}[/b] for the [b]${BONANZA.FUND_NAME}[/b]. The house always gets its paperwork. 😈`)
+                : (donationRetained
+                    ? `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) retained in the fund, as the host is the fund manager.`
+                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME}:[/color][/b] [b][color=#FFC00A]${fmtBON(split.total)} BON[/color][/b] (${split.percent}% of the pot) donated to [b]${BONANZA.FUND_MANAGER}[/b]. Thank you for supporting the ${BONANZA.FUND_NAME}! 🧡`))
             : "";
 
             if (winners.length === 1) {
@@ -5170,7 +5204,9 @@ body.host-panel-dragging * {
                 await giftBon(
                     BONANZA.FUND_MANAGER,
                     split.total,
-                    `🧡 ${BONANZA.FUND_NAME} donation (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host})`,
+                    riggedMode
+                        ? `${BRIDGE_MARKERS.TAXES} Rigging taxes (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host}) -> ${BONANZA.FUND_NAME}`
+                        : `🧡 ${BONANZA.FUND_NAME} donation (${split.percent}% of ${fmtBON(potTotal)} BON giveaway hosted by ${giveawayData.host})`,
                     GIFT_PURPOSE.FUND
                 );
                 expectedGifts.push({ recipient: BONANZA.FUND_MANAGER, amount: split.total, purpose: GIFT_PURPOSE.FUND });
@@ -6030,16 +6066,20 @@ body.host-panel-dragging * {
         if (!donationHint) return;
         const pct = normalizeDonationPercent(donationPercentInput ? donationPercentInput.value : 0);
         if (pct <= 0) {
-            donationHint.innerHTML = `Standard giveaway. No ${BONANZA.FUND_NAME} donation.`;
+            donationHint.innerHTML = riggedMode
+                ? `Rigged mode is active, but the tax rate is <b>0%</b>. Suspiciously generous. No ${BONANZA.FUND_NAME} transfer.`
+                : `Standard giveaway. No ${BONANZA.FUND_NAME} donation.`;
             return;
         }
         const potRaw = coinInput ? String(coinInput.value || "").replace(/[^0-9]/g, "") : "";
         const pot = potRaw ? parseInt(potRaw, 10) : 0;
         const est = pot > 0 ? Math.floor(pot * pct / 100) : 0;
         const estText = pot > 0 ? ` About <b>${fmtBON(est)} BON</b> of a ${fmtBON(pot)} BON pot (more if sponsored).` : "";
-        donationHint.innerHTML =
-            `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) goes to ` +
-            `<b>${BONANZA.FUND_MANAGER}</b> for the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
+        donationHint.innerHTML = riggedMode
+            ? `${BRIDGE_MARKERS.TAXES} <b style="color:#FF4F9A;">${pct}% rigging taxes</b> will be taken from the final pot (host + sponsors) and sent to ` +
+              `<b>${BONANZA.FUND_MANAGER}</b> for the ${BONANZA.FUND_NAME}. "Taxes" is cosmetic; the verified fund transfer is unchanged. Your outlay is unchanged.${estText}`
+            : `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) goes to ` +
+              `<b>${BONANZA.FUND_MANAGER}</b> for the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
     }
 
     function sendReminder(options = {}) {
@@ -6064,7 +6104,9 @@ body.host-panel-dragging * {
         const rigLine = rigNote("(Rigged mode is currently enabled, but the math is [b]definitely[/b] still legit) 😉");
         const reminderPct = normalizeDonationPercent(giveawayData.donationPercent);
         const reminderPrefix = reminderPct > 0
-            ? `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} donation giveaway (${reminderPct}% to the fund)[/color][/b] 🧡\n`
+            ? (riggedMode
+                ? `${BRIDGE_MARKERS.TAXES} [b][color=#FF4F9A]Rigging taxes: ${reminderPct}% to the ${BONANZA.FUND_NAME}[/color][/b] ${BRIDGE_MARKERS.TAXES}\n`
+                : `🧡 [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} donation giveaway (${reminderPct}% to the fund)[/color][/b] 🧡\n`)
             : "";
         const msg = reminderPrefix +
               `🎁 Ongoing giveaway for [b][color=#ffc00a]${fmtBON(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
@@ -7019,6 +7061,9 @@ body.host-panel-dragging * {
         rigToggleInput.title = riggedMode
             ? "Rigged mode is ON (cosmetic only). Click to disable."
         : "Rigged mode is OFF (cosmetic only). Click to enable.";
+
+        // Keep the donation/tax hint in sync when Rigged Mode is toggled.
+        updateDonationHint();
     }
 
     function fmtUserList(arr) {
