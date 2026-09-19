@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.10
+// @version      1.3.11
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -93,6 +93,9 @@
 //   - v1.3.10 forces fresh Gift History/notification reads and guarantees matched
 //     sponsor notes are never silently dropped by digest-length trimming: notes stay
 //     inline when they fit and overflow into marked sponsor-note continuations.
+//   - v1.3.11 announces every newly discovered sponsor batch on the next poll instead
+//     of waiting up to 60 seconds. Multiple gifts discovered in the same poll remain
+//     grouped, with each matched note attached to the correct sponsor.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -168,14 +171,16 @@
 
 
 
-    // Sponsor announcement controls (host chat spam reduction)
-    // - mode: "immediate" (old behavior), "digest" (recommended), or "off" (silent; still counts sponsors)
-    // - digest_ms: max frequency for sponsor announcements in chat
-    // - immediate_single_min: big single gifts are announced right away (even in digest mode)
-    // - flush_min_total: announce early if combined pending sponsorship reaches this BON
+    // Sponsor announcement controls.
+    // Live policy: flush immediately after each poll that discovers gifts. All gifts
+    // found in that one poll are still grouped into a single sponsor announcement.
+    // "digest" remains supported for experiments, but is not the production default:
+    // a short giveaway could otherwise end before a small pending gift was announced.
+    // - digest_ms: max wait when mode="digest"
+    // - immediate_single_min / flush_min_total: early-flush thresholds in digest mode
     // - show_top_n / show_min_per_user: keep the line short; omit tiny sponsors from the name list (still counted in totals)
     const SPONSOR_ANNOUNCE = {
-        mode: "digest",
+        mode: "immediate",
         digest_ms: 60_000,
         immediate_single_min: 500,
         flush_min_total: 250,
