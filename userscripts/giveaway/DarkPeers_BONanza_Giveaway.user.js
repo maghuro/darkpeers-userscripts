@@ -95,9 +95,9 @@
 //     inline when they fit and overflow into marked sponsor-note continuations.
 //   - v1.3.11 announces every newly discovered sponsor batch on the next poll instead
 //     of waiting up to 60 seconds. Multiple gifts discovered in the same poll remain
+//     grouped, with each matched note attached to the correct sponsor.
 //   - v1.3.12 restores self-labelled machine bridge anchors so the HTML→IRC bridge
 //     no longer leaves orphaned "()" after giveaway emojis; TLCC still hides the URL.
-//     grouped, with each matched note attached to the correct sponsor.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
