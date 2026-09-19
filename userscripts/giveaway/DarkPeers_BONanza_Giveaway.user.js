@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.8
+// @version      1.3.9
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -87,6 +87,9 @@
 //   - v1.3.8 learns the real DarkPeers Gift-History ↔ chat-API clock offset from
 //     unambiguous gifts instead of assuming browser-local/UTC equivalence. This
 //     survives site-timezone/DST differences and disambiguates repeated same-value gifts.
+//   - v1.3.9 makes authenticated UNIT3D Gift History the primary sponsor source for
+//     sender, recipient, BON, note and event discovery. Chat API/SystemBot is now
+//     fallback-only (history outage/recovery and exact final-cutoff disambiguation).
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -137,6 +140,7 @@
     const MAX_WINNERS = 50; // central location to update max allowable number of winners
     const MAX_REMINDERS = 6; //maximum number of reminders allowed
     const PAYOUT_GIFT_GAP_MS = 150; // small spacing between sequential payout requests
+    const SPONSOR_GIFT_HISTORY_POLL_MS = 10_000; // primary UNIT3D Gift History polling cadence
 
     // Persistent stats (saved in localStorage on this site)
     // GM store is per-script anyway; the v2 suffix retires the pre-1.2.0 copy so it can
@@ -2575,7 +2579,10 @@ body.host-panel-dragging * {
                     cursorInitialized: !!window.__activeTracker.cursorInitialized,
                     giftHistoryClockOffsetMs: Number.isFinite(Number(window.__activeTracker.giftHistoryClockOffsetMs))
                         ? Number(window.__activeTracker.giftHistoryClockOffsetMs)
-                        : null
+                        : null,
+                    giftHistoryInitialized: !!window.__activeTracker.giftHistoryInitialized,
+                    giftHistorySeenKeys: Array.from(window.__activeTracker.giftHistorySeenKeys || []).slice(-250),
+                    historyFallbackActive: !!window.__activeTracker.historyFallbackActive
                 } : null,
                 riggedMode: riggedMode,
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -2770,7 +2777,14 @@ body.host-panel-dragging * {
                 cursorInitialized: savedTracker ? !!savedTracker.cursorInitialized : false,
                 giftHistoryClockOffsetMs: savedTracker && Number.isFinite(Number(savedTracker.giftHistoryClockOffsetMs))
                     ? Number(savedTracker.giftHistoryClockOffsetMs)
-                    : null
+                    : null,
+                giftHistoryInitialized: savedTracker ? !!savedTracker.giftHistoryInitialized : false,
+                giftHistorySeenKeys: savedTracker && Array.isArray(savedTracker.giftHistorySeenKeys)
+                    ? savedTracker.giftHistorySeenKeys
+                    : [],
+                historyFallbackActive: savedTracker
+                    ? (!!savedTracker.historyFallbackActive || !savedTracker.giftHistoryInitialized)
+                    : true
             });
             window.__activeTracker = tracker;
 
@@ -2786,7 +2800,7 @@ body.host-panel-dragging * {
                 if (expiredOnRestore) expiredLegacyBootstrap = p;
             }
             if (!expiredOnRestore) {
-                sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
+                sponsorsInterval = setInterval(() => tracker.poll(), SPONSOR_GIFT_HISTORY_POLL_MS);
             }
 
             // 10) Re-start countdown timer only for a still-active giveaway.
@@ -3108,17 +3122,27 @@ body.host-panel-dragging * {
                     `[i][color=#B0B0B0]Command replies will be sent privately via /msg.[/color][/i] 🤫`;
             }
 
+            if (window.__activeTracker) window.__activeTracker = null;
+            let tracker = new SponsorTracker({
+                chatroomId,
+                giveawayStartTime: new Date(),
+                giveawayData
+            });
+            await tracker.bootstrapGiftHistory();
+
             await sendMessage(introMessage);
 
-            // Start the ignore window *and* sponsor tracking only after the intro
-            // send path has completed, so the public opening is the temporal boundary.
+            // Public opening is the temporal boundary. The pre-opening Gift History
+            // snapshot means every subsequently appearing received gift is new.
             giveawayStartTime = new Date();
-
-            if (window.__activeTracker) window.__activeTracker = null;
-            let tracker = new SponsorTracker({ chatroomId, giveawayStartTime, giveawayData });
+            tracker.giveawayStartTs = giveawayStartTime.getTime();
             window.__activeTracker = tracker;
+
             try { await tracker.poll(); } catch (e) { console.error(e); }
-            sponsorsInterval = setInterval(() => tracker.poll(), 10_000);
+            sponsorsInterval = setInterval(
+                () => tracker.poll(),
+                SPONSOR_GIFT_HISTORY_POLL_MS
+            );
 
             if (observer) {
                 startObserver();
@@ -3833,6 +3857,7 @@ body.host-panel-dragging * {
                     recipient: giftHistoryUsernameFromCell(cells[1]),
                     amount,
                     message,
+                    rawTimestamp,
                     createdAtTs,
                     createdAtAltTs
                 };
@@ -3881,6 +3906,7 @@ body.host-panel-dragging * {
                     recipient: host,
                     amount: bodyAmount,
                     message,
+                    rawTimestamp,
                     createdAtTs,
                     createdAtAltTs
                 };
@@ -3891,6 +3917,27 @@ body.host-panel-dragging * {
                 Number.isFinite(item.amount) &&
                 item.amount > 0
             );
+    }
+
+    function giftHistoryBaseKey(item) {
+        const sender = normalizeUserKey(item?.sender);
+        const recipient = normalizeUserKey(item?.recipient);
+        const amount = Number(item?.amount);
+        const timestamp = String(item?.rawTimestamp || "");
+        const message = String(item?.message || "");
+        if (!sender || !recipient || !Number.isFinite(amount)) return "";
+        return [sender, recipient, amount.toFixed(2), timestamp, message].join("\u001f");
+    }
+
+    function indexGiftHistoryRows(rows) {
+        const counts = new Map();
+        return (Array.isArray(rows) ? rows : []).map(item => {
+            const baseKey = giftHistoryBaseKey(item);
+            if (!baseKey) return { ...item, historyKey: "" };
+            const occurrence = (counts.get(baseKey) || 0) + 1;
+            counts.set(baseKey, occurrence);
+            return { ...item, historyKey: `${baseKey}\u001f${occurrence}` };
+        });
     }
 
     function sanitizeSponsorGiftMessage(value) {
@@ -3953,8 +4000,18 @@ body.host-panel-dragging * {
     }
 
     class SponsorTracker {
-        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean, giftHistoryClockOffsetMs?:number|null}} opts */
-        constructor({ chatroomId, giveawayStartTime, giveawayData, lastMsgId = 0, cursorInitialized = false, giftHistoryClockOffsetMs = null }) {
+        /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean, giftHistoryClockOffsetMs?:number|null, giftHistoryInitialized?:boolean, giftHistorySeenKeys?:string[], historyFallbackActive?:boolean}} opts */
+        constructor({
+            chatroomId,
+            giveawayStartTime,
+            giveawayData,
+            lastMsgId = 0,
+            cursorInitialized = false,
+            giftHistoryClockOffsetMs = null,
+            giftHistoryInitialized = false,
+            giftHistorySeenKeys = [],
+            historyFallbackActive = false
+        }) {
             this.chatroomId = chatroomId;
             this.giveawayStartTs = giveawayStartTime.getTime();
             this.data = giveawayData;
@@ -3964,7 +4021,13 @@ body.host-panel-dragging * {
             this.giftHistoryClockOffsetMs = Number.isFinite(Number(giftHistoryClockOffsetMs))
                 ? Number(giftHistoryClockOffsetMs)
                 : null;
-            this.processedIds = new Set(); // de-dupe within this page lifetime
+            this.giftHistoryInitialized = !!giftHistoryInitialized;
+            this.giftHistorySeenKeys = new Set(
+                (Array.isArray(giftHistorySeenKeys) ? giftHistorySeenKeys : [])
+                    .filter(key => typeof key === "string" && key)
+            );
+            this.historyFallbackActive = !!historyFallbackActive;
+            this.processedIds = new Set(); // chat-fallback de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
             this.sponsorWindowStartAt = 0; // digest window start (ms)
             this.sponsorSet = new Set(
@@ -4006,9 +4069,220 @@ body.host-panel-dragging * {
             snapshotGiveaway();
         }
 
-        /* ---- called by the 10-second timer ---- */
+        trimGiftHistorySeenKeys() {
+            if (this.giftHistorySeenKeys.size <= 250) return;
+            this.giftHistorySeenKeys = new Set(
+                Array.from(this.giftHistorySeenKeys).slice(-250)
+            );
+        }
+
+        setGiftHistoryBaseline(rows) {
+            for (const item of indexGiftHistoryRows(rows)) {
+                if (item.historyKey) this.giftHistorySeenKeys.add(item.historyKey);
+            }
+            this.trimGiftHistorySeenKeys();
+            this.giftHistoryInitialized = true;
+        }
+
+        async bootstrapGiftHistory() {
+            try {
+                const rows = await this.fetchRecentGiftHistory();
+                this.setGiftHistoryBaseline(rows);
+                this.historyFallbackActive = false;
+                return true;
+            } catch (e) {
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Gift History bootstrap failed; Chat API fallback armed:", e);
+                }
+                this.historyFallbackActive = true;
+                return false;
+            }
+        }
+
+        async fetchRecentChatGiftEvents() {
+            const messages = await this.fetchNew();
+            return messages
+                .filter(m => !!m?.bot?.is_systembot && String(m?.message || "").includes("has gifted"))
+                .map(m => {
+                    const parsed = this.parseGiftMsg(m.message);
+                    const createdAtTs = Date.parse(m.created_at);
+                    return {
+                        gifter: parsed.gifter,
+                        recipient: parsed.recipient,
+                        amount: Math.max(0, Math.floor(Number(parsed.amount) || 0)),
+                        rawAmount: Number(parsed.amount),
+                        createdAtTs
+                    };
+                })
+                .filter(event =>
+                    event.gifter &&
+                    normalizeUserKey(event.recipient) === normalizeUserKey(this.data.host) &&
+                    event.amount > 0
+                );
+        }
+
+        async filterHistoryRowsByCutoff(rows, cutoffTs) {
+            if (!Array.isArray(rows) || !rows.length || !Number.isFinite(Number(cutoffTs))) {
+                return Array.isArray(rows) ? rows : [];
+            }
+
+            let offset = Number.isFinite(Number(this.giftHistoryClockOffsetMs))
+                ? Number(this.giftHistoryClockOffsetMs)
+                : null;
+
+            if (offset === null) {
+                try {
+                    const chatEvents = await this.fetchRecentChatGiftEvents();
+                    offset = this.inferGiftHistoryClockOffset(chatEvents, rows);
+                } catch (e) {
+                    if (DEBUG_SETTINGS.log_chat_messages) {
+                        console.warn("Final sponsor cutoff chat fallback failed:", e);
+                    }
+                }
+            }
+
+            const accepted = [];
+            for (const item of rows) {
+                const wallTs = Number.isFinite(Number(item?.createdAtAltTs))
+                    ? Number(item.createdAtAltTs)
+                    : Number(item?.createdAtTs);
+
+                if (offset !== null && Number.isFinite(wallTs)) {
+                    if ((wallTs - offset) <= Number(cutoffTs)) accepted.push(item);
+                    continue;
+                }
+
+                const candidates = [
+                    Number(item?.createdAtTs),
+                    Number(item?.createdAtAltTs)
+                ].filter(Number.isFinite);
+
+                if (candidates.length && candidates.every(ts => ts <= Number(cutoffTs))) {
+                    accepted.push(item);
+                } else {
+                    logEvent(
+                        "Sponsor cutoff ambiguity",
+                        `Skipped an unverified final Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); verify manually.`
+                    );
+                }
+            }
+
+            return accepted;
+        }
+
+        async processGiftHistoryRows(rows, options = {}) {
+            const maxCreatedAtTs = Number.isFinite(Number(options.maxCreatedAtTs))
+                ? Number(options.maxCreatedAtTs)
+                : null;
+            const announce = options.announce !== false;
+            const indexed = indexGiftHistoryRows(rows);
+            const hostKey = normalizeUserKey(this.data.host);
+
+            let newRows = indexed.filter(item =>
+                item.historyKey &&
+                !this.giftHistorySeenKeys.has(item.historyKey) &&
+                normalizeUserKey(item.recipient) === hostKey
+            );
+
+            newRows.reverse();
+
+            if (maxCreatedAtTs !== null && newRows.length) {
+                newRows = await this.filterHistoryRowsByCutoff(newRows, maxCreatedAtTs);
+            }
+
+            let recordedGiftNote = false;
+            for (const item of newRows) {
+                const cleanAmount = Math.max(0, Math.floor(Number(item.amount) || 0));
+                if (!(cleanAmount > 0)) continue;
+
+                const event = {
+                    gifter: item.sender,
+                    recipient: item.recipient,
+                    amount: cleanAmount,
+                    rawAmount: Number(item.amount),
+                    message: sanitizeSponsorGiftMessage(item.message),
+                    createdAtTs: Number.isFinite(Number(item.createdAtTs))
+                        ? Number(item.createdAtTs)
+                        : null
+                };
+
+                this.applyGift(event.gifter, event.amount);
+                if (recordSponsorGiftMessage(this.data, event)) recordedGiftNote = true;
+                this.buffer.push({
+                    gifter: event.gifter,
+                    amount: event.amount,
+                    message: event.message || ""
+                });
+            }
+
+            for (const item of indexed) {
+                if (item.historyKey) this.giftHistorySeenKeys.add(item.historyKey);
+            }
+            this.trimGiftHistorySeenKeys();
+            this.giftHistoryInitialized = true;
+            this.historyFallbackActive = false;
+
+            if (recordedGiftNote || newRows.length) snapshotGiveaway();
+
+            if (this.buffer.length) {
+                if (announce) this.maybeFlush();
+                else this.flushBuffer(Date.now(), { announce: false });
+            }
+
+            return true;
+        }
+
+        /* ---- Primary sponsor poll: UNIT3D Gift History ---- */
         async poll(options = {}) {
             const perfStart = PERF ? performance.now() : 0;
+            let historyRows;
+
+            try {
+                historyRows = await this.fetchRecentGiftHistory();
+            } catch (e) {
+                this.historyFallbackActive = true;
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Gift History unavailable; using Chat API/SystemBot fallback:", e);
+                }
+                const ok = await this.pollChatFallback(options);
+                if (PERF) perfMeasure('sponsor_poll', perfStart);
+                return ok;
+            }
+
+            if (this.historyFallbackActive) {
+                const chatOk = await this.pollChatFallback(options);
+                if (!chatOk) {
+                    if (PERF) perfMeasure('sponsor_poll', perfStart);
+                    return false;
+                }
+                this.setGiftHistoryBaseline(historyRows);
+                this.historyFallbackActive = false;
+                snapshotGiveaway();
+                if (PERF) perfMeasure('sponsor_poll', perfStart);
+                return true;
+            }
+
+            if (!this.giftHistoryInitialized) {
+                const chatOk = await this.pollChatFallback(options);
+                if (!chatOk) {
+                    if (PERF) perfMeasure('sponsor_poll', perfStart);
+                    return false;
+                }
+                this.setGiftHistoryBaseline(historyRows);
+                snapshotGiveaway();
+                if (PERF) perfMeasure('sponsor_poll', perfStart);
+                return true;
+            }
+
+            const ok = await this.processGiftHistoryRows(historyRows, options);
+            if (PERF) perfMeasure('sponsor_poll', perfStart);
+            return ok;
+        }
+
+        /* ---- Chat API/SystemBot fallback only ---- */
+        async pollChatFallback(options = {}) {
+            const perfStart = PERF ? performance.now() : 0;
+            this.historyFallbackActive = true;
             const maxCreatedAtTs = Number.isFinite(Number(options.maxCreatedAtTs))
                 ? Number(options.maxCreatedAtTs)
                 : null;
