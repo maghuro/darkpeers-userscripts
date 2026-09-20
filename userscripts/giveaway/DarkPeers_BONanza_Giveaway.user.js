@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.16
+// @version      1.3.17
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -110,6 +110,10 @@
 //     Gift History notes are grouped by sponsor under "Messages from our sponsors",
 //     BON Pool prize accounting is explicit (gross vs pool), and pool settlement uses
 //     the blue BON Pool identity consistently.
+//   - v1.3.17 follows a full-source audit: final sponsor thanks/notes now also run
+//     when a giveaway ends with zero entrants, the zero-entry audit log preserves the
+//     real host/sponsor split, and repeated identical Gift History notes from distinct
+//     gifts are no longer collapsed a second time during presentation.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -319,9 +323,10 @@
     //   1) a fixed bold+italic+underline prefix sentinel;
     //   2) an italic+underline sentinel whose colour identifies the marker kind.
     //
-    // The colours below are the canonical 16-colour IRC palette used by The Lounge.
-    // They are invisible on DarkPeers because U+2063 has zero visual width, while the
-    // bridge preserves their formatting as IRC style spans that TLCC can select.
+    // The type colours use The Lounge's IRC palette: the canonical 0..15 set plus
+    // extended colour 16 for sponsor-message recaps. They are invisible on DarkPeers
+    // because U+2063 has zero visual width, while the bridge preserves their formatting
+    // as IRC style spans that TLCC can select.
     const BRIDGE_SENTINEL = "\u2063";
     const BRIDGE_MARKERS = Object.freeze({
         START: "start",
@@ -6138,11 +6143,36 @@ body.host-panel-dragging * {
         // active snapshot immediately before committing the outcome.
         try { clearGiveawaySnapshot(); } catch {}
 
+        // Sponsor acknowledgement is independent of whether anyone entered. Gifts
+        // were already received and the final sync above has frozen the authoritative
+        // sponsor state, so thank sponsors (and preserve their notes) in either path.
+        const finalSponsoredTotal = Math.max(
+            0,
+            Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0)
+        );
+        if (finalSponsoredTotal > 0) {
+            const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
+            if (sponsorsMessage) await sendMessage(sponsorsMessage);
+
+            // Gift History is already the canonical sponsor-note source and the
+            // final sponsor sync above has just refreshed it. Reuse the persisted
+            // matched notes here instead of performing a second network scrape.
+            const sponsorMessageRecap = buildFinalSponsorMessageRecap(giveawayData);
+            for (const sponsorNoteMessage of sponsorMessageRecap) {
+                await sendMessage(sponsorNoteMessage);
+            }
+        }
+
         // no entries → no winners
         if (numberEntries.size === 0) {
             const emptyMessage = `Unfortunately, no one has entered the giveaway, so no one wins!`
             await sendMessage(emptyMessage);
-            logEvent("Giveaway ended", `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(giveawayData.amount)} BON | Sponsored=0 BON | Total=${fmtBONCurrency(giveawayData.amount)} BON`)
+            const noEntryTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
+            const noEntryHostFunded = Math.max(0, noEntryTotal - finalSponsoredTotal);
+            logEvent(
+                "Giveaway ended",
+                `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON`
+            )
             try {
                 currentStatement = createStatementRecord({ winners: [], gross: [], net: [], donations: [], split: null, poolStatus: "none", entrants: 0 });
                 if (currentStatement) { currentStatement.verification = "nothing to verify"; persistCurrentStatement(); }
@@ -6153,21 +6183,7 @@ body.host-panel-dragging * {
             giveawayData.winningNumber = getRandomInt(giveawayData.startNum, giveawayData.endNum);
             logEvent("Winning number drawn", `Winning number=${giveawayData.winningNumber}`);
 
-            // 1) sponsors shout-out + optional Gift History notes
-            if (sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) > 0) {
-                const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
-                if (sponsorsMessage) await sendMessage(sponsorsMessage);
-
-                // Gift History is already the canonical sponsor-note source and the
-                // final sponsor sync above has just refreshed it. Reuse the persisted
-                // matched notes here instead of performing a second network scrape.
-                const sponsorMessageRecap = buildFinalSponsorMessageRecap(giveawayData);
-                for (const sponsorNoteMessage of sponsorMessageRecap) {
-                    await sendMessage(sponsorNoteMessage);
-                }
-            }
-
-            // 2) build and sort entries by closeness to winningNumber
+            // 1) build and sort entries by closeness to winningNumber
             const entries = Array.from(numberEntries.entries())
             .map(([author, guess], idx) => ({
                 author,
@@ -9260,8 +9276,7 @@ body.host-panel-dragging * {
             }
 
             const entry = grouped.get(sponsorKey);
-            const duplicate = entry.notes.some(note => note.message === message);
-            if (!duplicate) entry.notes.push({ message, createdAtTs });
+            entry.notes.push({ message, createdAtTs });
         }
 
         const sponsors = Array.from(grouped.values())
