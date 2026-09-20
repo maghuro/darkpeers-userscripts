@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.17
+// @version      1.3.18
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -114,6 +114,10 @@
 //     when a giveaway ends with zero entrants, the zero-entry audit log preserves the
 //     real host/sponsor split, and repeated identical Gift History notes from distinct
 //     gifts are no longer collapsed a second time during presentation.
+//   - v1.3.18 completes the audit hardening: sponsor digest sends are serialized so
+//     summaries, note continuations and scaling notices cannot race each other; live
+//     note-only continuations use the dedicated MESSAGES marker; and large final
+//     sponsor lists are proactively chunked before the website/IRC bridge can split them.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -4312,8 +4316,8 @@ body.host-panel-dragging * {
             if (recordedGiftNote || newRows.length) snapshotGiveaway();
 
             if (this.buffer.length) {
-                if (announce) this.maybeFlush();
-                else this.flushBuffer(Date.now(), { announce: false });
+                if (announce) await this.maybeFlush();
+                else await this.flushBuffer(Date.now(), { announce: false });
             }
 
             return true;
@@ -4451,8 +4455,8 @@ body.host-panel-dragging * {
 
             /* send ONE summary line if anything new arrived */
             if (this.buffer.length) {
-                if (announce) this.maybeFlush();
-                else this.flushBuffer(Date.now(), { announce: false });
+                if (announce) await this.maybeFlush();
+                else await this.flushBuffer(Date.now(), { announce: false });
             }
             if (PERF) perfMeasure('sponsor_poll', perfStart);
             return true;
@@ -4741,7 +4745,7 @@ body.host-panel-dragging * {
             snapshotGiveaway();
         }
 
-        announceWinnerScalingIfNeeded() {
+        async announceWinnerScalingIfNeeded() {
             const data = this.data;
             if (!data || data !== giveawayData || !data.scaleWinnersWithSponsors) return;
             if (!(Number(data.timeLeft) > 0)) return;
@@ -4771,19 +4775,19 @@ body.host-panel-dragging * {
             }
 
             logEvent("Scaled winners increased", `${oldWinners} -> ${newWinners} (+${delta})${reachedCap ? ` | cap reached=${fmtBON(cap)}` : ""}`);
-            sendMessage(message);
+            await sendMessage(message);
             flashWinnersUI();
             data.lastAnnouncedWinners = newWinners;
         }
 
 
         /* ---- decide when to announce buffered sponsor gifts ---- */
-        maybeFlush(force = false) {
+        async maybeFlush(force = false) {
             if (!this.buffer.length) return;
 
             // In off mode, don't clutter chat at all (still counts + updates pot)
             if (SPONSOR_ANNOUNCE.mode === "off") {
-                this.announceWinnerScalingIfNeeded();
+                await this.announceWinnerScalingIfNeeded();
                 this.buffer.length = 0;
                 this.sponsorWindowStartAt = 0;
                 return;
@@ -4796,7 +4800,7 @@ body.host-panel-dragging * {
 
             // Old behavior: announce immediately whenever new gifts arrive
             if (SPONSOR_ANNOUNCE.mode === "immediate") {
-                this.flushBuffer(now);
+                await this.flushBuffer(now);
                 return;
             }
 
@@ -4807,12 +4811,12 @@ body.host-panel-dragging * {
             const hitTime = (now - this.sponsorWindowStartAt) >= SPONSOR_ANNOUNCE.digest_ms;
 
             if (force || hasBigSingle || tooManyEvents || hitMinTotal || hitTime) {
-                this.flushBuffer(now);
+                await this.flushBuffer(now);
             }
         }
 
         /* ---- build a single chat line & clear buffer ---- */
-        flushBuffer(nowTs = Date.now(), options = {}) {
+        async flushBuffer(nowTs = Date.now(), options = {}) {
             const announce = !(options && options.announce === false);
             if (!this.buffer.length) return;
 
@@ -4953,7 +4957,7 @@ body.host-panel-dragging * {
                     noteParts.push(noteText);
                 }
 
-                const continuationPrefix = `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "💬")} Sponsor message`;
+                const continuationPrefix = `${bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬")} Sponsor message`;
                 let currentParts = [];
 
                 const flushNoteChunk = () => {
@@ -4980,12 +4984,12 @@ body.host-panel-dragging * {
             }
 
             if (announce) {
-                sendMessage(msg);
+                await sendMessage(msg);
                 for (const noteMessage of noteContinuationMessages) {
-                    sendMessage(noteMessage);
+                    await sendMessage(noteMessage);
                 }
                 flashPotTotalUI();
-                this.announceWinnerScalingIfNeeded();
+                await this.announceWinnerScalingIfNeeded();
             }
             this.buffer.length = 0; // clear the batch/digest
             this.sponsorWindowStartAt = 0; // reset digest window
@@ -6151,8 +6155,10 @@ body.host-panel-dragging * {
             Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0)
         );
         if (finalSponsoredTotal > 0) {
-            const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
-            if (sponsorsMessage) await sendMessage(sponsorsMessage);
+            const sponsorSummaryMessages = buildSponsorsSummaryMessages(giveawayData);
+            for (const sponsorsMessage of sponsorSummaryMessages) {
+                await sendMessage(sponsorsMessage);
+            }
 
             // Gift History is already the canonical sponsor-note source and the
             // final sponsor sync above has just refreshed it. Reuse the persisted
@@ -9211,8 +9217,8 @@ body.host-panel-dragging * {
         flashUIElement(target, 1050);
     }
 
-    function buildSponsorsSummaryMessage(data) {
-        if (!data) return "";
+    function buildSponsorsSummaryMessages(data) {
+        if (!data) return [];
         const hostKey = normalizeUserKey(data.host);
         const contribEntries = Object.entries(data.sponsorContribs || {});
 
@@ -9240,12 +9246,39 @@ body.host-panel-dragging * {
                 `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
             );
 
-        if (!safe.length) return "";
+        if (!safe.length) return [];
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
-        return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
-            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].\n` +
-            `[b]Sponsors:[/b] ${safe.join(" · ")}`;
+        const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
+        const messages = [];
+        const firstHeading =
+            `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
+            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].`;
+        const continuationHeading = () =>
+            `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} [b]Sponsors (cont.):[/b] `;
+
+        let current = [];
+        let firstChunk = true;
+
+        const render = (parts) => firstChunk
+            ? firstHeading + "\n" + `[b]Sponsors:[/b] ${parts.join(" · ")}`
+            : continuationHeading() + parts.join(" · ");
+
+        const flush = () => {
+            if (!current.length) return;
+            messages.push(render(current));
+            current = [];
+            firstChunk = false;
+        };
+
+        for (const part of safe) {
+            const candidate = render(current.concat(part));
+            if (current.length && visibleChatLength(candidate) > maxVisible) flush();
+            current.push(part);
+        }
+        flush();
+
+        return messages;
     }
 
     function buildFinalSponsorMessageRecap(data) {
