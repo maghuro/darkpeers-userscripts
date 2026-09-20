@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.13
+// @version      1.3.14
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -100,6 +100,9 @@
 //     no longer leaves orphaned "()" after giveaway emojis; TLCC still hides the URL.
 //   - v1.3.13 gives BON Pool contribution giveaways a dedicated blue visual identity
 //     (💙) while leaving regular giveaways, BONanza donations and Rigged Taxes distinct.
+//   - v1.3.14 replaces public URL bridge markers with invisible styled sentinels. Every
+//     marker kind now survives DarkPeers -> IRC -> The Lounge without exposing a URL
+//     on the website or leaving bridge-generated "()" around a hidden link.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -300,8 +303,19 @@
     });
 
     // Authoritative website -> DP -> IRC -> The Lounge contract.
-    // TLCC gives these real link markers precedence over legacy emoji heuristics.
-    const BRIDGE_MARKER_PREFIX = `${location.origin}/#dpgw-v1-`;
+    //
+    // v1.3.14 deliberately does NOT use links for machine markers. A link is public
+    // website content, and HTML -> IRC bridges commonly serialize a labelled link as
+    // "label (URL)". Hiding only the <a> in TLCC then leaves orphaned parentheses.
+    //
+    // Instead, every marker is encoded as two U+2063 INVISIBLE SEPARATOR sentinels:
+    //   1) a fixed bold+italic+underline prefix sentinel;
+    //   2) an italic+underline sentinel whose colour identifies the marker kind.
+    //
+    // The colours below are the canonical 16-colour IRC palette used by The Lounge.
+    // They are invisible on DarkPeers because U+2063 has zero visual width, while the
+    // bridge preserves their formatting as IRC style spans that TLCC can select.
+    const BRIDGE_SENTINEL = "\u2063";
     const BRIDGE_MARKERS = Object.freeze({
         START: "start",
         START_POOL: "start-pool",
@@ -320,16 +334,37 @@
         POOL_PAID: "pool-paid",
         TAXES_PAID: "taxes-paid"
     });
+    const BRIDGE_SENTINEL_COLORS = Object.freeze({
+        "start":       "#FFFFFF", // IRC 00
+        "start-pool":  "#000000", // IRC 01
+        "start-taxes": "#001F3F", // IRC 02
+        "gift":        "#2ECC40", // IRC 03
+        "pot":         "#FF4136", // IRC 04
+        "sponsors":    "#85144B", // IRC 05
+        "entries":     "#B10DC9", // IRC 06
+        "stats":       "#FF851B", // IRC 07
+        "time":        "#FFDC00", // IRC 08
+        "result":      "#01FF70", // IRC 09
+        "tie":         "#39CCCC", // IRC 10
+        "rigged":      "#7FDBFF", // IRC 11
+        "unrigged":    "#0074D9", // IRC 12
+        "naughty":     "#F012BE", // IRC 13
+        "pool-paid":   "#AAAAAA", // IRC 14
+        "taxes-paid":  "#DDDDDD"  // IRC 15
+    });
 
     function bridgeMarker(kind, visible) {
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
-        const markerUrl = `${BRIDGE_MARKER_PREFIX}${safeKind}`;
+        const markerColor = BRIDGE_SENTINEL_COLORS[safeKind];
+        const safeVisible = String(visible ?? "");
 
-        // Keep the semantic emoji outside the link. The machine marker anchor labels
-        // itself with its own URL so the website -> IRC converter emits one clean URL
-        // instead of an empty-label " (URL)" pair. Website/TLCC CSS hides that URL,
-        // leaving neither the marker nor orphaned parentheses visible to users.
-        return `${visible} [url=${markerUrl}]${markerUrl}[/url]`;
+        // Unknown marker kinds must fail visibly-safe: keep the human-facing emoji/text,
+        // but never fall back to a public implementation URL.
+        if (!markerColor) return safeVisible;
+
+        const prefix = `[b][i][u]${BRIDGE_SENTINEL}[/u][/i][/b]`;
+        const typed = `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
+        return `${safeVisible}${prefix}${typed}`;
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
@@ -341,8 +376,9 @@
     let conflictWatchTimer = null;
 
     const BUTTON_CSS = `
-/* Machine-only giveaway bridge markers: keep them in the DOM for the bridge,
-   never show their URL in the DarkPeers website chat. */
+/* Legacy v1.2.3-v1.3.13 URL markers may still exist in already-loaded scrollback.
+   Keep hiding those old anchors for hosts running the userscript. v1.3.14 emits
+   invisible styled sentinels instead and therefore needs no website-side hiding. */
 .chatbox-message__content a[href*="#dpgw-v1-"] {
   display: none !important;
 }
