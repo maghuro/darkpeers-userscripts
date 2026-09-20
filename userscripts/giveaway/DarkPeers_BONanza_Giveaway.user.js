@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.14
+// @version      1.3.15
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -103,6 +103,9 @@
 //   - v1.3.14 replaces public URL bridge markers with invisible styled sentinels. Every
 //     marker kind now survives DarkPeers -> IRC -> The Lounge without exposing a URL
 //     on the website or leaving bridge-generated "()" around a hidden link.
+//   - v1.3.15 adds a final sponsor-note recap from canonical Gift History, introduces
+//     a dedicated sponsor-messages bridge marker, and carries BON Pool / Rigged Taxes
+//     context through every authoritative marker so TLCC can keep one event identity.
 // DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -295,7 +298,7 @@
         POOL_STORE_PATH: "/bon-pool/store",
         PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
         MAX_PERCENT: 30,
-        ACCENT_COLOR: "#FF8C42",
+        ACCENT_COLOR: "#4FAFFF",
         GIVEAWAY_COLOR: "#4FAFFF",
         VERIFY_ATTEMPTS: 6,
         VERIFY_DELAY_MS: 2500,
@@ -323,6 +326,7 @@
         GIFT: "gift",
         POT: "pot",
         SPONSORS: "sponsors",
+        SPONSOR_MESSAGES: "sponsor-messages",
         ENTRIES: "entries",
         STATS: "stats",
         TIME: "time",
@@ -340,8 +344,9 @@
         "start-taxes": "#001F3F", // IRC 02
         "gift":        "#2ECC40", // IRC 03
         "pot":         "#FF4136", // IRC 04
-        "sponsors":    "#85144B", // IRC 05
-        "entries":     "#B10DC9", // IRC 06
+        "sponsors":         "#85144B", // IRC 05
+        "sponsor-messages": "#470000", // IRC 16
+        "entries":          "#B10DC9", // IRC 06
         "stats":       "#FF851B", // IRC 07
         "time":        "#FFDC00", // IRC 08
         "result":      "#01FF70", // IRC 09
@@ -352,6 +357,21 @@
         "pool-paid":   "#AAAAAA", // IRC 14
         "taxes-paid":  "#DDDDDD"  // IRC 15
     });
+
+    const BRIDGE_CONTEXT_COLORS = Object.freeze({
+        pool: "#0074D9",  // IRC 12, distinguished by bold+underline (no italic)
+        taxes: "#F012BE"  // IRC 13, distinguished by bold+underline (no italic)
+    });
+
+    function getActiveBridgeContext() {
+        try {
+            const pct = Math.max(0, Number(giveawayData?.donationPercent) || 0);
+            if (!(pct > 0)) return "";
+            return riggedMode ? "taxes" : "pool";
+        } catch {
+            return "";
+        }
+    }
 
     function bridgeMarker(kind, visible) {
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
@@ -364,7 +384,17 @@
 
         const prefix = `[b][i][u]${BRIDGE_SENTINEL}[/u][/i][/b]`;
         const typed = `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
-        return `${safeVisible}${prefix}${typed}`;
+
+        // Carry the active giveaway family independently of the message type. This is
+        // what lets TLCC render SPONSORS / ENTRIES / TIME / RESULT / etc. in the same
+        // BON Pool blue (or Rigged Taxes pink) instead of reverting to generic colours.
+        const context = getActiveBridgeContext();
+        const contextColor = BRIDGE_CONTEXT_COLORS[context];
+        const contextual = contextColor
+            ? `[b][u][color=${contextColor}]${BRIDGE_SENTINEL}[/color][/u][/b]`
+            : "";
+
+        return `${safeVisible}${prefix}${typed}${contextual}`;
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
@@ -4009,7 +4039,7 @@ body.host-panel-dragging * {
     function visibleChatLength(value) {
         return String(value || "")
             .replace(/\[[^\]]+\]/g, "")
-            .replace(/\u200B/g, "")
+            .replace(/[\u200B\u2063]/g, "")
             .length;
     }
 
@@ -6123,6 +6153,14 @@ body.host-panel-dragging * {
             if (giveawayData.sponsors.length > 0) {
                 const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
                 if (sponsorsMessage) await sendMessage(sponsorsMessage);
+
+                // Gift History is already the canonical sponsor-note source and the
+                // final sponsor sync above has just refreshed it. Reuse the persisted
+                // matched notes here instead of performing a second network scrape.
+                const sponsorMessageRecap = buildFinalSponsorMessageRecap(giveawayData);
+                for (const sponsorNoteMessage of sponsorMessageRecap) {
+                    await sendMessage(sponsorNoteMessage);
+                }
             }
 
             // 2) build and sort entries by closeness to winningNumber
@@ -9176,6 +9214,89 @@ body.host-panel-dragging * {
         return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
             `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color]. ` +
             safe.join(", ") + ".";
+    }
+
+    function buildFinalSponsorMessageRecap(data) {
+        if (!data || !Array.isArray(data.sponsorGiftMessages) || !data.sponsorGiftMessages.length) return [];
+
+        const hostKey = normalizeUserKey(data.host);
+        const grouped = new Map();
+
+        for (const item of data.sponsorGiftMessages) {
+            const sponsor = String(item?.sponsor || "").trim();
+            const sponsorKey = normalizeUserKey(sponsor);
+            const message = sanitizeSponsorGiftMessage(item?.message);
+            const amount = Math.max(0, Math.floor(Number(item?.amount) || 0));
+            const createdAtTs = Number.isFinite(Number(item?.createdAtTs))
+                ? Number(item.createdAtTs)
+                : 0;
+
+            // Host self-top-ups are host funding, not sponsorships.
+            if (!sponsorKey || sponsorKey === hostKey || !message) continue;
+
+            if (!grouped.has(sponsorKey)) {
+                grouped.set(sponsorKey, {
+                    name: sponsor,
+                    total: Math.max(0, Math.floor(Number(data.sponsorContribs?.[sponsor]) || 0)),
+                    notes: []
+                });
+            }
+
+            const entry = grouped.get(sponsorKey);
+            const duplicate = entry.notes.some(note =>
+                note.message === message &&
+                note.amount === amount &&
+                (
+                    !createdAtTs ||
+                    !note.createdAtTs ||
+                    Math.abs(note.createdAtTs - createdAtTs) < 1000
+                )
+            );
+            if (!duplicate) entry.notes.push({ message, amount, createdAtTs });
+        }
+
+        const sponsors = Array.from(grouped.values())
+            .filter(entry => entry.notes.length)
+            .sort((a, b) =>
+                (b.total - a.total) ||
+                a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+            );
+
+        if (!sponsors.length) return [];
+
+        const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
+        const marker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
+        const heading = `${marker} Sponsor message${sponsors.reduce((n, s) => n + s.notes.length, 0) === 1 ? "" : "s"}: `;
+        const parts = [];
+
+        for (const sponsor of sponsors) {
+            sponsor.notes.sort((a, b) => (a.createdAtTs || 0) - (b.createdAtTs || 0));
+            const noteParts = sponsor.notes.map(note => {
+                const amountPart = note.amount > 0
+                    ? ` ([color=${BONANZA.GIVEAWAY_COLOR}][b]${fmtBONCurrency(note.amount)} BON[/b][/color])`
+                    : "";
+                return `[color=#1DDC5D][b]${sanitizeNick(sponsor.name)}[/b][/color]${amountPart}: [i]"${truncateSponsorGiftMessage(note.message)}"[/i]`;
+            });
+            parts.push(...noteParts);
+        }
+
+        const messages = [];
+        let current = [];
+
+        const flush = () => {
+            if (!current.length) return;
+            messages.push(heading + current.join(" | ") + ".");
+            current = [];
+        };
+
+        for (const part of parts) {
+            const candidate = heading + current.concat(part).join(" | ") + ".";
+            if (current.length && visibleChatLength(candidate) > maxVisible) flush();
+            current.push(part);
+        }
+        flush();
+
+        return messages;
     }
 
     function bindSettingsSectionToggleButtons() {
