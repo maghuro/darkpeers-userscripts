@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.15
+// @version      1.3.16
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -106,7 +106,11 @@
 //   - v1.3.15 adds a final sponsor-note recap from canonical Gift History, introduces
 //     a dedicated sponsor-messages bridge marker, and carries BON Pool / Rigged Taxes
 //     context through every authoritative marker so TLCC can keep one event identity.
-// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
+//   - v1.3.16 polishes the closing sequence: sponsors get a dedicated list line,
+//     Gift History notes are grouped by sponsor under "Messages from our sponsors",
+//     BON Pool prize accounting is explicit (gross vs pool), and pool settlement uses
+//     the blue BON Pool identity consistently.
+//// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
 // Original credits (Blutopia BON Giveaway)
@@ -6149,8 +6153,8 @@ body.host-panel-dragging * {
             giveawayData.winningNumber = getRandomInt(giveawayData.startNum, giveawayData.endNum);
             logEvent("Winning number drawn", `Winning number=${giveawayData.winningNumber}`);
 
-            // 1) sponsors shout-out
-            if (giveawayData.sponsors.length > 0) {
+            // 1) sponsors shout-out + optional Gift History notes
+            if (sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) > 0) {
                 const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
                 if (sponsorsMessage) await sendMessage(sponsorsMessage);
 
@@ -6246,7 +6250,7 @@ body.host-panel-dragging * {
                   `Winners drawn: [b][color=#5DE2E7]${fmtBON(N)}[/color][/b]. ` +
                   `Total entrants: [b][color=#5DE2E7]${fmtBON(entrantsTotal)}[/color][/b].`;
             const fundingLine =
-                  `Funding — Host-funded: [b][color=#ffc00a]${fmtBONCurrency(hostFundedTotal)} BON[/color][/b] | ` +
+                  `Funding - Host-funded: [b][color=#ffc00a]${fmtBONCurrency(hostFundedTotal)} BON[/color][/b] | ` +
                   `Sponsored: [b][color=#00abff]${fmtBONCurrency(sponsoredTotal)} BON[/color][/b] | ` +
                   `Total pot: [b][color=#FFC00A]${fmtBONCurrency(potTotal)} BON[/color][/b].`;
             const scalingLine = (giveawayData.scaleWinnersWithSponsors && scaleIncrease > 0)
@@ -6255,7 +6259,7 @@ body.host-panel-dragging * {
             const donationLine = donationActive
                 ? (riggedMode
                     ? `🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct payment into the [b]${BONANZA.FUND_NAME}[/b]. Confirmation follows after settlement.`
-                    : `[b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution. Confirmation follows after the pool records it.`)
+                    : `💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution.`)
                 : "";
 
             if (winners.length === 1) {
@@ -6263,7 +6267,11 @@ body.host-panel-dragging * {
                 const w = winners[0];
                 const diff = Math.abs(w.guess - winNum);
                 const prize = fmtBONCurrency(net[0]);
-                const donatedNote = donationActive ? ` [color=#aaaaaa](${fmtBONCurrency(allocated[0])} BON prize, ${fmtBONCurrency(split.donations[0])} BON to the fund)[/color]` : "";
+                const donatedNote = donationActive
+                    ? (riggedMode
+                        ? `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · Taxes: ${fmtBONCurrency(split.donations[0])} BON)[/color]`
+                        : `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · ${BONANZA.FUND_NAME}: ${fmtBONCurrency(split.donations[0])} BON)[/color]`)
+                    : "";
 
                 const winnerLine =
                       `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
@@ -6341,7 +6349,7 @@ body.host-panel-dragging * {
                     markFundGiftStatus("confirmed");
                     const paidMessage = riggedMode
                         ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
-                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "🧡")} [b][color=${BONANZA.ACCENT_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool. Thank you for supporting the event! ✨`;
+                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
                     await sendMessage(paidMessage);
                 } else {
                     markFundGiftStatus("failed");
@@ -9189,44 +9197,52 @@ body.host-panel-dragging * {
 
     function buildSponsorsSummaryMessage(data) {
         if (!data) return "";
+        const hostKey = normalizeUserKey(data.host);
+        const contribEntries = Object.entries(data.sponsorContribs || {});
+
         const sponsorNames = Array.from(new Set([
             ...(data.sponsors || []),
-            ...Object.keys(data.sponsorContribs || {})
+            ...contribEntries.map(([name]) => name)
         ]));
 
         const safe = sponsorNames
-        .map(name => ({
-            name,
-            amount: data.sponsorContribs?.[name] || 0
-        }))
-        .filter(item => item.name && Number(item.amount) > 0)
-        .sort((a, b) =>
-              (b.amount - a.amount) ||
-              a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-             )
-        .map(({ name, amount }) =>
-             `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
+            .map(name => {
+                const key = normalizeUserKey(name);
+                const matching = contribEntries.find(([storedName]) => normalizeUserKey(storedName) === key);
+                return {
+                    name,
+                    key,
+                    amount: matching ? Math.max(0, Math.floor(Number(matching[1]) || 0)) : 0
+                };
+            })
+            .filter(item => item.name && item.key && item.key !== hostKey && item.amount > 0)
+            .sort((a, b) =>
+                (b.amount - a.amount) ||
+                a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+            )
+            .map(({ name, amount }) =>
+                `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
             );
 
         if (!safe.length) return "";
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
         return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
-            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color]. ` +
-            safe.join(", ") + ".";
+            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].\n` +
+            `[b]Sponsors:[/b] ${safe.join(" · ")}`;
     }
 
     function buildFinalSponsorMessageRecap(data) {
         if (!data || !Array.isArray(data.sponsorGiftMessages) || !data.sponsorGiftMessages.length) return [];
 
         const hostKey = normalizeUserKey(data.host);
+        const contribEntries = Object.entries(data.sponsorContribs || {});
         const grouped = new Map();
 
         for (const item of data.sponsorGiftMessages) {
             const sponsor = String(item?.sponsor || "").trim();
             const sponsorKey = normalizeUserKey(sponsor);
             const message = sanitizeSponsorGiftMessage(item?.message);
-            const amount = Math.max(0, Math.floor(Number(item?.amount) || 0));
             const createdAtTs = Number.isFinite(Number(item?.createdAtTs))
                 ? Number(item.createdAtTs)
                 : 0;
@@ -9235,24 +9251,17 @@ body.host-panel-dragging * {
             if (!sponsorKey || sponsorKey === hostKey || !message) continue;
 
             if (!grouped.has(sponsorKey)) {
+                const matching = contribEntries.find(([name]) => normalizeUserKey(name) === sponsorKey);
                 grouped.set(sponsorKey, {
-                    name: sponsor,
-                    total: Math.max(0, Math.floor(Number(data.sponsorContribs?.[sponsor]) || 0)),
+                    name: matching?.[0] || sponsor,
+                    total: matching ? Math.max(0, Math.floor(Number(matching[1]) || 0)) : 0,
                     notes: []
                 });
             }
 
             const entry = grouped.get(sponsorKey);
-            const duplicate = entry.notes.some(note =>
-                note.message === message &&
-                note.amount === amount &&
-                (
-                    !createdAtTs ||
-                    !note.createdAtTs ||
-                    Math.abs(note.createdAtTs - createdAtTs) < 1000
-                )
-            );
-            if (!duplicate) entry.notes.push({ message, amount, createdAtTs });
+            const duplicate = entry.notes.some(note => note.message === message);
+            if (!duplicate) entry.notes.push({ message, createdAtTs });
         }
 
         const sponsors = Array.from(grouped.values())
@@ -9266,36 +9275,50 @@ body.host-panel-dragging * {
 
         const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
         const marker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
-        const heading = `${marker} Sponsor message${sponsors.reduce((n, s) => n + s.notes.length, 0) === 1 ? "" : "s"}: `;
-        const parts = [];
+        const heading = `${marker} [b]Messages from our sponsors:[/b]`;
+        const messages = [];
+        let currentLines = [];
+
+        const flush = () => {
+            if (!currentLines.length) return;
+            messages.push(heading + "\n" + currentLines.join("\n"));
+            currentLines = [];
+        };
 
         for (const sponsor of sponsors) {
             sponsor.notes.sort((a, b) => (a.createdAtTs || 0) - (b.createdAtTs || 0));
-            const noteParts = sponsor.notes.map(note => {
-                const amountPart = note.amount > 0
-                    ? ` ([color=${BONANZA.GIVEAWAY_COLOR}][b]${fmtBONCurrency(note.amount)} BON[/b][/color])`
-                    : "";
-                return `[color=#1DDC5D][b]${sanitizeNick(sponsor.name)}[/b][/color]${amountPart}: [i]"${truncateSponsorGiftMessage(note.message)}"[/i]`;
-            });
-            parts.push(...noteParts);
+
+            // Keep several messages from the same sponsor on one line where possible:
+            //   GRiMM: "for the pot" · "Another message"
+            const prefix = `[color=#1DDC5D][b]${sanitizeNick(sponsor.name)}[/b][/color]: `;
+            let noteGroup = [];
+
+            const flushSponsorLine = () => {
+                if (!noteGroup.length) return;
+                const line = prefix + noteGroup.map(note => `[i]"${note}"[/i]`).join(" · ");
+                const candidate = heading + "\n" + currentLines.concat(line).join("\n");
+                if (currentLines.length && visibleChatLength(candidate) > maxVisible) flush();
+                currentLines.push(line);
+                noteGroup = [];
+            };
+
+            for (const note of sponsor.notes) {
+                const clean = truncateSponsorGiftMessage(note.message);
+                if (!clean) continue;
+
+                const candidateNotes = noteGroup.concat(clean);
+                const candidateLine = prefix + candidateNotes.map(value => `[i]"${value}"[/i]`).join(" · ");
+                const candidateBlock = heading + "\n" + currentLines.concat(candidateLine).join("\n");
+
+                if (noteGroup.length && visibleChatLength(candidateBlock) > maxVisible) {
+                    flushSponsorLine();
+                }
+                noteGroup.push(clean);
+            }
+            flushSponsorLine();
         }
 
-        const messages = [];
-        let current = [];
-
-        const flush = () => {
-            if (!current.length) return;
-            messages.push(heading + current.join(" | ") + ".");
-            current = [];
-        };
-
-        for (const part of parts) {
-            const candidate = heading + current.concat(part).join(" | ") + ".";
-            if (current.length && visibleChatLength(candidate) > maxVisible) flush();
-            current.push(part);
-        }
         flush();
-
         return messages;
     }
 
