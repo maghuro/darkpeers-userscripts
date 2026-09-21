@@ -141,7 +141,9 @@
 //     verification; sponsor opening/closing boundaries constrain Gift History and both
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
-//     BFCache settlement resumes must reacquire exclusive ownership before transfers;
+//     BFCache documents quarantine all giveaway mutations/snapshots from pagehide until
+//     persisted pageshow proves exclusive ownership again; settlement resumes must also
+//     reacquire exclusive ownership before transfers;
 //     cross-tab gift attempts stay pending until their originating request resolves; a
 //     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
 //     while superseded fallbacks abort before sending; rejected attempts remain retryable;
@@ -597,6 +599,7 @@
     let tabLockHeartbeatTimer = null;
     let tabWebLockRelease = null;
     let tabWebLockAcquirePromise = null;
+    let giveawayMutationQuarantined = false;
     let hostAddBonInFlight = false;
 
     function readStoredBooleanSetting(key, fallback = false, persistFallback = false) {
@@ -2740,6 +2743,10 @@ body.host-panel-dragging * {
         }
     }
 
+    function canMutateActiveGiveaway() {
+        return !giveawayMutationQuarantined && (!giveawayData || ownsTabLock());
+    }
+
     // Release the localStorage lock only when this document really leaves.
     // This makes a normal reload recover immediately instead of leaving the new
     // document blocked behind the previous document's fresh heartbeat.
@@ -2747,13 +2754,20 @@ body.host-panel-dragging * {
         if (!giveawayData) return;
 
         const lock = readTabLock();
-        if (!lock || lock.tabId !== TAB_ID) return; // never overwrite another tab's snapshot
+        if (!lock || lock.tabId !== TAB_ID) {
+            giveawayMutationQuarantined = true;
+            return; // never overwrite another tab's snapshot
+        }
 
         try {
             flushStatsNow();
             if (!giveawayData.__ending) snapshotGiveaway();
             else if (giveawayData.settlement?.committed) snapshotGiveaway({ force: true });
         } catch {}
+
+        // From this point until a persisted pageshow proves ownership again, every
+        // async continuation from this document must be read-only.
+        giveawayMutationQuarantined = true;
         releaseTabLock();
     }
 
@@ -2763,10 +2777,16 @@ body.host-panel-dragging * {
     async function handleGiveawayPageShow(event) {
         if (!event || !event.persisted || !giveawayData) return;
 
+        // Keep this restored document quarantined synchronously while ownership is
+        // being reacquired. Other pending Promise continuations are free to run
+        // during the await below, but every mutation/snapshot path fails closed.
+        giveawayMutationQuarantined = true;
+
         // pagehide releases the Web Lock even during a committed settlement.
-        // A BFCache restore must therefore reclaim exclusive ownership before any
-        // suspended async settlement continuation is allowed to keep running.
-        if (await ensureExclusiveTabOwnership()) return;
+        if (await ensureExclusiveTabOwnership()) {
+            giveawayMutationQuarantined = false;
+            return;
+        }
 
         window.onbeforeunload = null;
         window.location.reload();
@@ -2780,7 +2800,7 @@ body.host-panel-dragging * {
      * Called at key mutation points (new entry, start, addbon, sponsor, time adjust).
      */
     function snapshotGiveaway({ force = false } = {}) {
-        if (!giveawayData || (giveawayData.__ending && !force)) return;
+        if (!giveawayData || !canMutateActiveGiveaway() || (giveawayData.__ending && !force)) return;
         try {
             const snapshot = {
                 giveawayData: {
@@ -4567,6 +4587,8 @@ body.host-panel-dragging * {
                 newRows = await this.filterHistoryRowsByWindow(newRows, minCreatedAtTs, maxCreatedAtTs);
             }
 
+            if (!canMutateActiveGiveaway()) return false;
+
             let recordedGiftNote = false;
             for (const item of newRows) {
                 const cleanAmount = Math.max(0, Math.floor(Number(item.amount) || 0));
@@ -4707,6 +4729,8 @@ body.host-panel-dragging * {
                 return false;
             }
 
+            if (!canMutateActiveGiveaway()) return false;
+
             // fetchNew() can overlap endGiveaway(). Rebuild the upper boundary
             // after the await so a manual close that latches an earlier cutoff is
             // immediately inherited by this already-running fallback pass.
@@ -4775,6 +4799,8 @@ body.host-panel-dragging * {
             const bufferedEvents = sponsorEvents.length
                 ? await this.enrichGiftEventsWithMessages(sponsorEvents)
                 : sponsorEvents;
+
+            if (!canMutateActiveGiveaway()) return false;
 
             let recordedGiftNote = false;
             for (const event of bufferedEvents) {
@@ -5049,9 +5075,10 @@ body.host-panel-dragging * {
 
         /* ---- update pot + per-sponsor running totals ---- */
         applyGift(gifter, amount) {
+            if (!canMutateActiveGiveaway()) return false;
             const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
             const sponsorKey = normalizeUserKey(gifter);
-            if (!sponsorKey || !(cleanAmount > 0)) return;
+            if (!sponsorKey || !(cleanAmount > 0)) return false;
 
             this.data.amount += cleanAmount;
 
@@ -5075,9 +5102,11 @@ body.host-panel-dragging * {
 
             recordLiveSponsorGift(gifter, cleanAmount); // live sponsor stats update
             snapshotGiveaway();
+            return true;
         }
 
         async announceWinnerScalingIfNeeded() {
+            if (!canMutateActiveGiveaway()) return;
             const data = this.data;
             if (!data || data !== giveawayData || !data.scaleWinnersWithSponsors) return;
             if (!(Number(data.timeLeft) > 0)) return;
@@ -5150,6 +5179,7 @@ body.host-panel-dragging * {
         /* ---- build a single chat line & clear buffer ---- */
         async flushBuffer(nowTs = Date.now(), options = {}) {
             const announce = !(options && options.announce === false);
+            if (!canMutateActiveGiveaway()) return;
             if (!this.buffer.length) return;
 
             const grouped = this.buffer.reduce((acc, { gifter, amount, message }) => {
@@ -6290,6 +6320,13 @@ body.host-panel-dragging * {
         hostAddBonInFlight = true;
         try {
             const currentBon = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
+            if (!canMutateActiveGiveaway()) {
+                logEvent(
+                    "Host BON top-up aborted",
+                    "The page lost exclusive giveaway ownership while the balance check was in flight."
+                );
+                return;
+            }
             const currentPot = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
             const newTotal = currentPot + amount;
     
