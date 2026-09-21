@@ -3363,6 +3363,10 @@ body.host-panel-dragging * {
             // snapshot means every subsequently appearing received gift is new.
             giveawayStartTime = new Date();
             tracker.giveawayStartTs = giveawayStartTime.getTime();
+            // The advertised duration begins at the same public-opening boundary,
+            // not while balance/history preflight or chat delivery is still running.
+            giveawayData.endTs = giveawayStartTime.getTime() + totalTimeMs;
+            giveawayData.timeLeft = totalTimeMs / 1000;
             window.__activeTracker = tracker;
 
             try { await tracker.poll(); } catch (e) { console.error(e); }
