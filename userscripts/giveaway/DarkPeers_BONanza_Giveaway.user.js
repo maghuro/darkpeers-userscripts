@@ -141,8 +141,10 @@
 //     verification; sponsor opening/closing boundaries constrain Gift History and both
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
-//     BFCache settlement resumes must reacquire exclusive ownership before transfers, and
-//     Gift History opening bounds honor the source timestamp precision (including fractions).
+//     BFCache settlement resumes must reacquire exclusive ownership before transfers;
+//     chat gift fallbacks re-check ownership at the actual send point; optional sponsor
+//     cutoffs/clock offsets preserve null instead of coercing it to epoch zero; and Gift
+//     History opening bounds honor the source timestamp precision (including fractions).
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -2821,15 +2823,11 @@ body.host-panel-dragging * {
                 sponsorTracker: window.__activeTracker ? {
                     lastMsgId: Math.max(0, Math.floor(Number(window.__activeTracker.lastMsgId) || 0)),
                     cursorInitialized: !!window.__activeTracker.cursorInitialized,
-                    giftHistoryClockOffsetMs: Number.isFinite(Number(window.__activeTracker.giftHistoryClockOffsetMs))
-                        ? Number(window.__activeTracker.giftHistoryClockOffsetMs)
-                        : null,
+                    giftHistoryClockOffsetMs: optionalFiniteNumber(window.__activeTracker.giftHistoryClockOffsetMs),
                     giftHistoryInitialized: !!window.__activeTracker.giftHistoryInitialized,
                     giftHistorySeenKeys: Array.from(window.__activeTracker.giftHistorySeenKeys || []).slice(-250),
                     historyFallbackActive: !!window.__activeTracker.historyFallbackActive,
-                    maxAcceptedCreatedAtTs: Number.isFinite(Number(window.__activeTracker.maxAcceptedCreatedAtTs))
-                        ? Number(window.__activeTracker.maxAcceptedCreatedAtTs)
-                        : null
+                    maxAcceptedCreatedAtTs: optionalFiniteNumber(window.__activeTracker.maxAcceptedCreatedAtTs)
                 } : null,
                 riggedMode: riggedMode,
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -3081,8 +3079,8 @@ body.host-panel-dragging * {
                 giveawayData,
                 lastMsgId: savedTracker ? savedTracker.lastMsgId : 0,
                 cursorInitialized: savedTracker ? !!savedTracker.cursorInitialized : false,
-                giftHistoryClockOffsetMs: savedTracker && Number.isFinite(Number(savedTracker.giftHistoryClockOffsetMs))
-                    ? Number(savedTracker.giftHistoryClockOffsetMs)
+                giftHistoryClockOffsetMs: savedTracker
+                    ? optionalFiniteNumber(savedTracker.giftHistoryClockOffsetMs)
                     : null,
                 giftHistoryInitialized: savedTracker ? !!savedTracker.giftHistoryInitialized : false,
                 giftHistorySeenKeys: savedTracker && Array.isArray(savedTracker.giftHistorySeenKeys)
@@ -3091,11 +3089,9 @@ body.host-panel-dragging * {
                 historyFallbackActive: savedTracker
                     ? (!!savedTracker.historyFallbackActive || !savedTracker.giftHistoryInitialized)
                     : true,
-                maxAcceptedCreatedAtTs: Number.isFinite(Number(giveawayData?.settlement?.cutoffTs))
-                    ? Number(giveawayData.settlement.cutoffTs)
-                    : (savedTracker && Number.isFinite(Number(savedTracker.maxAcceptedCreatedAtTs))
-                        ? Number(savedTracker.maxAcceptedCreatedAtTs)
-                        : null)
+                maxAcceptedCreatedAtTs:
+                    optionalFiniteNumber(giveawayData?.settlement?.cutoffTs) ??
+                    (savedTracker ? optionalFiniteNumber(savedTracker.maxAcceptedCreatedAtTs) : null)
             });
             window.__activeTracker = tracker;
 
@@ -4331,6 +4327,12 @@ body.host-panel-dragging * {
         return true;
     }
 
+    function optionalFiniteNumber(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+    }
+
     class SponsorTracker {
         /** @param {{chatroomId:string, giveawayStartTime:Date, giveawayData:Object, lastMsgId?:number, cursorInitialized?:boolean, giftHistoryClockOffsetMs?:number|null, giftHistoryInitialized?:boolean, giftHistorySeenKeys?:string[], historyFallbackActive?:boolean}} opts */
         constructor({
@@ -4351,18 +4353,14 @@ body.host-panel-dragging * {
 
             this.lastMsgId = Math.max(0, Math.floor(Number(lastMsgId) || 0)); // persisted API cursor
             this.cursorInitialized = !!cursorInitialized;
-            this.giftHistoryClockOffsetMs = Number.isFinite(Number(giftHistoryClockOffsetMs))
-                ? Number(giftHistoryClockOffsetMs)
-                : null;
+            this.giftHistoryClockOffsetMs = optionalFiniteNumber(giftHistoryClockOffsetMs);
             this.giftHistoryInitialized = !!giftHistoryInitialized;
             this.giftHistorySeenKeys = new Set(
                 (Array.isArray(giftHistorySeenKeys) ? giftHistorySeenKeys : [])
                     .filter(key => typeof key === "string" && key)
             );
             this.historyFallbackActive = !!historyFallbackActive;
-            this.maxAcceptedCreatedAtTs = Number.isFinite(Number(maxAcceptedCreatedAtTs))
-                ? Number(maxAcceptedCreatedAtTs)
-                : null;
+            this.maxAcceptedCreatedAtTs = optionalFiniteNumber(maxAcceptedCreatedAtTs);
             this.pollInFlight = null; // serialize/coalesce polling so the same gift cannot be applied twice
             this.processedIds = new Set(); // chat-fallback de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
@@ -4461,22 +4459,16 @@ body.host-panel-dragging * {
         async filterHistoryRowsByWindow(rows, minTs = null, maxTs = null) {
             if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
 
-            const min = Number.isFinite(Number(minTs)) ? Number(minTs) : null;
-            let max = Number.isFinite(Number(maxTs)) ? Number(maxTs) : null;
-            const liveMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                ? Number(this.maxAcceptedCreatedAtTs)
-                : null;
-            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
-                ? Number(this.data.endTs)
-                : null;
+            const min = optionalFiniteNumber(minTs);
+            let max = optionalFiniteNumber(maxTs);
+            const liveMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
+            const scheduledMax = optionalFiniteNumber(this.data?.endTs);
             for (const bound of [liveMax, scheduledMax]) {
                 if (bound !== null) max = max === null ? bound : Math.min(max, bound);
             }
             if (min === null && max === null) return rows;
 
-            let offset = Number.isFinite(Number(this.giftHistoryClockOffsetMs))
-                ? Number(this.giftHistoryClockOffsetMs)
-                : null;
+            let offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
 
             if (offset === null) {
                 try {
@@ -4492,9 +4484,7 @@ body.host-panel-dragging * {
             // Re-read the closing latch after the await above. If endGiveaway()
             // closed the window while this ordinary poll was already in flight,
             // this pass must immediately inherit that cutoff.
-            const latestMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                ? Number(this.maxAcceptedCreatedAtTs)
-                : null;
+            const latestMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
             if (latestMax !== null) max = max === null ? latestMax : Math.min(max, latestMax);
 
             const accepted = [];
@@ -4544,24 +4534,16 @@ body.host-panel-dragging * {
         }
 
         async processGiftHistoryRows(rows, options = {}) {
-            const optionMax = Number.isFinite(Number(options.maxCreatedAtTs))
-                ? Number(options.maxCreatedAtTs)
-                : null;
-            const trackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                ? Number(this.maxAcceptedCreatedAtTs)
-                : null;
-            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
-                ? Number(this.data.endTs)
-                : null;
+            const optionMax = optionalFiniteNumber(options.maxCreatedAtTs);
+            const trackerMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
+            const scheduledMax = optionalFiniteNumber(this.data?.endTs);
             let maxCreatedAtTs = optionMax;
             for (const bound of [trackerMax, scheduledMax]) {
                 if (bound !== null) {
                     maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
                 }
             }
-            const minCreatedAtTs = Number.isFinite(Number(this.giveawayStartTs))
-                ? Number(this.giveawayStartTs)
-                : null;
+            const minCreatedAtTs = optionalFiniteNumber(this.giveawayStartTs);
             const announce = options.announce !== false;
             const indexed = indexGiftHistoryRows(rows);
             const hostKey = normalizeUserKey(this.data.host);
@@ -4622,12 +4604,11 @@ body.host-panel-dragging * {
 
         /* ---- Primary sponsor poll: UNIT3D Gift History ---- */
         async poll(options = {}) {
-            const requestedCutoff = Number.isFinite(Number(options?.maxCreatedAtTs))
-                ? Number(options.maxCreatedAtTs)
-                : null;
+            const requestedCutoff = optionalFiniteNumber(options?.maxCreatedAtTs);
             if (requestedCutoff !== null) {
-                this.maxAcceptedCreatedAtTs = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                    ? Math.min(Number(this.maxAcceptedCreatedAtTs), requestedCutoff)
+                const existingCutoff = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
+                this.maxAcceptedCreatedAtTs = existingCutoff !== null
+                    ? Math.min(existingCutoff, requestedCutoff)
                     : requestedCutoff;
             }
 
@@ -4701,15 +4682,9 @@ body.host-panel-dragging * {
         async pollChatFallback(options = {}) {
             const perfStart = PERF ? performance.now() : 0;
             this.historyFallbackActive = true;
-            const optionMax = Number.isFinite(Number(options.maxCreatedAtTs))
-                ? Number(options.maxCreatedAtTs)
-                : null;
-            const trackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                ? Number(this.maxAcceptedCreatedAtTs)
-                : null;
-            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
-                ? Number(this.data.endTs)
-                : null;
+            const optionMax = optionalFiniteNumber(options.maxCreatedAtTs);
+            const trackerMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
+            const scheduledMax = optionalFiniteNumber(this.data?.endTs);
             let maxCreatedAtTs = optionMax;
             for (const bound of [trackerMax, scheduledMax]) {
                 if (bound !== null) {
@@ -4728,12 +4703,8 @@ body.host-panel-dragging * {
             // fetchNew() can overlap endGiveaway(). Rebuild the upper boundary
             // after the await so a manual close that latches an earlier cutoff is
             // immediately inherited by this already-running fallback pass.
-            const latestTrackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
-                ? Number(this.maxAcceptedCreatedAtTs)
-                : null;
-            const latestScheduledMax = Number.isFinite(Number(this.data?.endTs))
-                ? Number(this.data.endTs)
-                : null;
+            const latestTrackerMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
+            const latestScheduledMax = optionalFiniteNumber(this.data?.endTs);
             maxCreatedAtTs = optionMax;
             for (const bound of [latestTrackerMax, latestScheduledMax]) {
                 if (bound !== null) {
@@ -4862,9 +4833,7 @@ body.host-panel-dragging * {
         }
 
         inferGiftHistoryClockOffset(events, rows) {
-            const persisted = Number.isFinite(Number(this.giftHistoryClockOffsetMs))
-                ? Number(this.giftHistoryClockOffsetMs)
-                : null;
+            const persisted = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
             if (!Array.isArray(events) || !events.length || !Array.isArray(rows) || !rows.length) {
                 return persisted;
             }
@@ -8522,10 +8491,18 @@ body.host-panel-dragging * {
         recordGiftAttempt(giveawayId, safeRecipient, safeAmount, purpose);
 
         async function fallbackToChat() {
+            if (!(await ensureExclusiveTabOwnership())) {
+                logEvent(
+                    "Gift fallback paused (ownership lost)",
+                    `Refusing chat fallback for ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership.`
+                );
+                return false;
+            }
             const cmd = safeMessage
                 ? `/gift ${safeRecipient} ${safeAmount} ${safeMessage}`
                 : `/gift ${safeRecipient} ${safeAmount}`;
             await sendMessage(cmd);
+            return true;
         }
 
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
@@ -8544,7 +8521,9 @@ body.host-panel-dragging * {
         // If we can't resolve the HTTP endpoint or token, fall back immediately.
         // This is safe: we haven't sent anything yet, so /gift is the first attempt.
         if (!csrfToken || !giftUrl) {
-            await fallbackToChat();
+            if (!(await fallbackToChat())) {
+                return { attempted: false, reason: "ownership-lost" };
+            }
             return { attempted: true, transport: "chat" };
         }
 
@@ -8577,7 +8556,9 @@ body.host-panel-dragging * {
                     "Gift HTTP rejected, falling back",
                     `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | status=${resp.status}`
                 );
-                await fallbackToChat();
+                if (!(await fallbackToChat())) {
+                    return { attempted: false, reason: "ownership-lost", httpStatus: resp.status };
+                }
                 return { attempted: true, transport: "chat-fallback", httpStatus: resp.status };
             }
 
