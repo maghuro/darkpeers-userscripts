@@ -142,8 +142,9 @@
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache settlement resumes must reacquire exclusive ownership before transfers;
-//     chat gift fallbacks re-check ownership at the actual send point; optional sponsor
-//     cutoffs/clock offsets preserve null instead of coercing it to epoch zero; and Gift
+//     chat gift fallbacks re-check ownership at the actual send point and leave proven-
+//     rejected attempts retryable if ownership is lost; optional sponsor cutoffs/clock
+//     offsets preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -8424,22 +8425,75 @@ body.host-panel-dragging * {
         return `${String(recipient || "").trim().toLowerCase()}::${Math.floor(Number(amount) || 0)}::${purpose}`;
     }
 
-    /** Returns true if this (recipient, amount, purpose) was already attempted for this giveaway. */
+    function paidGiftRetryableKey(giveawayId, recipient, amount, purpose = GIFT_PURPOSE.WINNER) {
+        const giftKey = paidGiftKey(recipient, amount, purpose);
+        return `${LS_PAID_GIFTS}::retryable::${encodeURIComponent(String(giveawayId || ""))}::${encodeURIComponent(giftKey)}`;
+    }
+
+    /** Returns true if this (recipient, amount, purpose) is still a non-retryable attempt. */
     function hasGiftBeenAttempted(giveawayId, recipient, amount, purpose) {
         if (!giveawayId) return false;
         const ledger = readPaidGiftsLedger();
         const bucket = ledger[giveawayId];
         if (!bucket) return false;
-        return !!bucket[paidGiftKey(recipient, amount, purpose)];
+
+        const giftKey = paidGiftKey(recipient, amount, purpose);
+        const attemptToken = bucket[giftKey];
+        if (!attemptToken) return false;
+
+        // Current-format attempts use a unique token. If a request was proven
+        // rejected before any fallback could run, a separate per-attempt marker
+        // makes only that exact attempt retryable without rewriting the shared
+        // ledger while another tab may own the giveaway. Legacy numeric entries
+        // remain non-retryable and keep their historical idempotency semantics.
+        if (typeof attemptToken === "string") {
+            try {
+                const retryableToken = localStorage.getItem(
+                    paidGiftRetryableKey(giveawayId, recipient, amount, purpose)
+                );
+                if (retryableToken === attemptToken) return false;
+            } catch {}
+        }
+        return true;
     }
 
-    /** Record a (recipient, amount, purpose) attempt before actually sending. */
+    /** Record a unique attempt token before an ambiguous send can happen. */
     function recordGiftAttempt(giveawayId, recipient, amount, purpose) {
-        if (!giveawayId) return;
+        if (!giveawayId) return null;
         const ledger = readPaidGiftsLedger();
         if (!ledger[giveawayId]) ledger[giveawayId] = {};
-        ledger[giveawayId][paidGiftKey(recipient, amount, purpose)] = Date.now();
+        const giftKey = paidGiftKey(recipient, amount, purpose);
+        const attemptToken = `${TAB_ID}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+        ledger[giveawayId][giftKey] = attemptToken;
         writePaidGiftsLedger(ledger);
+        try {
+            localStorage.removeItem(paidGiftRetryableKey(giveawayId, recipient, amount, purpose));
+        } catch {}
+        return attemptToken;
+    }
+
+    function markGiftAttemptRetryable(giveawayId, recipient, amount, purpose, attemptToken) {
+        if (!giveawayId || !attemptToken) return false;
+        const ledger = readPaidGiftsLedger();
+        const current = ledger[giveawayId]?.[paidGiftKey(recipient, amount, purpose)];
+        if (current !== attemptToken) return false;
+        try {
+            localStorage.setItem(
+                paidGiftRetryableKey(giveawayId, recipient, amount, purpose),
+                attemptToken
+            );
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function clearGiftAttemptRetryable(giveawayId, recipient, amount, purpose, attemptToken) {
+        if (!giveawayId || !attemptToken) return;
+        try {
+            const key = paidGiftRetryableKey(giveawayId, recipient, amount, purpose);
+            if (localStorage.getItem(key) === attemptToken) localStorage.removeItem(key);
+        } catch {}
     }
 
     /**
@@ -8487,17 +8541,47 @@ body.host-panel-dragging * {
             return { attempted: false, reason: "duplicate" };
         }
         // Record BEFORE sending — if the send half-completes we still want
-        // future calls (this tab, another tab, post-restore) to skip.
-        recordGiftAttempt(giveawayId, safeRecipient, safeAmount, purpose);
+        // future calls (this tab, another tab, post-restore) to skip. Current
+        // entries carry a unique token so a proven-rejected request can make only
+        // its own attempt retryable without clearing a newer owner's attempt.
+        const attemptToken = recordGiftAttempt(
+            giveawayId,
+            safeRecipient,
+            safeAmount,
+            purpose
+        );
 
         async function fallbackToChat() {
+            // No chat fallback has been sent yet, and a safe HTTP 4xx (when this
+            // helper is reached after POST) proves the HTTP transfer did not land.
+            // Publish retryability before trying to reclaim ownership so a new
+            // owner can resume instead of treating this rejected attempt as paid.
+            markGiftAttemptRetryable(
+                giveawayId,
+                safeRecipient,
+                safeAmount,
+                purpose,
+                attemptToken
+            );
+
             if (!(await ensureExclusiveTabOwnership())) {
                 logEvent(
                     "Gift fallback paused (ownership lost)",
-                    `Refusing chat fallback for ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership.`
+                    `Refusing chat fallback for ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership; the rejected attempt remains retryable.`
                 );
                 return false;
             }
+
+            // We own the giveaway again and are about to make the fallback send
+            // ambiguous. Restore the normal idempotency barrier before sending.
+            clearGiftAttemptRetryable(
+                giveawayId,
+                safeRecipient,
+                safeAmount,
+                purpose,
+                attemptToken
+            );
+
             const cmd = safeMessage
                 ? `/gift ${safeRecipient} ${safeAmount} ${safeMessage}`
                 : `/gift ${safeRecipient} ${safeAmount}`;
