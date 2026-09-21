@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.18
+// @version      1.3.19
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -118,6 +118,9 @@
 //     summaries, note continuations and scaling notices cannot race each other; live
 //     note-only continuations use the dedicated MESSAGES marker; and large final
 //     sponsor lists are proactively chunked before the website/IRC bridge can split them.
+//   - v1.3.19 removes proactive chunking from the final sponsor list and makes the
+//     zero-entry outcome explicit: there are no winners and 100% of the final pot
+//     (host funding + sponsors) is contributed directly to the BON Pool and verified.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -386,7 +389,7 @@
         }
     }
 
-    function bridgeMarker(kind, visible) {
+    function bridgeMarker(kind, visible, contextOverride = null) {
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
         const markerColor = BRIDGE_SENTINEL_COLORS[safeKind];
         const safeVisible = String(visible ?? "");
@@ -398,10 +401,14 @@
         const prefix = `[b][i][u]${BRIDGE_SENTINEL}[/u][/i][/b]`;
         const typed = `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
 
-        // Carry the active giveaway family independently of the message type. This is
-        // what lets TLCC render SPONSORS / ENTRIES / TIME / RESULT / etc. in the same
-        // BON Pool blue (or Rigged Taxes pink) instead of reverting to generic colours.
-        const context = getActiveBridgeContext();
+        // Carry the active giveaway family independently of the message type. The
+        // optional override is intentionally narrow: exceptional settlement messages
+        // can explicitly identify as BON Pool even if the running event was standard
+        // or had Rigged Taxes enabled.
+        const requestedContext = String(contextOverride || "").toLowerCase();
+        const context = Object.prototype.hasOwnProperty.call(BRIDGE_CONTEXT_COLORS, requestedContext)
+            ? requestedContext
+            : getActiveBridgeContext();
         const contextColor = BRIDGE_CONTEXT_COLORS[context];
         const contextual = contextColor
             ? `[b][u][color=${contextColor}]${BRIDGE_SENTINEL}[/color][/u][/b]`
@@ -6155,10 +6162,8 @@ body.host-panel-dragging * {
             Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0)
         );
         if (finalSponsoredTotal > 0) {
-            const sponsorSummaryMessages = buildSponsorsSummaryMessages(giveawayData);
-            for (const sponsorsMessage of sponsorSummaryMessages) {
-                await sendMessage(sponsorsMessage);
-            }
+            const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
+            if (sponsorsMessage) await sendMessage(sponsorsMessage);
 
             // Gift History is already the canonical sponsor-note source and the
             // final sponsor sync above has just refreshed it. Reuse the persisted
@@ -6169,19 +6174,80 @@ body.host-panel-dragging * {
             }
         }
 
-        // no entries → no winners
+        // No entries → no winners. Nothing returns to the host: the complete
+        // final pot (host funding + sponsor gifts) is contributed to BON Pool.
         if (numberEntries.size === 0) {
-            const emptyMessage = `Unfortunately, no one has entered the giveaway, so no one wins!`
-            await sendMessage(emptyMessage);
             const noEntryTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
             const noEntryHostFunded = Math.max(0, noEntryTotal - finalSponsoredTotal);
+
+            await sendMessage(
+                `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
+                `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`
+            );
+
+            let noEntryPoolResult = { attempted: false, confirmed: noEntryTotal <= 0, reason: noEntryTotal <= 0 ? "empty-pot" : "not-attempted" };
+            if (noEntryTotal > 0) {
+                noEntryPoolResult = await contributeBonPool(noEntryTotal);
+
+                if (noEntryPoolResult.confirmed) {
+                    await sendMessage(
+                        `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
+                        `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
+                        `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
+                        `No entrants — 100% of the pot was contributed. ✨`
+                    );
+                } else {
+                    logEvent(
+                        "BON Pool verification warning",
+                        `Zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. No automatic retry was attempted.`
+                    );
+                    try {
+                        window.alert(
+                            `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. ` +
+                            `Check /bon-pool manually before retrying anything.`
+                        );
+                    } catch {}
+                }
+            }
+
             logEvent(
                 "Giveaway ended",
-                `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON`
-            )
+                `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED"})`
+            );
+
+            const noEntryDonationInfo = {
+                total: noEntryTotal,
+                percent: noEntryTotal > 0 ? 100 : 0,
+                confirmed: !!noEntryPoolResult.confirmed
+            };
             try {
-                currentStatement = createStatementRecord({ winners: [], gross: [], net: [], donations: [], split: null, poolStatus: "none", entrants: 0 });
-                if (currentStatement) { currentStatement.verification = "nothing to verify"; persistCurrentStatement(); }
+                recordGiveawayStats(giveawayData, [], [], numberEntries, noEntryDonationInfo);
+            } catch (e) { /* ignore stats errors */ }
+
+            try {
+                const noEntrySplit = {
+                    percent: noEntryDonationInfo.percent,
+                    net: [],
+                    donations: [],
+                    total: noEntryTotal
+                };
+                currentStatement = createStatementRecord({
+                    winners: [],
+                    gross: [],
+                    net: [],
+                    donations: [],
+                    split: noEntrySplit,
+                    poolStatus: noEntryPoolResult.confirmed
+                        ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
+                        : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
+                    entrants: 0
+                });
+                if (currentStatement) {
+                    currentStatement.verification = noEntryPoolResult.confirmed
+                        ? "nothing to verify"
+                        : "BON Pool contribution requires manual verification";
+                    persistCurrentStatement();
+                }
             } catch (e) { /* statements are best-effort */ }
         } else {
             // Draw only after entries are closed and payout has been committed.
@@ -9217,8 +9283,8 @@ body.host-panel-dragging * {
         flashUIElement(target, 1050);
     }
 
-    function buildSponsorsSummaryMessages(data) {
-        if (!data) return [];
+    function buildSponsorsSummaryMessage(data) {
+        if (!data) return "";
         const hostKey = normalizeUserKey(data.host);
         const contribEntries = Object.entries(data.sponsorContribs || {});
 
@@ -9246,39 +9312,12 @@ body.host-panel-dragging * {
                 `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
             );
 
-        if (!safe.length) return [];
+        if (!safe.length) return "";
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
-        const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
-        const messages = [];
-        const firstHeading =
-            `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
-            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].`;
-        const continuationHeading = () =>
-            `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} [b]Sponsors (cont.):[/b] `;
-
-        let current = [];
-        let firstChunk = true;
-
-        const render = (parts) => firstChunk
-            ? firstHeading + "\n" + `[b]Sponsors:[/b] ${parts.join(" · ")}`
-            : continuationHeading() + parts.join(" · ");
-
-        const flush = () => {
-            if (!current.length) return;
-            messages.push(render(current));
-            current = [];
-            firstChunk = false;
-        };
-
-        for (const part of safe) {
-            const candidate = render(current.concat(part));
-            if (current.length && visibleChatLength(candidate) > maxVisible) flush();
-            current.push(part);
-        }
-        flush();
-
-        return messages;
+        return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
+            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].\n` +
+            `[b]Sponsors:[/b] ${safe.join(" · ")}`;
     }
 
     function buildFinalSponsorMessageRecap(data) {
