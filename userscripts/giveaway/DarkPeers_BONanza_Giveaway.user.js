@@ -135,11 +135,12 @@
 //     Gift History/chat-fallback passes from double-counting gifts, restore the intended
 //     six-reminder cap, normalize host checks, await host pot announcements, and make
 //     refund verification/status labels accurately distinguish Gift History from chat.
-//   - v1.3.24 closes the one-shot audit findings: restores are host-bound, atomic
-//     cross-tab ownership requires the browser Web Locks API, settlement remains resumable
-//     through transfer verification, sponsor opening/closing boundaries constrain Gift
-//     History and in-flight polls, host top-ups are serialized, and delayed verification
-//     is statement-bound with persisted pre-transfer verification boundaries.
+//   - v1.3.24 closes the one-shot audit findings: restores are host-bound and active
+//     snapshots are namespaced per authenticated account; atomic cross-tab ownership
+//     requires the browser Web Locks API; settlement remains resumable through transfer
+//     verification; sponsor opening/closing boundaries constrain Gift History and both
+//     in-flight Gift History/chat-fallback polls; host top-ups are serialized; and delayed
+//     verification is statement-bound with persisted pre-transfer verification boundaries.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -572,7 +573,7 @@
     const LS_HOST_PANEL_POS = "bonanza-giveaway-hostPanelPos";
     const LS_MINIMIZED = "bonanza-giveaway-minimized";
     const LS_PRESETS = "bonanza-giveaway-presets";
-    const LS_ACTIVE_GIVEAWAY = `bonanza-giveaway-activeState::${location.hostname}`;
+    const LS_ACTIVE_GIVEAWAY_LEGACY = `bonanza-giveaway-activeState::${location.hostname}`;
     const LS_TAB_LOCK = `bonanza-giveaway-tabLock::${location.hostname}`;
     // Per-giveaway ledger of completed gift attempts. Survives reload + visible to other tabs,
     // so even if endGiveaway runs in two tabs the second one won't re-pay.
@@ -2544,6 +2545,45 @@ body.host-panel-dragging * {
     // Giveaway persistence — survive page reloads mid-giveaway
     // ───────────────────────────────────────────────────────────
 
+    function getActiveGiveawayStorageKey(hostName = "") {
+        const hostKey = normalizeUserKey(hostName || getLoggedInUsername());
+        return hostKey
+            ? `${LS_ACTIVE_GIVEAWAY_LEGACY}::${encodeURIComponent(hostKey)}`
+            : null;
+    }
+
+    function readActiveGiveawayRawForHost(hostName = "", { migrateLegacy = false } = {}) {
+        const requestedHostKey = normalizeUserKey(hostName || getLoggedInUsername());
+        const storageKey = getActiveGiveawayStorageKey(requestedHostKey);
+        if (!requestedHostKey || !storageKey) return { storageKey, raw: null, migratedLegacy: false };
+
+        try {
+            const namespacedRaw = localStorage.getItem(storageKey);
+            if (namespacedRaw) return { storageKey, raw: namespacedRaw, migratedLegacy: false };
+
+            // Backwards-compatible migration from pre-v1.3.24 hostname-wide storage.
+            // A legacy snapshot belonging to another account is deliberately left
+            // untouched; the current account now has its own namespace and cannot
+            // overwrite that foreign recovery state.
+            const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+            if (!legacyRaw) return { storageKey, raw: null, migratedLegacy: false };
+
+            const legacy = JSON.parse(legacyRaw);
+            const legacyHostKey = normalizeUserKey(legacy?.giveawayData?.host);
+            if (!legacyHostKey || legacyHostKey !== requestedHostKey) {
+                return { storageKey, raw: null, migratedLegacy: false };
+            }
+
+            if (migrateLegacy) {
+                localStorage.setItem(storageKey, legacyRaw);
+                localStorage.removeItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+            }
+            return { storageKey, raw: legacyRaw, migratedLegacy: !!migrateLegacy };
+        } catch {
+            return { storageKey, raw: null, migratedLegacy: false };
+        }
+    }
+
     /** Read and validate the shared cross-tab lock. */
     function readTabLock() {
         try {
@@ -2779,30 +2819,63 @@ body.host-panel-dragging * {
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
                 savedAt: Date.now()
             };
-            localStorage.setItem(LS_ACTIVE_GIVEAWAY, JSON.stringify(snapshot));
+            const storageKey = getActiveGiveawayStorageKey(giveawayData.host);
+            if (!storageKey) throw new Error("Cannot persist giveaway without an authenticated host namespace.");
+            localStorage.setItem(storageKey, JSON.stringify(snapshot));
+
+            // Remove only a matching legacy snapshot after the namespaced write
+            // succeeds. Never delete another account's retained recovery state.
+            try {
+                const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+                if (legacyRaw) {
+                    const legacy = JSON.parse(legacyRaw);
+                    if (normalizeUserKey(legacy?.giveawayData?.host) === normalizeUserKey(giveawayData.host)) {
+                        localStorage.removeItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+                    }
+                }
+            } catch {}
         } catch (e) {
             console.warn("Giveaway snapshot failed:", e);
         }
     }
 
-    /** Clear the persisted giveaway state. */
-    function clearGiveawaySnapshot() {
-        try { localStorage.removeItem(LS_ACTIVE_GIVEAWAY); } catch {}
+    /** Clear only the persisted giveaway state that belongs to this host. */
+    function clearGiveawaySnapshot(hostName = "") {
+        const resolvedHost = hostName || giveawayData?.host || getLoggedInUsername();
+        const hostKey = normalizeUserKey(resolvedHost);
+        const storageKey = getActiveGiveawayStorageKey(hostKey);
+
+        try {
+            if (storageKey) localStorage.removeItem(storageKey);
+
+            // Backwards-compatible cleanup: remove the old hostname-wide key only
+            // when it belongs to the same host. A foreign account's recovery state
+            // must survive logout/login switches.
+            const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+            if (legacyRaw) {
+                const legacy = JSON.parse(legacyRaw);
+                if (hostKey && normalizeUserKey(legacy?.giveawayData?.host) === hostKey) {
+                    localStorage.removeItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+                }
+            }
+        } catch {}
     }
 
     /** Load a saved giveaway. Recently-expired snapshots are restored and settled. */
     function loadGiveawaySnapshot() {
         try {
-            const raw = localStorage.getItem(LS_ACTIVE_GIVEAWAY);
-            if (!raw) return null;
-            const snap = JSON.parse(raw);
+            const loggedInHostKey = normalizeUserKey(getLoggedInUsername());
+            if (!loggedInHostKey) return null;
+
+            const stored = readActiveGiveawayRawForHost(loggedInHostKey, { migrateLegacy: true });
+            if (!stored.raw) return null;
+            const snap = JSON.parse(stored.raw);
             if (!snap || !snap.giveawayData) return null;
 
             const savedHostKey = normalizeUserKey(snap.giveawayData.host);
-            const loggedInHostKey = normalizeUserKey(getLoggedInUsername());
-            if (!savedHostKey || !loggedInHostKey || savedHostKey !== loggedInHostKey) {
+            if (!savedHostKey || savedHostKey !== loggedInHostKey) {
                 console.warn(
-                    "[BON Giveaway] Refusing restore: the saved giveaway belongs to a different or unknown authenticated host. Snapshot left untouched for the correct account."
+                    "[BON Giveaway] Refusing restore: the saved giveaway belongs to a different authenticated host namespace."
                 );
                 return null;
             }
@@ -4611,6 +4684,23 @@ body.host-panel-dragging * {
                 if (DEBUG_SETTINGS.log_chat_messages) console.error("Sponsor API error:", e);
                 return false;
             }
+
+            // fetchNew() can overlap endGiveaway(). Rebuild the upper boundary
+            // after the await so a manual close that latches an earlier cutoff is
+            // immediately inherited by this already-running fallback pass.
+            const latestTrackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                ? Number(this.maxAcceptedCreatedAtTs)
+                : null;
+            const latestScheduledMax = Number.isFinite(Number(this.data?.endTs))
+                ? Number(this.data.endTs)
+                : null;
+            maxCreatedAtTs = optionMax;
+            for (const bound of [latestTrackerMax, latestScheduledMax]) {
+                if (bound !== null) {
+                    maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
+                }
+            }
+
             this.cursorInitialized = true;
 
             /* — filter new, unprocessed gift messages — */
@@ -8070,9 +8160,10 @@ body.host-panel-dragging * {
         // in which case idempotency is best-effort (we still send, just don't track).
         if (giveawayStartTime) return giveawayStartTime.getTime();
         try {
-            const raw = localStorage.getItem(LS_ACTIVE_GIVEAWAY);
-            if (!raw) return null;
-            const snap = JSON.parse(raw);
+            const hostName = giveawayData?.host || getLoggedInUsername();
+            const stored = readActiveGiveawayRawForHost(hostName, { migrateLegacy: false });
+            if (!stored.raw) return null;
+            const snap = JSON.parse(stored.raw);
             return snap && snap.startTime ? snap.startTime : null;
         } catch { return null; }
     }
