@@ -142,9 +142,10 @@
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache settlement resumes must reacquire exclusive ownership before transfers;
-//     cross-tab gift attempts stay pending until their originating request resolves, so
-//     settlement cannot skip-and-complete during ownership handoff; rejected attempts
-//     remain retryable; unknown Gift History clock offsets accept either timestamp
+//     cross-tab gift attempts stay pending until their originating request resolves; a
+//     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
+//     while superseded fallbacks abort before sending; rejected attempts remain retryable;
+//     unknown Gift History clock offsets accept either timestamp
 //     interpretation when it overlaps the window; optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -8496,6 +8497,12 @@ body.host-panel-dragging * {
         return `${LS_PAID_GIFTS}::retryable::${encodeURIComponent(String(giveawayId || ""))}::${encodeURIComponent(giftKey)}`;
     }
 
+    function giftAttemptTokenOwner(attemptToken) {
+        if (typeof attemptToken !== "string") return "";
+        const separator = attemptToken.indexOf(":");
+        return separator > 0 ? attemptToken.slice(0, separator) : "";
+    }
+
     function getGiftAttemptState(giveawayId, recipient, amount, purpose) {
         if (!giveawayId) return { state: "none", token: null };
         const ledger = readPaidGiftsLedger();
@@ -8585,6 +8592,26 @@ body.host-panel-dragging * {
         return true;
     }
 
+    function recoverOrphanedPendingGiftAttempt(giveawayId, recipient, amount, purpose, attemptState) {
+        if (!ownsTabLock()) return false;
+        if (!attemptState || attemptState.state !== "pending" || !attemptState.token) return false;
+
+        const originTabId = giftAttemptTokenOwner(attemptState.token);
+        if (!originTabId || originTabId === TAB_ID) return false;
+
+        // This document now owns the exclusive Web Lock, so the originating
+        // document can no longer safely continue settlement. Its unresolved HTTP
+        // request is treated as ambiguous terminal work: never auto-retry it,
+        // but do verify whether the transfer landed before settlement completes.
+        return markGiftAttemptTerminal(
+            giveawayId,
+            recipient,
+            amount,
+            purpose,
+            attemptState.token
+        );
+    }
+
     function giftAttemptStillNeedsResolution(giveawayId, gift) {
         const state = getGiftAttemptState(
             giveawayId,
@@ -8639,9 +8666,25 @@ body.host-panel-dragging * {
             purpose
         );
         if (existingAttempt.state === "pending") {
+            if (
+                recoverOrphanedPendingGiftAttempt(
+                    giveawayId,
+                    safeRecipient,
+                    safeAmount,
+                    purpose,
+                    existingAttempt
+                )
+            ) {
+                logEvent(
+                    "Gift recovered as ambiguous",
+                    `Recovered an orphaned pending attempt for ${sanitizeNick(safeRecipient)} (${fmtBONCurrency(safeAmount)} BON, ${purpose}); no automatic resend will occur until verification determines whether the original request landed.`
+                );
+                return { attempted: false, reason: "duplicate", orphanedPending: true };
+            }
+
             logEvent(
                 "Gift deferred (attempt still pending)",
-                `A previous tab still has an unresolved transfer attempt for ${sanitizeNick(safeRecipient)} (${fmtBONCurrency(safeAmount)} BON, ${purpose}). Settlement will verify it before deciding whether to resume.`
+                `This tab still has an unresolved transfer attempt for ${sanitizeNick(safeRecipient)} (${fmtBONCurrency(safeAmount)} BON, ${purpose}). Settlement will verify it before deciding whether to resume.`
             );
             return { attempted: false, reason: "pending" };
         }
@@ -8668,13 +8711,19 @@ body.host-panel-dragging * {
             // helper is reached after POST) proves the HTTP transfer did not land.
             // Publish retryability before trying to reclaim ownership so a new
             // owner can resume instead of treating this rejected attempt as paid.
-            markGiftAttemptRetryable(
+            if (!markGiftAttemptRetryable(
                 giveawayId,
                 safeRecipient,
                 safeAmount,
                 purpose,
                 attemptToken
-            );
+            )) {
+                logEvent(
+                    "Gift fallback aborted (attempt superseded)",
+                    `The transfer token for ${sanitizeNick(safeRecipient)} was replaced by a newer owner before fallback could run.`
+                );
+                return false;
+            }
 
             if (!(await ensureExclusiveTabOwnership())) {
                 logEvent(
@@ -8686,13 +8735,19 @@ body.host-panel-dragging * {
 
             // We own the giveaway again and are about to make the fallback send
             // ambiguous. Make this exact attempt terminal before sending.
-            markGiftAttemptTerminal(
+            if (!markGiftAttemptTerminal(
                 giveawayId,
                 safeRecipient,
                 safeAmount,
                 purpose,
                 attemptToken
-            );
+            )) {
+                logEvent(
+                    "Gift fallback aborted (attempt superseded)",
+                    `The transfer token for ${sanitizeNick(safeRecipient)} changed before the chat fallback send; refusing to risk a duplicate payment.`
+                );
+                return false;
+            }
 
             const cmd = safeMessage
                 ? `/gift ${safeRecipient} ${safeAmount} ${safeMessage}`
