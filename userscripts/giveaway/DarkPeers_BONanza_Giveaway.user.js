@@ -142,9 +142,11 @@
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache settlement resumes must reacquire exclusive ownership before transfers;
-//     chat gift fallbacks re-check ownership at the actual send point and leave proven-
-//     rejected attempts retryable if ownership is lost; optional sponsor cutoffs/clock
-//     offsets preserve null instead of coercing it to epoch zero; and Gift
+//     cross-tab gift attempts stay pending until their originating request resolves, so
+//     settlement cannot skip-and-complete during ownership handoff; rejected attempts
+//     remain retryable; unknown Gift History clock offsets accept either timestamp
+//     interpretation when it overlaps the window; optional sponsor cutoffs/clock offsets
+//     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -4516,18 +4518,21 @@ body.host-panel-dragging * {
                     Number(item?.createdAtTs),
                     Number(item?.createdAtAltTs)
                 ].filter(Number.isFinite);
-                const afterOpen = min === null || (
-                    candidates.length &&
-                    candidates.every(ts => (ts + resolutionMs) > min)
-                );
-                const beforeClose = max === null || (candidates.length && candidates.every(ts => ts <= max));
+                const overlapsWindow = ts =>
+                    (min === null || (ts + resolutionMs) > min) &&
+                    (max === null || ts <= max);
 
-                if (afterOpen && beforeClose) {
+                // Without a learned site-clock offset, local and UTC parsing are
+                // alternative interpretations of the same source timestamp. Keep
+                // the row when either interpretation overlaps the giveaway window;
+                // requiring both would reject normal in-window gifts in non-UTC
+                // browsers whenever the giveaway is shorter than the timezone gap.
+                if (candidates.some(overlapsWindow)) {
                     accepted.push(item);
                 } else {
                     logEvent(
                         "Sponsor time-boundary ambiguity",
-                        `Skipped an unverified Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); verify manually.`
+                        `Skipped an unverified Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); no timestamp interpretation overlaps the giveaway window.`
                     );
                 }
             }
@@ -6653,6 +6658,7 @@ body.host-panel-dragging * {
                 );
 
                 const refundExpectedGifts = [];
+                const refundDeferredGifts = [];
                 const refundRecords = sponsorRefunds.map(item => ({
                     user: item.name,
                     amount: item.amount,
@@ -6719,12 +6725,24 @@ body.host-panel-dragging * {
                                 : `NOT SENT (${result?.reason || "unknown error"})`);
                     }
 
-                    if (result?.attempted || result?.reason === "duplicate") {
-                        refundExpectedGifts.push({
+                    if (
+                        result?.attempted ||
+                        result?.reason === "duplicate" ||
+                        result?.reason === "pending" ||
+                        result?.reason === "ownership-lost"
+                    ) {
+                        const expectedRefund = {
                             recipient: refund.name,
                             amount: refund.amount,
                             purpose: GIFT_PURPOSE.SPONSOR_REFUND
-                        });
+                        };
+                        refundExpectedGifts.push(expectedRefund);
+                        if (
+                            result?.reason === "pending" ||
+                            result?.reason === "ownership-lost"
+                        ) {
+                            refundDeferredGifts.push(expectedRefund);
+                        }
                     }
 
                     if (PAYOUT_GIFT_GAP_MS > 0) {
@@ -6772,7 +6790,7 @@ body.host-panel-dragging * {
                 } catch (e) { /* statements are best-effort */ }
 
                 if (refundExpectedGifts.length) {
-                    await verifySponsorRefundGifts(
+                    const refundsVerified = await verifySponsorRefundGifts(
                         refundExpectedGifts,
                         giveawayData.host,
                         refundGiftHistoryBaseline,
@@ -6782,6 +6800,24 @@ body.host-panel-dragging * {
                             statementId: currentStatement?.id ?? null
                         }
                     );
+
+                    if (
+                        !refundsVerified &&
+                        refundDeferredGifts.some(gift =>
+                            giftAttemptStillNeedsResolution(
+                                getActiveGiveawayId(),
+                                gift
+                            )
+                        )
+                    ) {
+                        logEvent(
+                            "Settlement paused (refund attempt unresolved)",
+                            "A sponsor refund is still pending/retryable after ownership handoff; preserving the active settlement for a safe retry."
+                        );
+                        snapshotGiveaway({ force: true });
+                        giveawayData.__ending = false;
+                        return;
+                    }
                 }
             }
         } else {
@@ -6934,6 +6970,7 @@ body.host-panel-dragging * {
             // payout so verification cannot accidentally match an older identical gift.
             const selfKeys = resolveSelfKeys(giveawayData.host);
             const expectedGifts = [];
+            const deferredWinnerGifts = [];
             const settlement = giveawayData.settlement;
             const payoutNotBeforeTs = Number.isFinite(settlement.payoutNotBeforeTs)
                 ? settlement.payoutNotBeforeTs
@@ -6968,8 +7005,19 @@ body.host-panel-dragging * {
                     ? `🎉 You won! Enjoy your ${amt} BON!`
                     : `🎉 Congratulations on placing ${ordinal(i + 1)}!`;
 
-                await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
-                expectedGifts.push({ recipient: w.author, amount: amt, purpose: GIFT_PURPOSE.WINNER });
+                const giftResult = await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
+                const expectedGift = {
+                    recipient: w.author,
+                    amount: amt,
+                    purpose: GIFT_PURPOSE.WINNER
+                };
+                expectedGifts.push(expectedGift);
+                if (
+                    giftResult?.reason === "pending" ||
+                    giftResult?.reason === "ownership-lost"
+                ) {
+                    deferredWinnerGifts.push(expectedGift);
+                }
 
                 if (PAYOUT_GIFT_GAP_MS > 0) {
                     await new Promise(resolve => setTimeout(resolve, PAYOUT_GIFT_GAP_MS));
@@ -7017,11 +7065,29 @@ body.host-panel-dragging * {
             } catch (e) { /* statements are best-effort */ }
 
             // 6b) Verify that the gifts actually show up in chat via the API
-            await verifyWinnerGifts(expectedGifts, giveawayData.host, {
+            const winnersVerified = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
                 statementId: currentStatement?.id ?? null
             });
+
+            if (
+                !winnersVerified &&
+                deferredWinnerGifts.some(gift =>
+                    giftAttemptStillNeedsResolution(
+                        getActiveGiveawayId(),
+                        gift
+                    )
+                )
+            ) {
+                logEvent(
+                    "Settlement paused (winner attempt unresolved)",
+                    "A winner gift is still pending/retryable after ownership handoff; preserving the active settlement for a safe retry."
+                );
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
+            }
         }
 
         // 7) Settlement is terminal only now. A BFCache transition can happen
@@ -8430,31 +8496,39 @@ body.host-panel-dragging * {
         return `${LS_PAID_GIFTS}::retryable::${encodeURIComponent(String(giveawayId || ""))}::${encodeURIComponent(giftKey)}`;
     }
 
-    /** Returns true if this (recipient, amount, purpose) is still a non-retryable attempt. */
-    function hasGiftBeenAttempted(giveawayId, recipient, amount, purpose) {
-        if (!giveawayId) return false;
+    function getGiftAttemptState(giveawayId, recipient, amount, purpose) {
+        if (!giveawayId) return { state: "none", token: null };
         const ledger = readPaidGiftsLedger();
         const bucket = ledger[giveawayId];
-        if (!bucket) return false;
+        if (!bucket) return { state: "none", token: null };
 
         const giftKey = paidGiftKey(recipient, amount, purpose);
-        const attemptToken = bucket[giftKey];
-        if (!attemptToken) return false;
+        const stored = bucket[giftKey];
+        if (!stored) return { state: "none", token: null };
 
-        // Current-format attempts use a unique token. If a request was proven
-        // rejected before any fallback could run, a separate per-attempt marker
-        // makes only that exact attempt retryable without rewriting the shared
-        // ledger while another tab may own the giveaway. Legacy numeric entries
-        // remain non-retryable and keep their historical idempotency semantics.
-        if (typeof attemptToken === "string") {
+        // Current-format string tokens are pending until the originating request
+        // resolves. A matching retryable marker means a proven-rejected attempt
+        // can be replaced by the next exclusive owner. Numeric/other legacy values
+        // are terminal attempted entries and retain their original semantics.
+        if (typeof stored === "string") {
             try {
                 const retryableToken = localStorage.getItem(
                     paidGiftRetryableKey(giveawayId, recipient, amount, purpose)
                 );
-                if (retryableToken === attemptToken) return false;
+                if (retryableToken === stored) {
+                    return { state: "retryable", token: stored };
+                }
             } catch {}
+            return { state: "pending", token: stored };
         }
-        return true;
+
+        return { state: "attempted", token: null };
+    }
+
+    /** Returns true for a pending or terminal non-retryable attempt. */
+    function hasGiftBeenAttempted(giveawayId, recipient, amount, purpose) {
+        const { state } = getGiftAttemptState(giveawayId, recipient, amount, purpose);
+        return state === "pending" || state === "attempted";
     }
 
     /** Record a unique attempt token before an ambiguous send can happen. */
@@ -8496,6 +8570,31 @@ body.host-panel-dragging * {
         } catch {}
     }
 
+    function markGiftAttemptTerminal(giveawayId, recipient, amount, purpose, attemptToken) {
+        if (!giveawayId || !attemptToken) return false;
+        const ledger = readPaidGiftsLedger();
+        const giftKey = paidGiftKey(recipient, amount, purpose);
+        const current = ledger[giveawayId]?.[giftKey];
+        if (current !== attemptToken) return false;
+
+        // A numeric value is the established terminal-attempt representation and
+        // remains compatible with ledgers written by older stable versions.
+        ledger[giveawayId][giftKey] = Date.now();
+        writePaidGiftsLedger(ledger);
+        clearGiftAttemptRetryable(giveawayId, recipient, amount, purpose, attemptToken);
+        return true;
+    }
+
+    function giftAttemptStillNeedsResolution(giveawayId, gift) {
+        const state = getGiftAttemptState(
+            giveawayId,
+            gift?.recipient,
+            gift?.amount,
+            gift?.purpose
+        ).state;
+        return state === "none" || state === "pending" || state === "retryable";
+    }
+
     /**
      * Try to send BON using the site's HTTP gift endpoint.
      *
@@ -8533,7 +8632,20 @@ body.host-panel-dragging * {
 
         // ── Idempotency check ─────────────────────────────────────────────
         const giveawayId = getActiveGiveawayId();
-        if (hasGiftBeenAttempted(giveawayId, safeRecipient, safeAmount, purpose)) {
+        const existingAttempt = getGiftAttemptState(
+            giveawayId,
+            safeRecipient,
+            safeAmount,
+            purpose
+        );
+        if (existingAttempt.state === "pending") {
+            logEvent(
+                "Gift deferred (attempt still pending)",
+                `A previous tab still has an unresolved transfer attempt for ${sanitizeNick(safeRecipient)} (${fmtBONCurrency(safeAmount)} BON, ${purpose}). Settlement will verify it before deciding whether to resume.`
+            );
+            return { attempted: false, reason: "pending" };
+        }
+        if (existingAttempt.state === "attempted") {
             logEvent(
                 "Gift skipped (duplicate)",
                 `Already attempted: ${sanitizeNick(safeRecipient)} for ${fmtBONCurrency(safeAmount)} BON (${purpose}) in this giveaway.`
@@ -8573,8 +8685,8 @@ body.host-panel-dragging * {
             }
 
             // We own the giveaway again and are about to make the fallback send
-            // ambiguous. Restore the normal idempotency barrier before sending.
-            clearGiftAttemptRetryable(
+            // ambiguous. Make this exact attempt terminal before sending.
+            markGiftAttemptTerminal(
                 giveawayId,
                 safeRecipient,
                 safeAmount,
@@ -8648,7 +8760,15 @@ body.host-panel-dragging * {
 
             if (!resp || resp.status >= 400) {
                 // Ambiguous failure — server may or may not have processed it.
-                // Do NOT fall back. verifyWinnerGifts will confirm via chat API.
+                // Do NOT fall back. The request is now terminal/ambiguous rather
+                // than pending; verification decides whether it actually landed.
+                markGiftAttemptTerminal(
+                    giveawayId,
+                    safeRecipient,
+                    safeAmount,
+                    purpose,
+                    attemptToken
+                );
                 logEvent(
                     "Gift HTTP ambiguous (no fallback)",
                     `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | status=${resp ? resp.status : "no-response"} | will verify via chat poll`
@@ -8656,10 +8776,24 @@ body.host-panel-dragging * {
                 return { attempted: true, transport: "http-ambiguous", httpStatus: resp ? resp.status : null };
             }
 
+            markGiftAttemptTerminal(
+                giveawayId,
+                safeRecipient,
+                safeAmount,
+                purpose,
+                attemptToken
+            );
             return { attempted: true, transport: "http", httpStatus: resp.status };
         } catch (e) {
             // A thrown fetch/network error is ambiguous: the server may have received
             // the request. Do NOT replay it via /gift; let verification decide.
+            markGiftAttemptTerminal(
+                giveawayId,
+                safeRecipient,
+                safeAmount,
+                purpose,
+                attemptToken
+            );
             logEvent(
                 "Gift HTTP network error (no fallback)",
                 `${sanitizeNick(safeRecipient)} ${fmtBONCurrency(safeAmount)} BON | ${e && e.message ? e.message : "unknown error"} | will verify via chat poll`
