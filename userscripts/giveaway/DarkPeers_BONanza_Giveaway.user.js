@@ -143,12 +143,14 @@
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache documents quarantine all giveaway mutations/snapshots from pagehide and
 //     persisted pageshow always reloads authoritative saved state instead of resuming stale
-//     memory; settlement resumes must also reacquire exclusive ownership before transfers;
+//     memory, quarantined documents cannot reacquire ownership, and settlement resumes
+//     must also reacquire exclusive ownership before transfers;
 //     cross-tab gift attempts stay pending until their originating request resolves; a
 //     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
 //     while superseded fallbacks abort before sending; rejected attempts remain retryable;
-//     unknown Gift History clock offsets accept either timestamp
-//     interpretation when it overlaps the window; optional sponsor cutoffs/clock offsets
+//     unknown Gift History clock offsets accept either timestamp interpretation when it
+//     overlaps the window, while coarse closing-second rows require precise chat proof;
+//     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
@@ -2635,6 +2637,8 @@ body.host-panel-dragging * {
      * Returns true only if our claim is visible after the write.
      */
     async function acquireTabLock() {
+        if (giveawayMutationQuarantined) return false;
+
         // Web Locks provides the atomic cross-tab mutex required for money/state
         // safety. A localStorage-only fallback cannot make compare-and-set atomic,
         // so unsupported browsers fail closed instead of risking double settlement.
@@ -2734,6 +2738,7 @@ body.host-panel-dragging * {
     }
 
     async function ensureExclusiveTabOwnership() {
+        if (giveawayMutationQuarantined) return false;
         if (ownsTabLock()) return true;
         try {
             const acquired = await acquireTabLock();
@@ -4160,10 +4165,12 @@ body.host-panel-dragging * {
 
     function unit3dTimestampResolutionMs(value) {
         const raw = String(value || "").trim();
-        const dbStyle = raw.match(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.(\d+))?$/);
-        if (!dbStyle) return 1;
-        if (!dbStyle[1]) return 1000;
-        const fractionalDigits = Math.min(dbStyle[1].length, 3);
+        const timestamp = raw.match(
+            /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.(\d+))?(?:Z|[+-]\d{2}:?\d{2})?$/
+        );
+        if (!timestamp) return 1;
+        if (!timestamp[1]) return 1000;
+        const fractionalDigits = Math.min(timestamp[1].length, 3);
         return Math.max(1, 1000 / (10 ** fractionalDigits));
     }
 
@@ -4461,7 +4468,8 @@ body.host-panel-dragging * {
                         recipient: parsed.recipient,
                         amount: Math.max(0, Math.floor(Number(parsed.amount) || 0)),
                         rawAmount: Number(parsed.amount),
-                        createdAtTs
+                        createdAtTs,
+                        timestampResolutionMs: unit3dTimestampResolutionMs(m.created_at)
                     };
                 })
                 .filter(event =>
@@ -4484,16 +4492,24 @@ body.host-panel-dragging * {
             if (min === null && max === null) return rows;
 
             let offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
+            let chatEvents = null;
 
-            if (offset === null) {
+            const loadChatEvents = async () => {
+                if (chatEvents !== null) return chatEvents;
                 try {
-                    const chatEvents = await this.fetchRecentChatGiftEvents();
-                    offset = this.inferGiftHistoryClockOffset(chatEvents, rows);
+                    chatEvents = await this.fetchRecentChatGiftEvents();
                 } catch (e) {
+                    chatEvents = [];
                     if (DEBUG_SETTINGS.log_chat_messages) {
                         console.warn("Sponsor history boundary chat fallback failed:", e);
                     }
                 }
+                return chatEvents;
+            };
+
+            if (offset === null) {
+                const events = await loadChatEvents();
+                offset = this.inferGiftHistoryClockOffset(events, rows);
             }
 
             // Re-read the closing latch after the await above. If endGiveaway()
@@ -4501,6 +4517,55 @@ body.host-panel-dragging * {
             // this pass must immediately inherit that cutoff.
             const latestMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
             if (latestMax !== null) max = max === null ? latestMax : Math.min(max, latestMax);
+
+            // Coarse Gift History timestamps can straddle an exact manual closing
+            // instant. Fetch chat evidence even when the site-clock offset is known.
+            if (
+                max !== null &&
+                chatEvents === null &&
+                rows.some(item => unit3dTimestampResolutionMs(item?.rawTimestamp) > 1)
+            ) {
+                await loadChatEvents();
+            }
+
+            const rowMatchesChatEvent = (item, event) =>
+                normalizeUserKey(item?.sender) === normalizeUserKey(event?.gifter) &&
+                normalizeUserKey(item?.recipient) === normalizeUserKey(event?.recipient) &&
+                Math.abs(Number(item?.amount) - Number(event?.rawAmount)) <= 0.001;
+
+            const intervalsOverlap = (aStart, aResolution, bStart, bResolution) =>
+                aStart < (bStart + bResolution) &&
+                bStart < (aStart + aResolution);
+
+            const chatProvesBeforeClose = (item, historyStarts, historyResolutionMs) => {
+                if (max === null || !Array.isArray(chatEvents) || !chatEvents.length) return false;
+
+                return chatEvents.some(event => {
+                    if (!rowMatchesChatEvent(item, event)) return false;
+                    const chatStart = Number(event?.createdAtTs);
+                    const chatResolution = Math.max(
+                        1,
+                        Number.isFinite(Number(event?.timestampResolutionMs))
+                            ? Number(event.timestampResolutionMs)
+                            : 1
+                    );
+                    if (!Number.isFinite(chatStart)) return false;
+
+                    // A chat event only proves pre-cutoff timing when its entire
+                    // source-time interval finishes by the inclusive close instant.
+                    if ((chatStart + chatResolution) > (max + 1)) return false;
+
+                    return historyStarts.some(historyStart =>
+                        Number.isFinite(historyStart) &&
+                        intervalsOverlap(
+                            historyStart,
+                            historyResolutionMs,
+                            chatStart,
+                            chatResolution
+                        )
+                    );
+                });
+            };
 
             const accepted = [];
             for (const item of rows) {
@@ -4516,12 +4581,28 @@ body.host-panel-dragging * {
 
                 if (offset !== null && Number.isFinite(wallTs)) {
                     const eventTs = wallTs - offset;
-                    // A second-precision Gift History row represents the whole
-                    // source second. Treat it as overlapping the opening boundary
-                    // when any instant in that source interval can be on/after open.
                     const afterOpen = min === null || (eventTs + resolutionMs) > min;
-                    if (afterOpen && (max === null || eventTs <= max)) {
+                    if (!afterOpen) continue;
+
+                    if (max === null) {
                         accepted.push(item);
+                        continue;
+                    }
+
+                    if (eventTs > max) continue;
+
+                    if ((eventTs + resolutionMs) <= (max + 1)) {
+                        accepted.push(item);
+                        continue;
+                    }
+
+                    if (chatProvesBeforeClose(item, [eventTs], resolutionMs)) {
+                        accepted.push(item);
+                    } else {
+                        logEvent(
+                            "Sponsor closing-boundary ambiguity",
+                            `Skipped ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): source timestamp straddles the exact closing instant and chat timing could not prove it was pre-cutoff.`
+                        );
                     }
                     continue;
                 }
@@ -4530,21 +4611,31 @@ body.host-panel-dragging * {
                     Number(item?.createdAtTs),
                     Number(item?.createdAtAltTs)
                 ].filter(Number.isFinite);
-                const overlapsWindow = ts =>
-                    (min === null || (ts + resolutionMs) > min) &&
-                    (max === null || ts <= max);
 
-                // Without a learned site-clock offset, local and UTC parsing are
-                // alternative interpretations of the same source timestamp. Keep
-                // the row when either interpretation overlaps the giveaway window;
-                // requiring both would reject normal in-window gifts in non-UTC
-                // browsers whenever the giveaway is shorter than the timezone gap.
-                if (candidates.some(overlapsWindow)) {
+                const openingCandidates = candidates.filter(ts =>
+                    min === null || (ts + resolutionMs) > min
+                );
+                if (!openingCandidates.length) continue;
+
+                if (max === null) {
+                    accepted.push(item);
+                    continue;
+                }
+
+                const notAfterClose = openingCandidates.filter(ts => ts <= max);
+                if (!notAfterClose.length) continue;
+
+                if (notAfterClose.some(ts => (ts + resolutionMs) <= (max + 1))) {
+                    accepted.push(item);
+                    continue;
+                }
+
+                if (chatProvesBeforeClose(item, notAfterClose, resolutionMs)) {
                     accepted.push(item);
                 } else {
                     logEvent(
-                        "Sponsor time-boundary ambiguity",
-                        `Skipped an unverified Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); no timestamp interpretation overlaps the giveaway window.`
+                        "Sponsor closing-boundary ambiguity",
+                        `Skipped ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): no timestamp interpretation proves a pre-cutoff gift.`
                     );
                 }
             }
