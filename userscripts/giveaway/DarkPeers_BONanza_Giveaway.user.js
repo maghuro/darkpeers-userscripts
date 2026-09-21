@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.23
+// @version      1.3.24
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -135,6 +135,10 @@
 //     Gift History/chat-fallback passes from double-counting gifts, restore the intended
 //     six-reminder cap, normalize host checks, await host pot announcements, and make
 //     refund verification/status labels accurately distinguish Gift History from chat.
+//   - v1.3.24 closes the one-shot audit findings: restores are host-bound, cross-tab
+//     ownership uses Web Locks where available, settlement remains resumable until
+//     completion, sponsor opening/closing boundaries constrain Gift History and in-flight
+//     polls, host top-ups are serialized, and delayed verification is statement-bound.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -578,8 +582,12 @@
     const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const TAB_LOCK_HEARTBEAT_MS = 5000;   // update lock every 5s
     const TAB_LOCK_STALE_MS = 15000;      // lock is stale if no heartbeat for 15s
+    const TAB_WEB_LOCK_NAME = `bonanza-giveaway-owner::${location.hostname}`;
     const EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS = 60 * 60 * 1000; // 1h after scheduled end
     let tabLockHeartbeatTimer = null;
+    let tabWebLockRelease = null;
+    let tabWebLockAcquirePromise = null;
+    let hostAddBonInFlight = false;
 
     function readStoredBooleanSetting(key, fallback = false, persistFallback = false) {
         const raw = localStorage.getItem(key);
@@ -1649,7 +1657,7 @@ body.host-panel-dragging * {
         console.warn("[DarkPeers BONanza Giveaway] Disabled: the original BON Giveaway script is also installed.");
     }
 
-    function injectMenu() {
+    async function injectMenu() {
         const chatboxHeader = document.querySelector(`#chatbox_header div`);
         if (!chatboxHeader) {
             setTimeout(injectMenu, 100);
@@ -2355,7 +2363,7 @@ body.host-panel-dragging * {
                 // Another tab is actively running this giveaway — don't duplicate it
                 console.info("[BON Giveaway] Active giveaway detected in another tab, skipping restore.");
             } else {
-                const restored = restoreGiveawayFromSnapshot(savedSnap);
+                const restored = await restoreGiveawayFromSnapshot(savedSnap);
                 if (restored) {
                     // Show the panel automatically so the host sees the restored state
                     bonanzaGiveawayFrame.hidden = false;
@@ -2574,7 +2582,62 @@ body.host-panel-dragging * {
      * Try to claim the tab lock without stealing a fresh lock from another tab.
      * Returns true only if our claim is visible after the write.
      */
-    function acquireTabLock() {
+    async function acquireTabLock() {
+        // Atomic cross-tab ownership on modern browsers. Holding this Web Lock
+        // for the entire giveaway removes the localStorage read/write race where
+        // two tabs could both briefly believe they owned settlement.
+        if (tabWebLockRelease) return true;
+
+        if (navigator.locks && typeof navigator.locks.request === "function") {
+            if (tabWebLockAcquirePromise) return tabWebLockAcquirePromise;
+
+            tabWebLockAcquirePromise = new Promise((resolve) => {
+                let settled = false;
+                const settle = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    resolve(value);
+                };
+
+                navigator.locks.request(
+                    TAB_WEB_LOCK_NAME,
+                    { mode: "exclusive", ifAvailable: true },
+                    async (lock) => {
+                        if (!lock) {
+                            settle(false);
+                            return;
+                        }
+
+                        let releaseHold;
+                        const hold = new Promise(r => { releaseHold = r; });
+                        tabWebLockRelease = releaseHold;
+
+                        try {
+                            localStorage.setItem(
+                                LS_TAB_LOCK,
+                                JSON.stringify({ tabId: TAB_ID, ts: Date.now(), transport: "web-lock" })
+                            );
+                        } catch {}
+
+                        startTabLockHeartbeat();
+                        settle(true);
+
+                        try {
+                            await hold;
+                        } finally {
+                            tabWebLockRelease = null;
+                        }
+                    }
+                ).catch(() => settle(false));
+            }).finally(() => {
+                tabWebLockAcquirePromise = null;
+            });
+
+            return tabWebLockAcquirePromise;
+        }
+
+        // Compatibility fallback for browsers without Web Locks. A stabilized
+        // two-phase lease is safer than the former immediate read/write/read.
         try {
             const now = Date.now();
             const existing = readTabLock();
@@ -2582,9 +2645,23 @@ body.host-panel-dragging * {
                 return false;
             }
 
-            localStorage.setItem(LS_TAB_LOCK, JSON.stringify({ tabId: TAB_ID, ts: now }));
-            const verified = readTabLock();
-            if (!verified || verified.tabId !== TAB_ID) return false;
+            const claim = {
+                tabId: TAB_ID,
+                ts: now,
+                claim: `${TAB_ID}:${Math.random().toString(36).slice(2)}`,
+                transport: "lease"
+            };
+            localStorage.setItem(LS_TAB_LOCK, JSON.stringify(claim));
+            await new Promise(resolve => setTimeout(resolve, 120));
+
+            let verified = null;
+            try {
+                verified = JSON.parse(localStorage.getItem(LS_TAB_LOCK) || "null");
+            } catch {}
+
+            if (!verified || verified.tabId !== TAB_ID || verified.claim !== claim.claim) {
+                return false;
+            }
 
             startTabLockHeartbeat();
             return true;
@@ -2597,10 +2674,15 @@ body.host-panel-dragging * {
     function releaseTabLock() {
         if (tabLockHeartbeatTimer) { clearInterval(tabLockHeartbeatTimer); tabLockHeartbeatTimer = null; }
         try {
-            // Only remove if we still own it
             const lock = readTabLock();
             if (lock && lock.tabId === TAB_ID) localStorage.removeItem(LS_TAB_LOCK);
         } catch {}
+
+        if (tabWebLockRelease) {
+            const release = tabWebLockRelease;
+            tabWebLockRelease = null;
+            try { release(); } catch {}
+        }
     }
 
     /** Check if another tab currently owns the giveaway (fresh heartbeat). */
@@ -2622,6 +2704,7 @@ body.host-panel-dragging * {
         try {
             flushStatsNow();
             if (!giveawayData.__ending) snapshotGiveaway();
+            else if (giveawayData.settlement?.committed) snapshotGiveaway({ force: true });
         } catch {}
         releaseTabLock();
     }
@@ -2629,9 +2712,9 @@ body.host-panel-dragging * {
     // BFCache can restore the exact same JS document after pagehide. Reclaim the
     // lock on pageshow; if another tab legitimately owns it now, reload into a
     // passive page rather than running two copies of the giveaway.
-    function handleGiveawayPageShow(event) {
+    async function handleGiveawayPageShow(event) {
         if (!event || !event.persisted || !giveawayData || giveawayData.__ending) return;
-        if (acquireTabLock()) return;
+        if (await acquireTabLock()) return;
 
         window.onbeforeunload = null;
         window.location.reload();
@@ -2644,8 +2727,8 @@ body.host-panel-dragging * {
      * Serialize the active giveaway state to localStorage.
      * Called at key mutation points (new entry, start, addbon, sponsor, time adjust).
      */
-    function snapshotGiveaway() {
-        if (!giveawayData || giveawayData.__ending) return;
+    function snapshotGiveaway({ force = false } = {}) {
+        if (!giveawayData || (giveawayData.__ending && !force)) return;
         try {
             const snapshot = {
                 giveawayData: {
@@ -2676,7 +2759,10 @@ body.host-panel-dragging * {
                     sponsorGiftMessages: Array.isArray(giveawayData.sponsorGiftMessages)
                         ? giveawayData.sponsorGiftMessages
                         : [],
-                    lastAnnouncedWinners: giveawayData.lastAnnouncedWinners
+                    lastAnnouncedWinners: giveawayData.lastAnnouncedWinners,
+                    settlement: giveawayData.settlement && typeof giveawayData.settlement === "object"
+                        ? { ...giveawayData.settlement }
+                        : null
                 },
                 entries: Array.from(numberEntries.entries()),
                 takenBy: Array.from(numberTakenBy.entries()),
@@ -2694,7 +2780,10 @@ body.host-panel-dragging * {
                         : null,
                     giftHistoryInitialized: !!window.__activeTracker.giftHistoryInitialized,
                     giftHistorySeenKeys: Array.from(window.__activeTracker.giftHistorySeenKeys || []).slice(-250),
-                    historyFallbackActive: !!window.__activeTracker.historyFallbackActive
+                    historyFallbackActive: !!window.__activeTracker.historyFallbackActive,
+                    maxAcceptedCreatedAtTs: Number.isFinite(Number(window.__activeTracker.maxAcceptedCreatedAtTs))
+                        ? Number(window.__activeTracker.maxAcceptedCreatedAtTs)
+                        : null
                 } : null,
                 riggedMode: riggedMode,
                 startTime: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -2718,6 +2807,15 @@ body.host-panel-dragging * {
             if (!raw) return null;
             const snap = JSON.parse(raw);
             if (!snap || !snap.giveawayData) return null;
+
+            const savedHostKey = normalizeUserKey(snap.giveawayData.host);
+            const loggedInHostKey = normalizeUserKey(getLoggedInUsername());
+            if (!savedHostKey || !loggedInHostKey || savedHostKey !== loggedInHostKey) {
+                console.warn(
+                    "[BON Giveaway] Refusing restore: the saved giveaway belongs to a different or unknown authenticated host. Snapshot left untouched for the correct account."
+                );
+                return null;
+            }
 
             const endTs = Number(snap.giveawayData.endTs);
             if (!Number.isFinite(endTs) || endTs <= 0) {
@@ -2744,12 +2842,12 @@ body.host-panel-dragging * {
      * Restore a giveaway from a snapshot. Re-establishes entries, timers, observer, and sponsor tracker.
      * Called during injectMenu() if a valid snapshot exists.
      */
-    function restoreGiveawayFromSnapshot(snap) {
+    async function restoreGiveawayFromSnapshot(snap) {
         if (!snap || !snap.giveawayData) return false;
 
         // Re-check and claim ownership before touching any in-memory state. The
         // caller already checks, but another tab can race us between those steps.
-        if (!acquireTabLock()) {
+        if (!await acquireTabLock()) {
             console.info("[BON Giveaway] Restore cancelled: another tab owns the active giveaway lock.");
             return false;
         }
@@ -2760,9 +2858,16 @@ body.host-panel-dragging * {
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
                 : [];
-            // A pre-1.2.1 snapshot may contain a number drawn at start. Discard it:
-            // v1.2.1 always draws a fresh winning number only after entries close.
-            giveawayData.winningNumber = null;
+            // Old active snapshots must not expose a start-time draw. A committed
+            // settlement must keep its exact draw so crash/reload recovery cannot
+            // select a different winner.
+            const committedSettlement = giveawayData.settlement &&
+                giveawayData.settlement.committed === true;
+            if (!committedSettlement) {
+                giveawayData.winningNumber = null;
+            } else if (Number.isFinite(Number(giveawayData.settlement.winningNumber))) {
+                giveawayData.winningNumber = Number(giveawayData.settlement.winningNumber);
+            }
             giveawayData.donationPercent = normalizeDonationPercent(giveawayData.donationPercent);
             if (donationPercentInput) donationPercentInput.value = String(giveawayData.donationPercent);
             updateDonationHint();
@@ -2896,7 +3001,12 @@ body.host-panel-dragging * {
                     : [],
                 historyFallbackActive: savedTracker
                     ? (!!savedTracker.historyFallbackActive || !savedTracker.giftHistoryInitialized)
-                    : true
+                    : true,
+                maxAcceptedCreatedAtTs: Number.isFinite(Number(giveawayData?.settlement?.cutoffTs))
+                    ? Number(giveawayData.settlement.cutoffTs)
+                    : (savedTracker && Number.isFinite(Number(savedTracker.maxAcceptedCreatedAtTs))
+                        ? Number(savedTracker.maxAcceptedCreatedAtTs)
+                        : null)
             });
             window.__activeTracker = tracker;
 
@@ -3078,7 +3188,7 @@ body.host-panel-dragging * {
 
         // Claim ownership BEFORE mutating UI/state. Never steal a fresh lock from
         // another tab: that is the primary cross-tab double-payout defence.
-        if (!acquireTabLock()) {
+        if (!await acquireTabLock()) {
             window.alert("Another DarkPeers tab is already running an active giveaway. End it there (or wait for its lock to expire) before starting another one.");
             return;
         }
@@ -4123,7 +4233,8 @@ body.host-panel-dragging * {
             giftHistoryClockOffsetMs = null,
             giftHistoryInitialized = false,
             giftHistorySeenKeys = [],
-            historyFallbackActive = false
+            historyFallbackActive = false,
+            maxAcceptedCreatedAtTs = null
         }) {
             this.chatroomId = chatroomId;
             this.giveawayStartTs = giveawayStartTime.getTime();
@@ -4140,6 +4251,9 @@ body.host-panel-dragging * {
                     .filter(key => typeof key === "string" && key)
             );
             this.historyFallbackActive = !!historyFallbackActive;
+            this.maxAcceptedCreatedAtTs = Number.isFinite(Number(maxAcceptedCreatedAtTs))
+                ? Number(maxAcceptedCreatedAtTs)
+                : null;
             this.pollInFlight = null; // serialize/coalesce polling so the same gift cannot be applied twice
             this.processedIds = new Set(); // chat-fallback de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
@@ -4235,10 +4349,21 @@ body.host-panel-dragging * {
                 );
         }
 
-        async filterHistoryRowsByCutoff(rows, cutoffTs) {
-            if (!Array.isArray(rows) || !rows.length || !Number.isFinite(Number(cutoffTs))) {
-                return Array.isArray(rows) ? rows : [];
+        async filterHistoryRowsByWindow(rows, minTs = null, maxTs = null) {
+            if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+
+            const min = Number.isFinite(Number(minTs)) ? Number(minTs) : null;
+            let max = Number.isFinite(Number(maxTs)) ? Number(maxTs) : null;
+            const liveMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                ? Number(this.maxAcceptedCreatedAtTs)
+                : null;
+            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
+                ? Number(this.data.endTs)
+                : null;
+            for (const bound of [liveMax, scheduledMax]) {
+                if (bound !== null) max = max === null ? bound : Math.min(max, bound);
             }
+            if (min === null && max === null) return rows;
 
             let offset = Number.isFinite(Number(this.giftHistoryClockOffsetMs))
                 ? Number(this.giftHistoryClockOffsetMs)
@@ -4250,10 +4375,18 @@ body.host-panel-dragging * {
                     offset = this.inferGiftHistoryClockOffset(chatEvents, rows);
                 } catch (e) {
                     if (DEBUG_SETTINGS.log_chat_messages) {
-                        console.warn("Final sponsor cutoff chat fallback failed:", e);
+                        console.warn("Sponsor history boundary chat fallback failed:", e);
                     }
                 }
             }
+
+            // Re-read the closing latch after the await above. If endGiveaway()
+            // closed the window while this ordinary poll was already in flight,
+            // this pass must immediately inherit that cutoff.
+            const latestMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                ? Number(this.maxAcceptedCreatedAtTs)
+                : null;
+            if (latestMax !== null) max = max === null ? latestMax : Math.min(max, latestMax);
 
             const accepted = [];
             for (const item of rows) {
@@ -4262,7 +4395,10 @@ body.host-panel-dragging * {
                     : Number(item?.createdAtTs);
 
                 if (offset !== null && Number.isFinite(wallTs)) {
-                    if ((wallTs - offset) <= Number(cutoffTs)) accepted.push(item);
+                    const eventTs = wallTs - offset;
+                    if ((min === null || eventTs >= min) && (max === null || eventTs <= max)) {
+                        accepted.push(item);
+                    }
                     continue;
                 }
 
@@ -4270,23 +4406,39 @@ body.host-panel-dragging * {
                     Number(item?.createdAtTs),
                     Number(item?.createdAtAltTs)
                 ].filter(Number.isFinite);
+                const afterOpen = min === null || (candidates.length && candidates.every(ts => ts >= min));
+                const beforeClose = max === null || (candidates.length && candidates.every(ts => ts <= max));
 
-                if (candidates.length && candidates.every(ts => ts <= Number(cutoffTs))) {
+                if (afterOpen && beforeClose) {
                     accepted.push(item);
                 } else {
                     logEvent(
-                        "Sponsor cutoff ambiguity",
-                        `Skipped an unverified final Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); verify manually.`
+                        "Sponsor time-boundary ambiguity",
+                        `Skipped an unverified Gift History row from ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON); verify manually.`
                     );
                 }
             }
-
             return accepted;
         }
 
         async processGiftHistoryRows(rows, options = {}) {
-            const maxCreatedAtTs = Number.isFinite(Number(options.maxCreatedAtTs))
+            const optionMax = Number.isFinite(Number(options.maxCreatedAtTs))
                 ? Number(options.maxCreatedAtTs)
+                : null;
+            const trackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                ? Number(this.maxAcceptedCreatedAtTs)
+                : null;
+            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
+                ? Number(this.data.endTs)
+                : null;
+            let maxCreatedAtTs = optionMax;
+            for (const bound of [trackerMax, scheduledMax]) {
+                if (bound !== null) {
+                    maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
+                }
+            }
+            const minCreatedAtTs = Number.isFinite(Number(this.giveawayStartTs))
+                ? Number(this.giveawayStartTs)
                 : null;
             const announce = options.announce !== false;
             const indexed = indexGiftHistoryRows(rows);
@@ -4300,8 +4452,8 @@ body.host-panel-dragging * {
 
             newRows.reverse();
 
-            if (maxCreatedAtTs !== null && newRows.length) {
-                newRows = await this.filterHistoryRowsByCutoff(newRows, maxCreatedAtTs);
+            if (newRows.length && (minCreatedAtTs !== null || maxCreatedAtTs !== null)) {
+                newRows = await this.filterHistoryRowsByWindow(newRows, minCreatedAtTs, maxCreatedAtTs);
             }
 
             let recordedGiftNote = false;
@@ -4348,8 +4500,17 @@ body.host-panel-dragging * {
 
         /* ---- Primary sponsor poll: UNIT3D Gift History ---- */
         async poll(options = {}) {
+            const requestedCutoff = Number.isFinite(Number(options?.maxCreatedAtTs))
+                ? Number(options.maxCreatedAtTs)
+                : null;
+            if (requestedCutoff !== null) {
+                this.maxAcceptedCreatedAtTs = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                    ? Math.min(Number(this.maxAcceptedCreatedAtTs), requestedCutoff)
+                    : requestedCutoff;
+            }
+
             const needsDedicatedPass =
-                Number.isFinite(Number(options?.maxCreatedAtTs)) ||
+                requestedCutoff !== null ||
                 options?.announce === false;
 
             // Ordinary interval ticks coalesce onto the active poll. Settlement/final
@@ -4418,9 +4579,21 @@ body.host-panel-dragging * {
         async pollChatFallback(options = {}) {
             const perfStart = PERF ? performance.now() : 0;
             this.historyFallbackActive = true;
-            const maxCreatedAtTs = Number.isFinite(Number(options.maxCreatedAtTs))
+            const optionMax = Number.isFinite(Number(options.maxCreatedAtTs))
                 ? Number(options.maxCreatedAtTs)
                 : null;
+            const trackerMax = Number.isFinite(Number(this.maxAcceptedCreatedAtTs))
+                ? Number(this.maxAcceptedCreatedAtTs)
+                : null;
+            const scheduledMax = Number.isFinite(Number(this.data?.endTs))
+                ? Number(this.data.endTs)
+                : null;
+            let maxCreatedAtTs = optionMax;
+            for (const bound of [trackerMax, scheduledMax]) {
+                if (bound !== null) {
+                    maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
+                }
+            }
             const announce = options.announce !== false;
             let messages;
             try {
@@ -5984,6 +6157,11 @@ body.host-panel-dragging * {
         const { author, args, giveawayData, reply } = ctx;
         if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
 
+        if (hostAddBonInFlight) {
+            reply("[b][color=#FFDE59]A host BON top-up is already being verified. Please wait a moment.[/color][/b]");
+            return;
+        }
+
         const raw = args[0];
         const clean = String(raw ?? "").replace(/[^0-9]/g, "");
         const amount = parseInt(clean, 10);
@@ -5993,65 +6171,69 @@ body.host-panel-dragging * {
             return;
         }
 
-        // Prevent the host from increasing the pot beyond their current BON balance.
-        // We fetch a fresh balance snapshot (no page reload) so stale UI can't be abused.
-        const newTotal = giveawayData.amount + amount;
-
-        const currentBon = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
-
-        if (!Number.isFinite(currentBon) || currentBon == null || currentBon < 0) {
-            reply(
-                `[b][color=red]Unable to verify your current BON balance right now. ` +
-                `Please try !addbon again shortly.[/color][/b]`
-            );
-            return;
-        }
-
-        if (currentBon < newTotal) {
-            reply(
-                `[b][color=red]You only have ${fmtBONCurrency(currentBon)} BON right now, so you can't increase the pot to ${fmtBONCurrency(newTotal)} BON. ` +
-                `Wait for more BON (or sponsor gifts) and try again.[/color][/b]`
-            );
-            return;
-        }
-
-        const prevEffectiveWinners = Math.max(
-            1,
-            Math.floor(Number(giveawayData.effectiveWinnersNum || giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1)
-        );
-
-        giveawayData.amount += amount;
-
-        // ✅ host-only tracking (excludes sponsors)
-        giveawayData.hostAdded = (giveawayData.hostAdded || 0) + amount;
-
-        const newEffectiveWinners = recomputeEffectiveWinners(giveawayData);
-        const winnersDelta = Math.max(0, newEffectiveWinners - prevEffectiveWinners);
-        if (winnersDelta > 0) {
-            giveawayData.lastAnnouncedWinners = Math.max(
-                newEffectiveWinners,
-                Math.floor(Number(giveawayData.lastAnnouncedWinners || giveawayData.baseWinnersAtStart || 1) || 1)
-            );
-            flashWinnersUI();
-        }
-
-        const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
-        const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
-
-        let scalingPart = "";
-        if (giveawayData.scaleWinnersWithSponsors) {
-            if (winnersDelta > 0) {
-                scalingPart = `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b]: [b][color=#5DE2E7]${prevEffectiveWinners} → ${newEffectiveWinners} (+${winnersDelta})[/color][/b].`;
-            } else {
-                scalingPart = getSponsorshipNextWinnerLine(giveawayData, { plain: true });
+        // Serialize the balance check and mutation as one host transaction.
+        hostAddBonInFlight = true;
+        try {
+            const currentBon = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
+            const currentPot = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
+                const newTotal = currentPot + amount;
+    
+            if (!Number.isFinite(currentBon) || currentBon == null || currentBon < 0) {
+                reply(
+                    `[b][color=red]Unable to verify your current BON balance right now. ` +
+                    `Please try !addbon again shortly.[/color][/b]`
+                );
+                return;
             }
+    
+            if (currentBon < newTotal) {
+                reply(
+                    `[b][color=red]You only have ${fmtBONCurrency(currentBon)} BON right now, so you can't increase the pot to ${fmtBONCurrency(newTotal)} BON. ` +
+                    `Wait for more BON (or sponsor gifts) and try again.[/color][/b]`
+                );
+                return;
+            }
+    
+            const prevEffectiveWinners = Math.max(
+                1,
+                Math.floor(Number(giveawayData.effectiveWinnersNum || giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1)
+            );
+    
+                giveawayData.amount = newTotal;
+    
+            // ✅ host-only tracking (excludes sponsors)
+            giveawayData.hostAdded = (giveawayData.hostAdded || 0) + amount;
+    
+            const newEffectiveWinners = recomputeEffectiveWinners(giveawayData);
+            const winnersDelta = Math.max(0, newEffectiveWinners - prevEffectiveWinners);
+            if (winnersDelta > 0) {
+                giveawayData.lastAnnouncedWinners = Math.max(
+                    newEffectiveWinners,
+                    Math.floor(Number(giveawayData.lastAnnouncedWinners || giveawayData.baseWinnersAtStart || 1) || 1)
+                );
+                flashWinnersUI();
+            }
+    
+            const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
+            const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
+    
+            let scalingPart = "";
+            if (giveawayData.scaleWinnersWithSponsors) {
+                if (winnersDelta > 0) {
+                    scalingPart = `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b]: [b][color=#5DE2E7]${prevEffectiveWinners} → ${newEffectiveWinners} (+${winnersDelta})[/color][/b].`;
+                } else {
+                    scalingPart = getSponsorshipNextWinnerLine(giveawayData, { plain: true });
+                }
+            }
+    
+            await sendMessage(
+                `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
+                [addedPart, totalPart, scalingPart].filter(Boolean).join(" ")
+            );
+            snapshotGiveaway();
+        } finally {
+            hostAddBonInFlight = false;
         }
-
-        await sendMessage(
-            `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
-            [addedPart, totalPart, scalingPart].filter(Boolean).join(" ")
-        );
-        snapshotGiveaway();
     }
 
     function rebuildSchedule() {
@@ -6114,9 +6296,12 @@ body.host-panel-dragging * {
         giveawayData.__ending = true;
         const nowAtSettlement = Date.now();
         const scheduledEndTs = Number(giveawayData.endTs);
-        const settlementCutoffTs = Number.isFinite(scheduledEndTs)
-            ? Math.min(nowAtSettlement, scheduledEndTs)
-            : nowAtSettlement;
+        const committedCutoffTs = Number(giveawayData?.settlement?.cutoffTs);
+        const settlementCutoffTs = Number.isFinite(committedCutoffTs)
+            ? committedCutoffTs
+            : (Number.isFinite(scheduledEndTs)
+                ? Math.min(nowAtSettlement, scheduledEndTs)
+                : nowAtSettlement);
 
         // ---- cross-tab guard ----
         // If another tab currently owns the giveaway (fresh heartbeat in the last
@@ -6194,10 +6379,36 @@ body.host-panel-dragging * {
             }
         }
 
-        // Sponsor accounting is now frozen. From this point onward an automatic
-        // restore must never re-run settlement or redraw a result, so retire the
-        // active snapshot immediately before committing the outcome.
-        try { clearGiveawaySnapshot(); } catch {}
+        // Sponsor accounting is frozen. Commit and persist the outcome BEFORE
+        // any closing output or transfer. The active snapshot remains until the
+        // settlement reaches a terminal state; gift/pool ledgers retain the
+        // per-transfer attempt state, so a crash can resume without double-paying.
+        if (!giveawayData.settlement || giveawayData.settlement.committed !== true) {
+            const committedWinningNumber = numberEntries.size > 0
+                ? getRandomInt(giveawayData.startNum, giveawayData.endNum)
+                : null;
+            giveawayData.winningNumber = committedWinningNumber;
+            giveawayData.settlement = {
+                committed: true,
+                phase: "settling",
+                cutoffTs: settlementCutoffTs,
+                winningNumber: committedWinningNumber,
+                committedAt: Date.now(),
+                giveawayId: getActiveGiveawayId()
+            };
+            logEvent(
+                "Settlement committed",
+                numberEntries.size > 0
+                    ? `Cutoff=${new Date(settlementCutoffTs).toISOString()} | Winning number=${committedWinningNumber}`
+                    : `Cutoff=${new Date(settlementCutoffTs).toISOString()} | No entrants`
+            );
+        } else {
+            giveawayData.winningNumber = Number.isFinite(Number(giveawayData.settlement.winningNumber))
+                ? Number(giveawayData.settlement.winningNumber)
+                : null;
+            giveawayData.settlement.phase = "settling";
+        }
+        snapshotGiveaway({ force: true });
 
         // Sponsor acknowledgement is independent of whether anyone entered. Gifts
         // were already received and the final sync above has frozen the authoritative
@@ -6357,7 +6568,7 @@ body.host-panel-dragging * {
                                 : `NOT SENT (${result?.reason || "unknown error"})`);
                     }
 
-                    if (result?.attempted) {
+                    if (result?.attempted || result?.reason === "duplicate") {
                         refundExpectedGifts.push({
                             recipient: refund.name,
                             amount: refund.amount,
@@ -6412,16 +6623,19 @@ body.host-panel-dragging * {
                         refundGiftHistoryBaseline,
                         {
                             afterId: refundAfterMessageId,
-                            notBeforeTs: refundNotBeforeTs
+                            notBeforeTs: refundNotBeforeTs,
+                            statementId: currentStatement?.id ?? null
                         }
                     );
                 }
             }
         } else {
-            // Draw only after entries are closed and payout has been committed.
-            // This keeps the result out of localStorage/DevTools during the giveaway.
-            giveawayData.winningNumber = getRandomInt(giveawayData.startNum, giveawayData.endNum);
-            logEvent("Winning number drawn", `Winning number=${giveawayData.winningNumber}`);
+            // The draw was committed before any settlement side effect. A resumed
+            // settlement must reuse this exact number.
+            if (!Number.isFinite(Number(giveawayData.winningNumber))) {
+                throw new Error("Committed settlement is missing its winning number.");
+            }
+            logEvent("Winning number committed", `Winning number=${giveawayData.winningNumber}`);
 
             // 1) build and sort entries by closeness to winningNumber
             const entries = Array.from(numberEntries.entries())
@@ -6633,11 +6847,18 @@ body.host-panel-dragging * {
             // 6b) Verify that the gifts actually show up in chat via the API
             verifyWinnerGifts(expectedGifts, giveawayData.host, {
                 afterId: payoutAfterMessageId,
-                notBeforeTs: payoutNotBeforeTs
+                notBeforeTs: payoutNotBeforeTs,
+                statementId: currentStatement?.id ?? null
             });
         }
 
-        // 7) clean up timers & state
+        // 7) Settlement is terminal only now. Persist completion once, then
+        // stopGiveaway() may safely retire the active snapshot.
+        if (giveawayData?.settlement?.committed) {
+            giveawayData.settlement.phase = "complete";
+            giveawayData.settlement.completedAt = Date.now();
+            snapshotGiveaway({ force: true });
+        }
         stopGiveaway();
     }
 
@@ -6914,6 +7135,8 @@ body.host-panel-dragging * {
      * @param {{afterId?:number|null, notBeforeTs?:number|null}} verificationContext
      */
     async function verifySponsorRefundGifts(expectedGifts, hostName, baselineRows, fallbackContext = {}) {
+        const statementId = fallbackContext?.statementId ?? currentStatement?.id ?? null;
+        fallbackContext = { ...fallbackContext, statementId };
         const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
             .map(g => ({
                 recipient: String(g?.recipient || "").trim(),
@@ -6982,13 +7205,14 @@ body.host-panel-dragging * {
                 if (index < 0) continue;
                 consumed.add(index);
                 gift.done = true;
-                updateStatementGiftStatus(gift.recipient, gift.purpose, "confirmed-history");
+                updateStatementGiftStatus(gift.recipient, gift.purpose, "confirmed-history", statementId);
             }
 
             if (expected.every(g => g.done)) {
-                if (currentStatement) {
-                    currentStatement.verification = "all sponsor refunds confirmed in Gift History";
-                    persistCurrentStatement();
+                const targetStatement = getStatementRecordById(statementId);
+                if (targetStatement) {
+                    targetStatement.verification = "all sponsor refunds confirmed in Gift History";
+                    persistStatementRecord(targetStatement);
                 }
                 return true;
             }
@@ -7001,10 +7225,11 @@ body.host-panel-dragging * {
         }
 
         const missing = expected.filter(g => !g.done);
-        missing.forEach(g => updateStatementGiftStatus(g.recipient, g.purpose, "failed"));
-        if (currentStatement) {
-            currentStatement.verification = `${missing.length} sponsor refund(s) could not be confirmed in Gift History`;
-            persistCurrentStatement();
+        missing.forEach(g => updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId));
+        const targetStatement = getStatementRecordById(statementId);
+        if (targetStatement) {
+            targetStatement.verification = `${missing.length} sponsor refund(s) could not be confirmed in Gift History`;
+            persistStatementRecord(targetStatement);
         }
 
         const missingList = missing
@@ -7020,6 +7245,7 @@ body.host-panel-dragging * {
 
     function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
         try {
+            const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
             const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
                 ? Math.floor(Number(verificationContext.afterId))
                 : null;
@@ -7030,7 +7256,11 @@ body.host-panel-dragging * {
             if (!selfKeys.size) {
                 // If UI is showing pending spinners, don’t leave them stuck
                 markAllPendingWinnerGiftsFailed();
-                if (currentStatement) { currentStatement.verification = "could not verify (host name unknown)"; persistCurrentStatement(); }
+                const targetStatement = getStatementRecordById(statementId);
+                if (targetStatement) {
+                    targetStatement.verification = "could not verify (host name unknown)";
+                    persistStatementRecord(targetStatement);
+                }
                 return;
             }
 
@@ -7059,11 +7289,11 @@ body.host-panel-dragging * {
 
             function markConfirmed(g) {
                 markWinnerGiftConfirmed(g.recipient);
-                updateStatementGiftStatus(g.recipient, g.purpose, "confirmed");
+                updateStatementGiftStatus(g.recipient, g.purpose, "confirmed", statementId);
             }
             function markFailed(g) {
                 markWinnerGiftFailed(g.recipient);
-                updateStatementGiftStatus(g.recipient, g.purpose, "failed");
+                updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
             }
 
             function finalizeFail() {
@@ -7072,7 +7302,7 @@ body.host-panel-dragging * {
                 clearTimeout(hardTimer);
 
                 const missing = expected.filter(g => !g.done);
-                finalizeStatementVerification(missing.length === 0, missing.length);
+                finalizeStatementVerification(missing.length === 0, missing.length, statementId);
                 if (missing.length) {
                     missing.forEach(markFailed);
                     const missingList = missing.map(describe).join(", ");
@@ -7091,7 +7321,7 @@ body.host-panel-dragging * {
                 if (done) return;
                 done = true;
                 clearTimeout(hardTimer);
-                finalizeStatementVerification(true, 0);
+                finalizeStatementVerification(true, 0, statementId);
             }
 
             const hardTimer = setTimeout(finalizeFail, hardDeadlineMs);
@@ -7163,7 +7393,11 @@ body.host-panel-dragging * {
         } catch (e) {
             logEvent("Payout verification error", "Unexpected error while confirming gift messages.");
             markAllPendingWinnerGiftsFailed();
-            if (currentStatement) { currentStatement.verification = "verification error, check manually"; persistCurrentStatement(); }
+            const targetStatement = getStatementRecordById(verificationContext?.statementId ?? null);
+            if (targetStatement) {
+                targetStatement.verification = "verification error, check manually";
+                persistStatementRecord(targetStatement);
+            }
         }
     }
 
@@ -7409,12 +7643,28 @@ body.host-panel-dragging * {
         try { localStorage.setItem(LS_STATEMENTS, JSON.stringify(list.slice(0, STATEMENTS_KEEP))); } catch {}
     }
 
+    function persistStatementRecord(record, { selectLatest = false } = {}) {
+        if (!record || record.id == null) return;
+        const list = readStatements().filter(r => r && String(r.id) !== String(record.id));
+        list.unshift(record);
+        writeStatements(list);
+        if (currentStatement && String(currentStatement.id) === String(record.id)) {
+            currentStatement = record;
+        }
+        renderStatementControls({ selectLatest });
+    }
+
     function persistCurrentStatement() {
         if (!currentStatement) return;
-        const list = readStatements().filter(r => r && r.id !== currentStatement.id);
-        list.unshift(currentStatement);
-        writeStatements(list);
-        renderStatementControls({ selectLatest: true });
+        persistStatementRecord(currentStatement, { selectLatest: true });
+    }
+
+    function getStatementRecordById(statementId) {
+        if (statementId == null) return currentStatement;
+        if (currentStatement && String(currentStatement.id) === String(statementId)) {
+            return currentStatement;
+        }
+        return readStatements().find(r => r && String(r.id) === String(statementId)) || null;
     }
 
     function statementTimestamp(ms) {
@@ -7513,9 +7763,10 @@ body.host-panel-dragging * {
         };
     }
 
-    /** Update a gift line in the current statement when the verifier reports. */
-    function updateStatementGiftStatus(recipient, purpose, status) {
-        if (!currentStatement) return;
+    /** Update a gift line in the statement captured by the verifier. */
+    function updateStatementGiftStatus(recipient, purpose, status, statementId = null) {
+        const targetStatement = getStatementRecordById(statementId);
+        if (!targetStatement) return;
         const label = ({
             confirmed: "confirmed in chat",
             "confirmed-history": "confirmed in Gift History",
@@ -7525,21 +7776,24 @@ body.host-panel-dragging * {
         const key = normalizeUserKey(recipient);
 
         if (purpose === GIFT_PURPOSE.SPONSOR_REFUND) {
-            (currentStatement.refunds || []).forEach(refund => {
+            (targetStatement.refunds || []).forEach(refund => {
                 if (normalizeUserKey(refund.user) === key) refund.status = label;
             });
         } else {
-            currentStatement.winners.forEach(w => {
+            (targetStatement.winners || []).forEach(w => {
                 if (normalizeUserKey(w.user) === key) w.status = label;
             });
         }
-        persistCurrentStatement();
+        persistStatementRecord(targetStatement);
     }
 
-    function finalizeStatementVerification(ok, missingCount) {
-        if (!currentStatement) return;
-        currentStatement.verification = ok ? "all gifts confirmed in chat" : `${missingCount} gift(s) could not be confirmed`;
-        persistCurrentStatement();
+    function finalizeStatementVerification(ok, missingCount, statementId = null) {
+        const targetStatement = getStatementRecordById(statementId);
+        if (!targetStatement) return;
+        targetStatement.verification = ok
+            ? "all gifts confirmed in chat"
+            : `${missingCount} gift(s) could not be confirmed`;
+        persistStatementRecord(targetStatement);
     }
 
     function buildStatementText(rec) {
