@@ -2868,7 +2868,13 @@ body.host-panel-dragging * {
             // Recalculate timeLeft from the stored endTs. If it already expired
             // within the recovery grace, rebuild state first and settle immediately.
             giveawayData.timeLeft = Math.max(Math.ceil((giveawayData.endTs - Date.now()) / 1000), 0);
-            const expiredOnRestore = giveawayData.timeLeft <= 0 || snap.__expiredAtLoad === true;
+            // A committed settlement is permanently closed even when it came
+            // from an early/manual !end before the original scheduled endTs.
+            // Never reopen entries/timers after a crash in that state.
+            const expiredOnRestore =
+                committedSettlement ||
+                giveawayData.timeLeft <= 0 ||
+                snap.__expiredAtLoad === true;
 
             // 2) Restore entries
             numberEntries.clear();
@@ -3074,7 +3080,12 @@ body.host-panel-dragging * {
             return true;
         } catch (e) {
             console.error("Giveaway restore failed:", e);
-            clearGiveawaySnapshot();
+            const committedSettlement = snap?.giveawayData?.settlement?.committed === true;
+            if (!committedSettlement) {
+                clearGiveawaySnapshot();
+            } else {
+                console.warn("[BON Giveaway] Committed settlement snapshot retained after restore failure for a later recovery attempt.");
+            }
             releaseTabLock();
             return false;
         }
