@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.24
+// @version      1.3.25
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -165,6 +165,8 @@
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
+//   - v1.3.25 promotes the completed v1.3.24 full-audit hardening to the stable
+//     post-audit release. No new settlement logic is introduced in this bump.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
