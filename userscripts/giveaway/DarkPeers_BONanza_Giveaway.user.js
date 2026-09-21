@@ -153,7 +153,9 @@
 //     unknown Gift History clock offsets accept either timestamp interpretation when it
 //     overlaps the window, while coarse closing-second rows require one-to-one precise
 //     chat proof reserved across polling passes and the chat-only fallback applies the
-//     same timestamp intervals;
+//     same timestamp intervals; ambiguous cutoff rows remain unseen/retryable until
+//     evidence resolves, and authoritative settlement output rechecks ownership before
+//     and after every awaited closing send;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -4506,7 +4508,12 @@ body.host-panel-dragging * {
         }
 
         async filterHistoryRowsByWindow(rows, minTs = null, maxTs = null, evidenceRows = null) {
-            if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+            if (!Array.isArray(rows) || !rows.length) {
+                return {
+                    accepted: Array.isArray(rows) ? rows : [],
+                    retryableKeys: new Set()
+                };
+            }
 
             const min = optionalFiniteNumber(minTs);
             let max = optionalFiniteNumber(maxTs);
@@ -4515,7 +4522,9 @@ body.host-panel-dragging * {
             for (const bound of [liveMax, scheduledMax]) {
                 if (bound !== null) max = max === null ? bound : Math.min(max, bound);
             }
-            if (min === null && max === null) return rows;
+            if (min === null && max === null) {
+                return { accepted: rows, retryableKeys: new Set() };
+            }
 
             let offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
             let chatEvents = null;
@@ -4650,6 +4659,7 @@ body.host-panel-dragging * {
             }
 
             const accepted = [];
+            const retryableKeys = new Set();
             for (const item of rows) {
                 const resolutionMs = Math.max(
                     1,
@@ -4681,9 +4691,10 @@ body.host-panel-dragging * {
                     if (chatProvesBeforeClose(item, [eventTs], resolutionMs)) {
                         accepted.push(item);
                     } else {
+                        if (item?.historyKey) retryableKeys.add(item.historyKey);
                         logEvent(
                             "Sponsor closing-boundary ambiguity",
-                            `Skipped ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): source timestamp straddles the exact closing instant and chat timing could not prove it was pre-cutoff.`
+                            `Deferred ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): source timestamp straddles the exact closing instant and chat timing could not yet prove it was pre-cutoff.`
                         );
                     }
                     continue;
@@ -4715,13 +4726,14 @@ body.host-panel-dragging * {
                 if (chatProvesBeforeClose(item, notAfterClose, resolutionMs)) {
                     accepted.push(item);
                 } else {
+                    if (item?.historyKey) retryableKeys.add(item.historyKey);
                     logEvent(
                         "Sponsor closing-boundary ambiguity",
-                        `Skipped ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): no timestamp interpretation proves a pre-cutoff gift.`
+                        `Deferred ${sanitizeNick(item?.sender || "unknown")} (${fmtBONCurrency(item?.amount || 0)} BON): no timestamp interpretation yet proves a pre-cutoff gift.`
                     );
                 }
             }
-            return accepted;
+            return { accepted, retryableKeys };
         }
 
         async processGiftHistoryRows(rows, options = {}) {
@@ -4747,13 +4759,16 @@ body.host-panel-dragging * {
 
             newRows.reverse();
 
+            let retryableBoundaryKeys = new Set();
             if (newRows.length && (minCreatedAtTs !== null || maxCreatedAtTs !== null)) {
-                newRows = await this.filterHistoryRowsByWindow(
+                const filtered = await this.filterHistoryRowsByWindow(
                     newRows,
                     minCreatedAtTs,
                     maxCreatedAtTs,
                     indexed
                 );
+                newRows = filtered.accepted;
+                retryableBoundaryKeys = filtered.retryableKeys;
             }
 
             if (!canMutateActiveGiveaway()) return false;
@@ -4783,21 +4798,26 @@ body.host-panel-dragging * {
                 });
             }
 
+            let seenStateChanged = false;
             for (const item of indexed) {
-                if (item.historyKey) this.giftHistorySeenKeys.add(item.historyKey);
+                if (!item.historyKey || retryableBoundaryKeys.has(item.historyKey)) continue;
+                if (!this.giftHistorySeenKeys.has(item.historyKey)) {
+                    this.giftHistorySeenKeys.add(item.historyKey);
+                    seenStateChanged = true;
+                }
             }
             this.trimGiftHistorySeenKeys();
             this.giftHistoryInitialized = true;
             this.historyFallbackActive = false;
 
-            if (recordedGiftNote || newRows.length) snapshotGiveaway();
+            if (recordedGiftNote || newRows.length || seenStateChanged) snapshotGiveaway();
 
             if (this.buffer.length) {
                 if (announce) await this.maybeFlush();
                 else await this.flushBuffer(Date.now(), { announce: false });
             }
 
-            return true;
+            return retryableBoundaryKeys.size === 0;
         }
 
         /* ---- Primary sponsor poll: UNIT3D Gift History ---- */
@@ -6664,6 +6684,29 @@ body.host-panel-dragging * {
             return;
         }
 
+        const sendSettlementMessage = async (message, label = "closing output") => {
+            if (!(await ensureExclusiveTabOwnership())) {
+                logEvent(
+                    "Settlement output paused (ownership lost)",
+                    `Refusing ${label}: this tab no longer has exclusive giveaway ownership.`
+                );
+                giveawayData.__ending = false;
+                return false;
+            }
+
+            await sendMessage(message);
+
+            if (!(await ensureExclusiveTabOwnership())) {
+                logEvent(
+                    "Settlement output paused after send",
+                    `Stopped after ${label}: ownership changed while the message was in flight.`
+                );
+                giveawayData.__ending = false;
+                return false;
+            }
+            return true;
+        };
+
         // Stop additional triggers ASAP (but don't clear entries/state yet)
         try {
             startButton.disabled = true;
@@ -6776,14 +6819,17 @@ body.host-panel-dragging * {
         );
         if (finalSponsoredTotal > 0) {
             const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
-            if (sponsorsMessage) await sendMessage(sponsorsMessage);
+            if (
+                sponsorsMessage &&
+                !(await sendSettlementMessage(sponsorsMessage, "final sponsor summary"))
+            ) return;
 
             // Gift History is already the canonical sponsor-note source and the
             // final sponsor sync above has just refreshed it. Reuse the persisted
             // matched notes here instead of performing a second network scrape.
             const sponsorMessageRecap = buildFinalSponsorMessageRecap(giveawayData);
             for (const sponsorNoteMessage of sponsorMessageRecap) {
-                await sendMessage(sponsorNoteMessage);
+                if (!(await sendSettlementMessage(sponsorNoteMessage, "final sponsor note"))) return;
             }
         }
 
@@ -6796,22 +6842,24 @@ body.host-panel-dragging * {
             const noEntryPoolPct = normalizeDonationPercent(giveawayData.donationPercent);
 
             if (noEntryPoolPct > 0) {
-                await sendMessage(
+                if (!(await sendSettlementMessage(
                     `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
-                    `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`
-                );
+                    `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`,
+                    "zero-entry BON Pool outcome"
+                ))) return;
 
                 let noEntryPoolResult = { attempted: false, confirmed: noEntryTotal <= 0, reason: noEntryTotal <= 0 ? "empty-pot" : "not-attempted" };
                 if (noEntryTotal > 0) {
                     noEntryPoolResult = await contributeBonPool(noEntryTotal);
 
                     if (noEntryPoolResult.confirmed) {
-                        await sendMessage(
+                        if (!(await sendSettlementMessage(
                             `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
-                            `No entrants — 100% of the pot was contributed. ✨`
-                        );
+                            `No entrants — 100% of the pot was contributed. ✨`,
+                            "zero-entry BON Pool confirmation"
+                        ))) return;
                     } else {
                         logEvent(
                             "BON Pool verification warning",
@@ -6879,14 +6927,15 @@ body.host-panel-dragging * {
                     )
                     .join(" · ");
 
-                await sendMessage(
+                if (!(await sendSettlementMessage(
                     `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
                     `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "↩️")} BON Pool is [b]0%[/b]: ` +
                     `the host-funded [b][color=#ffc00a]${fmtBONCurrency(noEntryHostFunded)} BON[/color][/b] remains with the host.` +
                     (refundList
                         ? ` Sponsor contributions will be returned in full: ${refundList}.`
-                        : ` There are no sponsor contributions to return.`)
-                );
+                        : ` There are no sponsor contributions to return.`),
+                    "zero-entry refund outcome"
+                ))) return;
 
                 const refundExpectedGifts = [];
                 const refundDeferredGifts = [];
@@ -7073,7 +7122,10 @@ body.host-panel-dragging * {
             const ties = entries.filter(e => e.gap === entries[0].gap);
             if (ties.length > 1) {
                 const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
-                await sendMessage(`${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`);
+                if (!(await sendSettlementMessage(
+                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
+                    "tie result"
+                ))) return;
             }
 
             // 3) pick top N winners
@@ -7171,7 +7223,10 @@ body.host-panel-dragging * {
                       `[color=#FB4F4F](off by ${fmtBON(diff)})[/color] ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
 
-                await sendMessage([summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag);
+                if (!(await sendSettlementMessage(
+                    [summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag,
+                    "winner result"
+                ))) return;
             } else {
                 // multi‐winner public message
                 const lines = winners.map((w, i) => {
@@ -7184,7 +7239,10 @@ body.host-panel-dragging * {
                 });
                 const multiDonatedNote = donationActive ? `\n[color=#aaaaaa]Amounts shown are after the ${split.percent}% ${BONANZA.FUND_NAME} donation.[/color]` : "";
 
-                await sendMessage([summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag);
+                if (!(await sendSettlementMessage(
+                    [summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag,
+                    "winner results"
+                ))) return;
             }
 
             const winnerNames = winners.map(w => sanitizeNick(w.author)).join(", ") || "none";
@@ -7267,7 +7325,7 @@ body.host-panel-dragging * {
                     const paidMessage = riggedMode
                         ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
                         : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
-                    await sendMessage(paidMessage);
+                    if (!(await sendSettlementMessage(paidMessage, "BON Pool confirmation"))) return;
                 } else {
                     markFundGiftStatus("failed");
                     logEvent("BON Pool verification warning", `Direct contribution of ${fmtBONCurrency(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
