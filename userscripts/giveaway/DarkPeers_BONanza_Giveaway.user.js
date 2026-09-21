@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.21
+// @version      1.3.22
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -128,6 +128,9 @@
 //   - v1.3.21 shortens refund gift notes to "Giveaway refund" and verifies outgoing
 //     sponsor refunds primarily against authenticated Gift History; the chat API is
 //     retained only as a fallback when Gift History itself is unavailable.
+//   - v1.3.22 hardens the chat fallback: only genuine SystemBot gift events whose
+//     parsed sender is one of the host/self identities may satisfy an expected payout
+//     or refund. User-written lookalike messages can never confirm a transaction.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -7080,8 +7083,16 @@ body.host-panel-dragging * {
                             const msgId = m && m.id != null ? String(m.id) : null;
                             if (msgId && consumedMessageIds.has(msgId)) continue;
 
+                            // Chat verification is a fallback only. Accept exclusively
+                            // site-generated SystemBot gift events, never ordinary user
+                            // messages that merely imitate the visible gift wording.
+                            if (!m?.bot?.is_systembot) continue;
+
                             const gift = parseGiftMessage(m.message);
                             if (!gift || !gift.gifter || !gift.recipient) continue;
+
+                            // Even a genuine gift event only counts if the sender is
+                            // the giveaway host / authenticated self identity.
                             if (!selfKeys.has(normalizeUserKey(gift.gifter))) continue;
 
                             const recKey = normalizeUserKey(gift.recipient);
