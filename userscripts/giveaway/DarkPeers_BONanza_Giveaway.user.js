@@ -6861,7 +6861,7 @@ body.host-panel-dragging * {
             } catch (e) { /* statements are best-effort */ }
 
             // 6b) Verify that the gifts actually show up in chat via the API
-            verifyWinnerGifts(expectedGifts, giveawayData.host, {
+            await verifyWinnerGifts(expectedGifts, giveawayData.host, {
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
                 statementId: currentStatement?.id ?? null
@@ -7171,8 +7171,7 @@ body.host-panel-dragging * {
 
         if (!canUseHistory || !selfKeys.size) {
             logEvent("Sponsor refund verification fallback", "Gift History baseline unavailable; using chat API verification.");
-            verifyWinnerGifts(expected, hostName, fallbackContext);
-            return null;
+            return await verifyWinnerGifts(expected, hostName, fallbackContext);
         }
 
         const baselineCounts = new Map();
@@ -7236,8 +7235,7 @@ body.host-panel-dragging * {
 
         if (successfulReads === 0) {
             logEvent("Sponsor refund verification fallback", "Gift History became unavailable; using chat API verification.");
-            verifyWinnerGifts(expected, hostName, fallbackContext);
-            return null;
+            return await verifyWinnerGifts(expected, hostName, fallbackContext);
         }
 
         const missing = expected.filter(g => !g.done);
@@ -7259,9 +7257,9 @@ body.host-panel-dragging * {
         return false;
     }
 
-    function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
+    async function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
+        const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
         try {
-            const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
             const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
                 ? Math.floor(Number(verificationContext.afterId))
                 : null;
@@ -7269,9 +7267,8 @@ body.host-panel-dragging * {
                 ? Number(verificationContext.notBeforeTs)
                 : null;
             const selfKeys = resolveSelfKeys(hostName);
+
             if (!selfKeys.size) {
-                // Only touch the live table if this verifier still belongs to
-                // the statement currently represented by that UI.
                 if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
                     markAllPendingWinnerGiftsFailed();
                 }
@@ -7280,7 +7277,7 @@ body.host-panel-dragging * {
                     targetStatement.verification = "could not verify (host name unknown)";
                     persistStatementRecord(targetStatement);
                 }
-                return;
+                return false;
             }
 
             const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
@@ -7293,17 +7290,12 @@ body.host-panel-dragging * {
                 }))
                 .filter(g => g.recipient && g.amount > 0 && !selfKeys.has(g.key));
 
-            if (!expected.length) return;
+            if (!expected.length) return true;
 
             const maxAttempts = 5;
             const delayMs = 5000;
             const fetchTimeoutMs = 5000;
-            const hardDeadlineMs = (maxAttempts * (delayMs + fetchTimeoutMs)) + 4000;
             const consumedMessageIds = new Set();
-
-            let attempts = 0;
-            let done = false;
-
             const describe = g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`;
             const canTouchLiveUI = () =>
                 currentStatement &&
@@ -7314,44 +7306,16 @@ body.host-panel-dragging * {
                 if (canTouchLiveUI()) markWinnerGiftConfirmed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "confirmed", statementId);
             }
+
             function markFailed(g) {
                 if (canTouchLiveUI()) markWinnerGiftFailed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
             }
 
-            function finalizeFail() {
-                if (done) return;
-                done = true;
-                clearTimeout(hardTimer);
+            // Give UNIT3D a short moment to emit SystemBot gift messages.
+            await new Promise(resolve => setTimeout(resolve, 2000));
 
-                const missing = expected.filter(g => !g.done);
-                finalizeStatementVerification(missing.length === 0, missing.length, statementId);
-                if (missing.length) {
-                    missing.forEach(markFailed);
-                    const missingList = missing.map(describe).join(", ");
-                    logEvent("Payout verification warning", `Could not confirm gifts for: ${missingList}`);
-                    sendMessage(
-                        `[color=#ff4f4f][b]Warning:[/b][/color] ` +
-                        `Some giveaway gifts could not be confirmed. ` +
-                        `Please manually verify BON for: ${missingList}.`
-                    );
-                } else {
-                    markAllPendingWinnerGiftsFailed();
-                }
-            }
-
-            function finalizeSuccess() {
-                if (done) return;
-                done = true;
-                clearTimeout(hardTimer);
-                finalizeStatementVerification(true, 0, statementId);
-            }
-
-            const hardTimer = setTimeout(finalizeFail, hardDeadlineMs);
-
-            async function checkOnce() {
-                attempts++;
-
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
                     const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
                     if (afterId !== null) url.searchParams.set("after_id", String(afterId));
@@ -7371,21 +7335,17 @@ body.host-panel-dragging * {
                             const msgId = m && m.id != null ? String(m.id) : null;
                             if (msgId && consumedMessageIds.has(msgId)) continue;
 
-                            // Chat verification is a fallback only. Accept exclusively
-                            // site-generated SystemBot gift events, never ordinary user
-                            // messages that merely imitate the visible gift wording.
+                            // Chat verification is fallback/confirmation only:
+                            // accept genuine SystemBot gifts from host/self, never
+                            // arbitrary user-written text that imitates a gift.
                             if (!m?.bot?.is_systembot) continue;
 
                             const gift = parseGiftMessage(m.message);
                             if (!gift || !gift.gifter || !gift.recipient) continue;
-
-                            // Even a genuine gift event only counts if the sender is
-                            // the giveaway host / authenticated self identity.
                             if (!selfKeys.has(normalizeUserKey(gift.gifter))) continue;
 
                             const recKey = normalizeUserKey(gift.recipient);
                             const amt = Math.round(gift.amount);
-                            // First unmatched expectation with this recipient + amount wins
                             const match = expected.find(g => !g.done && g.key === recKey && g.amount === amt);
                             if (!match) continue;
 
@@ -7394,36 +7354,43 @@ body.host-panel-dragging * {
                             markConfirmed(match);
                         }
                     }
-                } catch (e) {
-                    // swallow – we'll just warn at the end if we never see the messages
+                } catch {
+                    // Retry below. Each fetch is independently bounded by timeout.
                 }
 
                 if (expected.every(g => g.done)) {
-                    finalizeSuccess();
-                    return;
+                    finalizeStatementVerification(true, 0, statementId);
+                    return true;
                 }
 
-                if (attempts >= maxAttempts) {
-                    finalizeFail();
-                    return;
+                if (attempt < maxAttempts) {
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
                 }
-
-                setTimeout(checkOnce, delayMs);
             }
 
-            // Give the server a moment to emit the gift messages before first check
-            setTimeout(checkOnce, 2000);
+            const missing = expected.filter(g => !g.done);
+            missing.forEach(markFailed);
+            finalizeStatementVerification(false, missing.length, statementId);
+
+            const missingList = missing.map(describe).join(", ");
+            logEvent("Payout verification warning", `Could not confirm gifts for: ${missingList}`);
+            await sendMessage(
+                `[color=#ff4f4f][b]Warning:[/b][/color] ` +
+                `Some giveaway gifts could not be confirmed. ` +
+                `Please manually verify BON for: ${missingList}.`
+            );
+            return false;
         } catch (e) {
             logEvent("Payout verification error", "Unexpected error while confirming gift messages.");
-            const failedStatementId = verificationContext?.statementId ?? null;
-            if (currentStatement && failedStatementId != null && String(currentStatement.id) === String(failedStatementId)) {
+            if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
                 markAllPendingWinnerGiftsFailed();
             }
-            const targetStatement = getStatementRecordById(failedStatementId);
+            const targetStatement = getStatementRecordById(statementId);
             if (targetStatement) {
                 targetStatement.verification = "verification error, check manually";
                 persistStatementRecord(targetStatement);
             }
+            return false;
         }
     }
 
