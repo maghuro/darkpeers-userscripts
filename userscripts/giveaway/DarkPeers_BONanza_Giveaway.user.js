@@ -139,8 +139,10 @@
 //     snapshots are namespaced per authenticated account; atomic cross-tab ownership
 //     requires the browser Web Locks API; settlement remains resumable through transfer
 //     verification; sponsor opening/closing boundaries constrain Gift History and both
-//     in-flight Gift History/chat-fallback polls; host top-ups are serialized; and delayed
-//     verification is statement-bound with persisted pre-transfer verification boundaries.
+//     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
+//     verification is statement-bound with persisted pre-transfer verification boundaries;
+//     BFCache settlement resumes must reacquire exclusive ownership before transfers, and
+//     Gift History opening bounds honor the source timestamp precision (including fractions).
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -2722,6 +2724,16 @@ body.host-panel-dragging * {
         return true;
     }
 
+    async function ensureExclusiveTabOwnership() {
+        if (ownsTabLock()) return true;
+        try {
+            const acquired = await acquireTabLock();
+            return !!acquired && ownsTabLock();
+        } catch {
+            return false;
+        }
+    }
+
     // Release the localStorage lock only when this document really leaves.
     // This makes a normal reload recover immediately instead of leaving the new
     // document blocked behind the previous document's fresh heartbeat.
@@ -2743,8 +2755,12 @@ body.host-panel-dragging * {
     // lock on pageshow; if another tab legitimately owns it now, reload into a
     // passive page rather than running two copies of the giveaway.
     async function handleGiveawayPageShow(event) {
-        if (!event || !event.persisted || !giveawayData || giveawayData.__ending) return;
-        if (await acquireTabLock()) return;
+        if (!event || !event.persisted || !giveawayData) return;
+
+        // pagehide releases the Web Lock even during a committed settlement.
+        // A BFCache restore must therefore reclaim exclusive ownership before any
+        // suspended async settlement continuation is allowed to keep running.
+        if (await ensureExclusiveTabOwnership()) return;
 
         window.onbeforeunload = null;
         window.location.reload();
@@ -4119,16 +4135,25 @@ body.host-panel-dragging * {
         // timezone suffix. Preserve both browser-local and UTC-scale interpretations;
         // SponsorTracker learns the actual site-wall-clock ↔ chat-API offset from
         // unambiguous gifts instead of assuming either interpretation is canonical.
-        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
-        if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}`);
+        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/);
+        if (dbStyle) return Date.parse(`${dbStyle[1]}T${dbStyle[2]}${dbStyle[3] || ""}`);
 
         return Date.parse(raw);
     }
 
     function parseUnit3dTimestampUtcFallback(value) {
         const raw = String(value || "").trim();
-        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?$/);
-        return dbStyle ? Date.parse(`${dbStyle[1]}T${dbStyle[2]}Z`) : NaN;
+        const dbStyle = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/);
+        return dbStyle ? Date.parse(`${dbStyle[1]}T${dbStyle[2]}${dbStyle[3] || ""}Z`) : NaN;
+    }
+
+    function unit3dTimestampResolutionMs(value) {
+        const raw = String(value || "").trim();
+        const dbStyle = raw.match(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.(\d+))?$/);
+        if (!dbStyle) return 1;
+        if (!dbStyle[1]) return 1000;
+        const fractionalDigits = Math.min(dbStyle[1].length, 3);
+        return Math.max(1, 1000 / (10 ** fractionalDigits));
     }
 
     // Parse the logged-in user's gift-history table. UNIT3D stores the gift
@@ -4151,6 +4176,7 @@ body.host-panel-dragging * {
                 const rawTimestamp = timeEl?.getAttribute("datetime") || "";
                 const createdAtTs = parseUnit3dTimestamp(rawTimestamp);
                 const createdAtAltTs = parseUnit3dTimestampUtcFallback(rawTimestamp);
+                const timestampResolutionMs = unit3dTimestampResolutionMs(rawTimestamp);
 
                 const rawMessage = String(cells[3].textContent || "")
                     .replace(/\s+/g, " ")
@@ -4164,7 +4190,8 @@ body.host-panel-dragging * {
                     message,
                     rawTimestamp,
                     createdAtTs,
-                    createdAtAltTs
+                    createdAtAltTs,
+                    timestampResolutionMs
                 };
             })
             .filter(item =>
@@ -4472,13 +4499,23 @@ body.host-panel-dragging * {
 
             const accepted = [];
             for (const item of rows) {
+                const resolutionMs = Math.max(
+                    1,
+                    Number.isFinite(Number(item?.timestampResolutionMs))
+                        ? Number(item.timestampResolutionMs)
+                        : 1
+                );
                 const wallTs = Number.isFinite(Number(item?.createdAtAltTs))
                     ? Number(item.createdAtAltTs)
                     : Number(item?.createdAtTs);
 
                 if (offset !== null && Number.isFinite(wallTs)) {
                     const eventTs = wallTs - offset;
-                    if ((min === null || eventTs >= min) && (max === null || eventTs <= max)) {
+                    // A second-precision Gift History row represents the whole
+                    // source second. Treat it as overlapping the opening boundary
+                    // when any instant in that source interval can be on/after open.
+                    const afterOpen = min === null || (eventTs + resolutionMs) > min;
+                    if (afterOpen && (max === null || eventTs <= max)) {
                         accepted.push(item);
                     }
                     continue;
@@ -4488,7 +4525,10 @@ body.host-panel-dragging * {
                     Number(item?.createdAtTs),
                     Number(item?.createdAtAltTs)
                 ].filter(Number.isFinite);
-                const afterOpen = min === null || (candidates.length && candidates.every(ts => ts >= min));
+                const afterOpen = min === null || (
+                    candidates.length &&
+                    candidates.every(ts => (ts + resolutionMs) > min)
+                );
                 const beforeClose = max === null || (candidates.length && candidates.every(ts => ts <= max));
 
                 if (afterOpen && beforeClose) {
@@ -6478,6 +6518,18 @@ body.host-panel-dragging * {
             }
         }
 
+        // A BFCache pagehide may have released our Web Lock while the final sponsor
+        // poll above was awaiting network I/O. Reclaim ownership before committing
+        // a draw or producing any settlement output.
+        if (!(await ensureExclusiveTabOwnership())) {
+            logEvent(
+                "Settlement paused (ownership lost)",
+                "Exclusive giveaway ownership could not be reacquired after the final sponsor sync. Reload the owning tab to resume safely."
+            );
+            giveawayData.__ending = false;
+            return;
+        }
+
         // Sponsor accounting is frozen. Commit and persist the outcome BEFORE
         // any closing output or transfer. The active snapshot remains until the
         // settlement reaches a terminal state; gift/pool ledgers retain the
@@ -7002,8 +7054,19 @@ body.host-panel-dragging * {
             });
         }
 
-        // 7) Settlement is terminal only now. Persist completion once, then
-        // stopGiveaway() may safely retire the active snapshot.
+        // 7) Settlement is terminal only now. A BFCache transition can happen
+        // during any verification await above, so prove ownership once more before
+        // retiring the recoverable active snapshot.
+        if (!(await ensureExclusiveTabOwnership())) {
+            logEvent(
+                "Settlement completion paused (ownership lost)",
+                "The active settlement snapshot was preserved because this tab no longer owns the giveaway."
+            );
+            giveawayData.__ending = false;
+            return;
+        }
+
+        // Persist completion once, then stopGiveaway() may safely retire the snapshot.
         if (giveawayData?.settlement?.committed) {
             giveawayData.settlement.phase = "complete";
             giveawayData.settlement.completedAt = Date.now();
@@ -8287,6 +8350,9 @@ body.host-panel-dragging * {
         if (!Number.isFinite(safeAmount) || safeAmount <= 0) return { attempted: false, confirmed: false, reason: "invalid" };
         const giveawayId = getActiveGiveawayId();
         if (!giveawayId) return { attempted: false, confirmed: false, reason: "missing-giveaway-id" };
+        if (!(await ensureExclusiveTabOwnership())) {
+            return { attempted: false, confirmed: false, reason: "ownership-lost" };
+        }
     
         const existing = getPoolContributionAttempt(giveawayId);
         if (existing) {
@@ -8311,6 +8377,12 @@ body.host-panel-dragging * {
         } catch (e) {
             logEvent("BON Pool contribution aborted", String(e?.message || e));
             return { attempted: false, confirmed: false, reason: "preflight-failed" };
+        }
+
+        // The preflight itself can be frozen in BFCache. Never record/send a pool
+        // transfer after that await unless this tab still owns the giveaway.
+        if (!(await ensureExclusiveTabOwnership())) {
+            return { attempted: false, confirmed: false, reason: "ownership-lost" };
         }
     
         const record = {
@@ -8427,6 +8499,14 @@ body.host-panel-dragging * {
             return { attempted: false, reason: "invalid" };
         }
         const safeAmount = numericAmount;
+
+        if (!(await ensureExclusiveTabOwnership())) {
+            logEvent(
+                "Gift paused (ownership lost)",
+                `Refusing to send ${fmtBONCurrency(safeAmount)} BON to ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership.`
+            );
+            return { attempted: false, reason: "ownership-lost" };
+        }
 
         // ── Idempotency check ─────────────────────────────────────────────
         const giveawayId = getActiveGiveawayId();
