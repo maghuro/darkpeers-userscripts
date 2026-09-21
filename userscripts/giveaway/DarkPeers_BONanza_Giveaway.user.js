@@ -143,15 +143,17 @@
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache documents quarantine all giveaway mutations/snapshots from pagehide and
 //     persisted pageshow always reloads authoritative saved state instead of resuming stale
-//     memory, quarantined documents cannot acquire/reacquire ownership even from queued
-//     Web Lock callbacks, and settlement resumes
+//     memory, pagehide quarantines even pre-data queued ownership work, quarantined
+//     documents cannot acquire/reacquire ownership even from queued Web Lock callbacks,
+//     and settlement resumes
 //     must also reacquire exclusive ownership before transfers;
 //     cross-tab gift attempts stay pending until their originating request resolves; a
 //     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
 //     while superseded fallbacks abort before sending; rejected attempts remain retryable;
 //     unknown Gift History clock offsets accept either timestamp interpretation when it
 //     overlaps the window, while coarse closing-second rows require one-to-one precise
-//     chat proof and the chat-only fallback applies the same timestamp intervals;
+//     chat proof reserved across polling passes and the chat-only fallback applies the
+//     same timestamp intervals;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -2770,7 +2772,15 @@ body.host-panel-dragging * {
     // This makes a normal reload recover immediately instead of leaving the new
     // document blocked behind the previous document's fresh heartbeat.
     function handleGiveawayPageHide() {
-        if (!giveawayData) return;
+        if (!giveawayData) {
+            // start/restore may still be awaiting the Web Lock before giveawayData
+            // is assigned. Quarantine that document now so a queued callback
+            // cannot complete successfully after BFCache handoff.
+            if (tabWebLockAcquirePromise || tabWebLockRelease) {
+                giveawayMutationQuarantined = true;
+            }
+            return;
+        }
 
         const lock = readTabLock();
         if (!lock || lock.tabId !== TAB_ID) {
@@ -2795,7 +2805,8 @@ body.host-panel-dragging * {
     // giveaway state in the meantime. Never resume this document's stale memory:
     // quarantine synchronously and reload from the authoritative persisted state.
     function handleGiveawayPageShow(event) {
-        if (!event || !event.persisted || !giveawayData) return;
+        if (!event || !event.persisted) return;
+        if (!giveawayData && !tabWebLockAcquirePromise && !tabWebLockRelease) return;
 
         giveawayMutationQuarantined = true;
         window.onbeforeunload = null;
@@ -4478,6 +4489,7 @@ body.host-panel-dragging * {
                     const parsed = this.parseGiftMsg(m.message);
                     const createdAtTs = Date.parse(m.created_at);
                     return {
+                        messageId: Math.floor(Number(m?.id)),
                         gifter: parsed.gifter,
                         recipient: parsed.recipient,
                         amount: Math.max(0, Math.floor(Number(parsed.amount) || 0)),
@@ -4493,7 +4505,7 @@ body.host-panel-dragging * {
                 );
         }
 
-        async filterHistoryRowsByWindow(rows, minTs = null, maxTs = null) {
+        async filterHistoryRowsByWindow(rows, minTs = null, maxTs = null, evidenceRows = null) {
             if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
 
             const min = optionalFiniteNumber(minTs);
@@ -4552,12 +4564,37 @@ body.host-panel-dragging * {
                 bStart < (aStart + aResolution);
 
             const consumedBoundaryChatEvents = new Set();
+            const boundaryEvidenceKey = (event, index) => {
+                const id = Math.floor(Number(event?.messageId));
+                return Number.isFinite(id) ? "id:" + id : "idx:" + index;
+            };
+
+            const historyStartsForBoundary = (item, resolutionMs) => {
+                const wallTs = Number.isFinite(Number(item?.createdAtAltTs))
+                    ? Number(item.createdAtAltTs)
+                    : Number(item?.createdAtTs);
+
+                if (offset !== null && Number.isFinite(wallTs)) {
+                    const start = wallTs - offset;
+                    return (min === null || (start + resolutionMs) > min) ? [start] : [];
+                }
+
+                return [
+                    Number(item?.createdAtTs),
+                    Number(item?.createdAtAltTs)
+                ].filter(ts =>
+                    Number.isFinite(ts) &&
+                    (min === null || (ts + resolutionMs) > min)
+                );
+            };
+
             const chatProvesBeforeClose = (item, historyStarts, historyResolutionMs) => {
                 if (max === null || !Array.isArray(chatEvents) || !chatEvents.length) return false;
 
                 for (let index = 0; index < chatEvents.length; index++) {
-                    if (consumedBoundaryChatEvents.has(index)) continue;
                     const event = chatEvents[index];
+                    const evidenceKey = boundaryEvidenceKey(event, index);
+                    if (consumedBoundaryChatEvents.has(evidenceKey)) continue;
                     if (!rowMatchesChatEvent(item, event)) continue;
 
                     const chatStart = Number(event?.createdAtTs);
@@ -4584,14 +4621,33 @@ body.host-panel-dragging * {
                     );
                     if (!overlaps) continue;
 
-                    // One SystemBot event may prove at most one coarse history row.
-                    // This prevents one pre-cutoff event from validating a second,
-                    // identical-amount gift that actually occurred after closing.
-                    consumedBoundaryChatEvents.add(index);
+                    consumedBoundaryChatEvents.add(evidenceKey);
                     return true;
                 }
                 return false;
             };
+
+            // Reserve evidence for matching occurrences already seen in earlier
+            // polls. This prevents a later identical post-cutoff history row from
+            // reusing an older pre-cutoff SystemBot event.
+            if (max !== null && Array.isArray(evidenceRows) && chatEvents?.length) {
+                for (const priorItem of evidenceRows) {
+                    if (!priorItem?.historyKey || !this.giftHistorySeenKeys.has(priorItem.historyKey)) {
+                        continue;
+                    }
+                    const priorResolution = Math.max(
+                        1,
+                        Number.isFinite(Number(priorItem?.timestampResolutionMs))
+                            ? Number(priorItem.timestampResolutionMs)
+                            : 1
+                    );
+                    const priorStarts = historyStartsForBoundary(priorItem, priorResolution)
+                        .filter(ts => ts <= max);
+                    if (!priorStarts.length) continue;
+
+                    chatProvesBeforeClose(priorItem, priorStarts, priorResolution);
+                }
+            }
 
             const accepted = [];
             for (const item of rows) {
@@ -4692,7 +4748,12 @@ body.host-panel-dragging * {
             newRows.reverse();
 
             if (newRows.length && (minCreatedAtTs !== null || maxCreatedAtTs !== null)) {
-                newRows = await this.filterHistoryRowsByWindow(newRows, minCreatedAtTs, maxCreatedAtTs);
+                newRows = await this.filterHistoryRowsByWindow(
+                    newRows,
+                    minCreatedAtTs,
+                    maxCreatedAtTs,
+                    indexed
+                );
             }
 
             if (!canMutateActiveGiveaway()) return false;
