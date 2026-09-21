@@ -157,8 +157,9 @@
 //     evidence resolves, and authoritative settlement output rechecks ownership before
 //     and after every awaited closing send while its internal chatbox fallback also
 //     fails closed after an ownership/quarantine handoff; closing outputs persist
-//     pending/sent checkpoints, wait out the unresolved POST window and reconcile
-//     uncertain API sends using cursor/time bounds before replay; payout/refund verifiers
+//     pending/sent checkpoints, preserve null replay cursors, wait out the unresolved
+//     POST window and require at least one authoritative cursor/time-bounded chat read
+//     before replay; payout/refund verifiers
 //     abort stale writes after ownership handoff; committed settlements freeze their
 //     complete financial/payout/refund plan and never rediscover sponsors on resume;
 //     optional sponsor cutoffs/clock offsets
@@ -6690,9 +6691,13 @@ body.host-panel-dragging * {
         }
 
         const reconcileSettlementOutput = async (checkpoint, preparedMessage) => {
-            const afterId = Number.isFinite(Number(checkpoint?.afterMessageId))
-                ? Math.floor(Number(checkpoint.afterMessageId))
-                : null;
+            const rawAfterMessageId = checkpoint?.afterMessageId;
+            const afterId =
+                rawAfterMessageId !== null &&
+                rawAfterMessageId !== undefined &&
+                Number.isFinite(Number(rawAfterMessageId))
+                    ? Math.floor(Number(rawAfterMessageId))
+                    : null;
             const startedAt = Number.isFinite(Number(checkpoint?.startedAt))
                 ? Number(checkpoint.startedAt)
                 : Date.now();
@@ -6708,7 +6713,9 @@ body.host-panel-dragging * {
 
             // A prior owner may have successfully posted even if its API response
             // was lost during BFCache/pagehide. Check a few times for that exact
-            // prepared message before allowing a replay.
+            // prepared message before allowing a replay. A replay is permitted only
+            // after at least one authoritative chat read succeeds.
+            let authoritativeReads = 0;
             for (let attempt = 1; attempt <= 3; attempt++) {
                 if (!canMutateActiveGiveaway()) return { owned: false, found: false };
 
@@ -6721,8 +6728,10 @@ body.host-panel-dragging * {
                     if (res?.ok) {
                         const payload = await res.json();
                         if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+                        if (!Array.isArray(payload?.data)) throw new Error("Malformed chat reconciliation payload");
 
-                        const messages = Array.isArray(payload?.data) ? payload.data : [];
+                        authoritativeReads += 1;
+                        const messages = payload.data;
                         const ownUserId = Number(OT_USER_ID);
                         const match = messages.find(m => {
                             const id = Math.floor(Number(m?.id));
@@ -6750,6 +6759,7 @@ body.host-panel-dragging * {
                             return {
                                 owned: true,
                                 found: true,
+                                conclusive: true,
                                 messageId: Number.isFinite(Number(match?.id))
                                     ? Math.floor(Number(match.id))
                                     : null
@@ -6766,7 +6776,11 @@ body.host-panel-dragging * {
                 }
             }
 
-            return { owned: canMutateActiveGiveaway(), found: false };
+            return {
+                owned: canMutateActiveGiveaway(),
+                found: false,
+                conclusive: authoritativeReads > 0
+            };
         };
 
         const sendSettlementMessage = async (message, label = "closing output", stepKey = null) => {
@@ -6808,6 +6822,14 @@ body.host-panel-dragging * {
                     checkpoint.confirmedAt = Date.now();
                     snapshotGiveaway({ force: true });
                     return true;
+                }
+                if (!reconciled.conclusive) {
+                    logEvent(
+                        "Settlement output reconciliation deferred",
+                        `Preserving pending checkpoint for ${label}: chat could not be read authoritatively, so replay is unsafe.`
+                    );
+                    giveawayData.__ending = false;
+                    return false;
                 }
             } else {
                 const afterMessageId = await getLatestChatMessageId();
