@@ -157,8 +157,10 @@
 //     evidence resolves, and authoritative settlement output rechecks ownership before
 //     and after every awaited closing send while its internal chatbox fallback also
 //     fails closed after an ownership/quarantine handoff; closing outputs persist
-//     pending/sent checkpoints and reconcile uncertain API sends before replay, while
-//     payout/refund verifiers abort stale writes after ownership handoff;
+//     pending/sent checkpoints, wait out the unresolved POST window and reconcile
+//     uncertain API sends using cursor/time bounds before replay; payout/refund verifiers
+//     abort stale writes after ownership handoff; committed settlements freeze their
+//     complete financial/payout/refund plan and never rediscover sponsors on resume;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -6691,6 +6693,18 @@ body.host-panel-dragging * {
             const afterId = Number.isFinite(Number(checkpoint?.afterMessageId))
                 ? Math.floor(Number(checkpoint.afterMessageId))
                 : null;
+            const startedAt = Number.isFinite(Number(checkpoint?.startedAt))
+                ? Number(checkpoint.startedAt)
+                : Date.now();
+            const unresolvedSendUntil = startedAt + 9000;
+
+            // The previous owner's POST may still be alive for the full 7-second
+            // API timeout. Never replay while that original send can still commit.
+            const waitMs = Math.max(0, unresolvedSendUntil - Date.now());
+            if (waitMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, waitMs));
+                if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+            }
 
             // A prior owner may have successfully posted even if its API response
             // was lost during BFCache/pagehide. Check a few times for that exact
@@ -6713,6 +6727,15 @@ body.host-panel-dragging * {
                         const match = messages.find(m => {
                             const id = Math.floor(Number(m?.id));
                             if (afterId !== null && Number.isFinite(id) && id <= afterId) return false;
+
+                            if (afterId === null) {
+                                const createdAtTs = Date.parse(m?.created_at);
+                                const resolutionMs = unit3dTimestampResolutionMs(m?.created_at);
+                                if (
+                                    !Number.isFinite(createdAtTs) ||
+                                    (createdAtTs + resolutionMs) <= startedAt
+                                ) return false;
+                            }
 
                             const senderId = Number(m?.user_id ?? m?.user?.id);
                             if (
@@ -6855,11 +6878,126 @@ body.host-panel-dragging * {
             observer = null;
         }
 
+        const buildSettlementFinancialPlan = () => {
+            const potTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
+            const sponsoredTotal = Math.max(
+                0,
+                Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0)
+            );
+            const hostFundedTotal = Math.max(0, potTotal - sponsoredTotal);
+            const donationPercent = normalizeDonationPercent(giveawayData.donationPercent);
+            const baseWinners = Math.max(
+                1,
+                Math.floor(Number(giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1)
+            );
+            const rawState = {
+                amount: potTotal,
+                sponsorContribs: { ...(giveawayData.sponsorContribs || {}) },
+                sponsors: Array.isArray(giveawayData.sponsors) ? [...giveawayData.sponsors] : [],
+                sponsorGiftMessages: Array.isArray(giveawayData.sponsorGiftMessages)
+                    ? giveawayData.sponsorGiftMessages.map(item => ({ ...item }))
+                    : [],
+                donationPercent,
+                scaleWinnersWithSponsors: !!giveawayData.scaleWinnersWithSponsors,
+                baseWinnersAtStart: baseWinners,
+                winnersNum: Math.max(1, Math.floor(Number(giveawayData.winnersNum) || 1)),
+                riggedMode: !!riggedMode
+            };
+
+            if (numberEntries.size === 0) {
+                return {
+                    version: 1,
+                    mode: donationPercent > 0 ? "no-entries-pool" : "no-entries-refund",
+                    potTotal,
+                    sponsoredTotal,
+                    hostFundedTotal,
+                    donationPercent,
+                    refunds: getNonHostSponsorContributions(giveawayData)
+                        .map(item => ({ name: item.name, amount: item.amount })),
+                    rawState
+                };
+            }
+
+            const winNum = Number(giveawayData.winningNumber);
+            const sortedEntries = Array.from(numberEntries.entries())
+                .map(([author, guess], idx) => ({
+                    author,
+                    guess,
+                    gap: Math.abs(guess - winNum),
+                    order: idx
+                }))
+                .sort((a, b) => a.gap - b.gap || a.order - b.order);
+            const effectiveWinners = recomputeEffectiveWinners(giveawayData);
+            const winnersCount = Math.min(effectiveWinners, sortedEntries.length);
+            const winners = sortedEntries.slice(0, winnersCount).map(item => ({ ...item }));
+            const ties = sortedEntries
+                .filter(item => item.gap === sortedEntries[0].gap)
+                .map(item => ({ ...item }));
+            const weights = winners.map((_, i) => winnersCount - i);
+            const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+            const gross = winners.map((_, i) =>
+                Math.floor(potTotal * weights[i] / totalWeight)
+            );
+            const allocated = gross.reduce((sum, amount) => sum + amount, 0);
+            if (gross.length && allocated < potTotal) {
+                gross[0] += potTotal - allocated;
+            }
+            const split = computeDonationSplit(gross, donationPercent);
+
+            return {
+                version: 1,
+                mode: "winners",
+                potTotal,
+                sponsoredTotal,
+                hostFundedTotal,
+                donationPercent,
+                entrantsTotal: numberEntries.size,
+                baseWinners,
+                winnersCount,
+                scaleIncrease: Math.max(0, winnersCount - baseWinners),
+                sortedEntries,
+                ties,
+                winners,
+                gross: [...gross],
+                net: [...split.net],
+                donations: [...split.donations],
+                split: {
+                    percent: split.percent,
+                    total: split.total,
+                    net: [...split.net],
+                    donations: [...split.donations]
+                },
+                rawState
+            };
+        };
+
+        const applySettlementFinancialPlan = (plan) => {
+            if (!plan || typeof plan !== "object" || !plan.rawState) {
+                throw new Error("Committed settlement is missing its immutable financial plan.");
+            }
+            const raw = plan.rawState;
+            giveawayData.amount = Math.max(0, Math.floor(Number(raw.amount) || 0));
+            giveawayData.sponsorContribs = { ...(raw.sponsorContribs || {}) };
+            giveawayData.sponsors = Array.isArray(raw.sponsors) ? [...raw.sponsors] : [];
+            giveawayData.sponsorGiftMessages = Array.isArray(raw.sponsorGiftMessages)
+                ? raw.sponsorGiftMessages.map(item => ({ ...item }))
+                : [];
+            giveawayData.donationPercent = normalizeDonationPercent(raw.donationPercent);
+            giveawayData.scaleWinnersWithSponsors = !!raw.scaleWinnersWithSponsors;
+            giveawayData.baseWinnersAtStart = Math.max(1, Math.floor(Number(raw.baseWinnersAtStart) || 1));
+            giveawayData.winnersNum = Math.max(1, Math.floor(Number(raw.winnersNum) || 1));
+            riggedMode = !!raw.riggedMode;
+        };
+
         // Close the sponsor accounting window with one final synchronous API poll.
         // The regular tracker runs every 10s, so without this a gift in the final
         // seconds could be omitted from the pot. snapshotGiveaway() is suppressed
         // while __ending is true, so this cannot resurrect the active snapshot.
-        if (window.__activeTracker && typeof window.__activeTracker.poll === "function") {
+        if (
+            giveawayData?.settlement?.committed !== true &&
+            window.__activeTracker &&
+            typeof window.__activeTracker.poll === "function"
+        ) {
             let finalSponsorSyncOk = false;
             for (let attempt = 1; attempt <= 3 && !finalSponsorSyncOk; attempt++) {
                 try {
@@ -6918,6 +7056,7 @@ body.host-panel-dragging * {
                 committedAt: Date.now(),
                 giveawayId: getActiveGiveawayId()
             };
+            giveawayData.settlement.financialPlan = buildSettlementFinancialPlan();
             logEvent(
                 "Settlement committed",
                 numberEntries.size > 0
@@ -6929,16 +7068,22 @@ body.host-panel-dragging * {
                 ? Number(giveawayData.settlement.winningNumber)
                 : null;
             giveawayData.settlement.phase = "settling";
+
+            // Backward-compatible recovery for a committed snapshot created by an
+            // earlier v1.3.24 audit build: freeze the persisted committed state once,
+            // but never run sponsor discovery again after side effects may have begun.
+            if (!giveawayData.settlement.financialPlan) {
+                giveawayData.settlement.financialPlan = buildSettlementFinancialPlan();
+            }
         }
+        applySettlementFinancialPlan(giveawayData.settlement.financialPlan);
         snapshotGiveaway({ force: true });
 
         // Sponsor acknowledgement is independent of whether anyone entered. Gifts
         // were already received and the final sync above has frozen the authoritative
         // sponsor state, so thank sponsors (and preserve their notes) in either path.
-        const finalSponsoredTotal = Math.max(
-            0,
-            Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0)
-        );
+        const settlementPlan = giveawayData.settlement.financialPlan;
+        const finalSponsoredTotal = Math.max(0, Math.floor(Number(settlementPlan.sponsoredTotal) || 0));
         if (finalSponsoredTotal > 0) {
             const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
             if (
@@ -6964,9 +7109,9 @@ body.host-panel-dragging * {
         //   - Pool > 0: 100% of the final pot goes to BON Pool.
         //   - Pool = 0: host funding stays with the host and sponsors are refunded in full.
         if (numberEntries.size === 0) {
-            const noEntryTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
-            const noEntryHostFunded = Math.max(0, noEntryTotal - finalSponsoredTotal);
-            const noEntryPoolPct = normalizeDonationPercent(giveawayData.donationPercent);
+            const noEntryTotal = Math.max(0, Math.floor(Number(settlementPlan.potTotal) || 0));
+            const noEntryHostFunded = Math.max(0, Math.floor(Number(settlementPlan.hostFundedTotal) || 0));
+            const noEntryPoolPct = normalizeDonationPercent(settlementPlan.donationPercent);
 
             if (noEntryPoolPct > 0) {
                 if (!(await sendSettlementMessage(
@@ -7048,7 +7193,9 @@ body.host-panel-dragging * {
                     }
                 } catch (e) { /* statements are best-effort */ }
             } else {
-                const sponsorRefunds = getNonHostSponsorContributions(giveawayData);
+                const sponsorRefunds = Array.isArray(settlementPlan.refunds)
+                    ? settlementPlan.refunds.map(item => ({ ...item }))
+                    : [];
                 const refundTotal = sponsorRefunds.reduce((sum, item) => sum + item.amount, 0);
                 const refundList = sponsorRefunds
                     .map(item =>
@@ -7238,18 +7385,15 @@ body.host-panel-dragging * {
             }
             logEvent("Winning number committed", `Winning number=${giveawayData.winningNumber}`);
 
-            // 1) build and sort entries by closeness to winningNumber
-            const entries = Array.from(numberEntries.entries())
-            .map(([author, guess], idx) => ({
-                author,
-                guess,
-                gap:   Math.abs(guess - giveawayData.winningNumber),
-                order: idx
-            }))
-            .sort((a, b) => a.gap - b.gap || a.order - b.order);
+            const plan = settlementPlan;
+            if (plan.mode !== "winners") {
+                throw new Error("Committed settlement financial plan mode mismatch.");
+            }
 
-            // Detect and announce ties
-            const ties = entries.filter(e => e.gap === entries[0].gap);
+            const entries = Array.isArray(plan.sortedEntries)
+                ? plan.sortedEntries.map(item => ({ ...item }))
+                : [];
+            const ties = Array.isArray(plan.ties) ? plan.ties.map(item => ({ ...item })) : [];
             if (ties.length > 1) {
                 const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
                 if (!(await sendSettlementMessage(
@@ -7259,32 +7403,18 @@ body.host-panel-dragging * {
                 ))) return;
             }
 
-            // 3) pick top N winners
-            const effectiveWinners = recomputeEffectiveWinners(giveawayData);
-            const N = Math.min(effectiveWinners, entries.length);
-            const winners = entries.slice(0, N);
-
-            // 4) compute weight-based payouts
-            //    weight for rank i (0-based) is (N - i)
-            const weights = winners.map((_, i) => N - i);
-            const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-
-            // raw amounts, floored to integers
-            let allocated = winners.map((_, i) =>
-                                        Math.floor(giveawayData.amount * weights[i] / totalWeight)
-                                       );
-            // fix any rounding‐leftover by giving it to 1st place
-            const sumAllocated = allocated.reduce((s, x) => s + x, 0);
-            const leftover = giveawayData.amount - sumAllocated;
-            if (leftover > 0) {
-                allocated[0] += leftover;
-            }
-
-            // 4b) BON Pool split. `allocated` keeps the gross prize per winner;
-            //     `net` is what each winner is actually gifted; the floored remainder
-            //     is pooled into one donation. Host outlay never changes.
-            const split = computeDonationSplit(allocated, giveawayData.donationPercent);
-            const net = split.net;
+            const winners = Array.isArray(plan.winners)
+                ? plan.winners.map(item => ({ ...item }))
+                : [];
+            const N = Math.max(0, Math.floor(Number(plan.winnersCount) || winners.length));
+            const allocated = Array.isArray(plan.gross) ? [...plan.gross] : [];
+            const net = Array.isArray(plan.net) ? [...plan.net] : [];
+            const split = {
+                percent: normalizeDonationPercent(plan.split?.percent),
+                total: Math.max(0, Math.floor(Number(plan.split?.total) || 0)),
+                net: Array.isArray(plan.split?.net) ? [...plan.split.net] : [...net],
+                donations: Array.isArray(plan.split?.donations) ? [...plan.split.donations] : []
+            };
             const donationActive = split.total > 0;
             const donationInfo = donationActive
                 ? { total: split.total, percent: split.percent, confirmed: false }
@@ -7295,11 +7425,11 @@ body.host-panel-dragging * {
 
             // 5) announce winners summary
             const winNum = giveawayData.winningNumber;
-            const potTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
-            const sponsoredTotal = Math.max(0, Math.floor(sumSponsorContribs(giveawayData.sponsorContribs, giveawayData.host) || 0));
-            const hostFundedTotal = Math.max(0, potTotal - sponsoredTotal);
-            const entrantsTotal = numberEntries.size;
-            const scaleIncrease = Math.max(0, N - Math.max(1, Math.floor(Number(giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1)));
+            const potTotal = Math.max(0, Math.floor(Number(plan.potTotal) || 0));
+            const sponsoredTotal = Math.max(0, Math.floor(Number(plan.sponsoredTotal) || 0));
+            const hostFundedTotal = Math.max(0, Math.floor(Number(plan.hostFundedTotal) || 0));
+            const entrantsTotal = Math.max(0, Math.floor(Number(plan.entrantsTotal) || 0));
+            const scaleIncrease = Math.max(0, Math.floor(Number(plan.scaleIncrease) || 0));
 
             //hard-coded emoji “podium”
             const podium = ["🥇", "🥈", "🥉", "🏅", "🎖️"];
