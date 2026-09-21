@@ -156,7 +156,9 @@
 //     same timestamp intervals; ambiguous cutoff rows remain unseen/retryable until
 //     evidence resolves, and authoritative settlement output rechecks ownership before
 //     and after every awaited closing send while its internal chatbox fallback also
-//     fails closed after an ownership/quarantine handoff;
+//     fails closed after an ownership/quarantine handoff; closing outputs persist
+//     pending/sent checkpoints and reconcile uncertain API sends before replay, while
+//     payout/refund verifiers abort stale writes after ownership handoff;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -6685,12 +6687,123 @@ body.host-panel-dragging * {
             return;
         }
 
-        const sendSettlementMessage = async (message, label = "closing output") => {
+        const reconcileSettlementOutput = async (checkpoint, preparedMessage) => {
+            const afterId = Number.isFinite(Number(checkpoint?.afterMessageId))
+                ? Math.floor(Number(checkpoint.afterMessageId))
+                : null;
+
+            // A prior owner may have successfully posted even if its API response
+            // was lost during BFCache/pagehide. Check a few times for that exact
+            // prepared message before allowing a replay.
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+
+                try {
+                    const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+                    if (afterId !== null) url.searchParams.set("after_id", String(afterId));
+                    const res = await fetchWithTimeout(url, { credentials: "include" }, 5000);
+                    if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+
+                    if (res?.ok) {
+                        const payload = await res.json();
+                        if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+
+                        const messages = Array.isArray(payload?.data) ? payload.data : [];
+                        const ownUserId = Number(OT_USER_ID);
+                        const match = messages.find(m => {
+                            const id = Math.floor(Number(m?.id));
+                            if (afterId !== null && Number.isFinite(id) && id <= afterId) return false;
+
+                            const senderId = Number(m?.user_id ?? m?.user?.id);
+                            if (
+                                Number.isFinite(ownUserId) &&
+                                Number.isFinite(senderId) &&
+                                senderId !== ownUserId
+                            ) return false;
+
+                            return String(m?.message ?? "") === preparedMessage;
+                        });
+                        if (match) {
+                            return {
+                                owned: true,
+                                found: true,
+                                messageId: Number.isFinite(Number(match?.id))
+                                    ? Math.floor(Number(match.id))
+                                    : null
+                            };
+                        }
+                    }
+                } catch {
+                    // Bounded reconciliation retry below.
+                }
+
+                if (attempt < 3) {
+                    await new Promise(resolve => setTimeout(resolve, 700));
+                    if (!canMutateActiveGiveaway()) return { owned: false, found: false };
+                }
+            }
+
+            return { owned: canMutateActiveGiveaway(), found: false };
+        };
+
+        const sendSettlementMessage = async (message, label = "closing output", stepKey = null) => {
             if (!(await ensureExclusiveTabOwnership())) {
                 logEvent(
                     "Settlement output paused (ownership lost)",
                     `Refusing ${label}: this tab no longer has exclusive giveaway ownership.`
                 );
+                giveawayData.__ending = false;
+                return false;
+            }
+
+            const settlement = giveawayData?.settlement;
+            if (!settlement?.committed) {
+                logEvent("Settlement output paused", `Refusing ${label}: settlement is not committed.`);
+                giveawayData.__ending = false;
+                return false;
+            }
+
+            const preparedMessage = prepareOutgoingMessage(message);
+            const outputKey = String(stepKey || label || "closing-output");
+            settlement.outputProgress =
+                settlement.outputProgress && typeof settlement.outputProgress === "object"
+                    ? settlement.outputProgress
+                    : {};
+
+            let checkpoint = settlement.outputProgress[outputKey];
+            if (checkpoint?.status === "sent") return true;
+
+            if (checkpoint?.status === "pending") {
+                const reconciled = await reconcileSettlementOutput(checkpoint, preparedMessage);
+                if (!reconciled.owned) {
+                    giveawayData.__ending = false;
+                    return false;
+                }
+                if (reconciled.found) {
+                    checkpoint.status = "sent";
+                    checkpoint.messageId = reconciled.messageId;
+                    checkpoint.confirmedAt = Date.now();
+                    snapshotGiveaway({ force: true });
+                    return true;
+                }
+            } else {
+                const afterMessageId = await getLatestChatMessageId();
+                if (!(await ensureExclusiveTabOwnership())) {
+                    giveawayData.__ending = false;
+                    return false;
+                }
+
+                checkpoint = {
+                    status: "pending",
+                    afterMessageId,
+                    preparedMessage,
+                    startedAt: Date.now()
+                };
+                settlement.outputProgress[outputKey] = checkpoint;
+                snapshotGiveaway({ force: true });
+            }
+
+            if (!(await ensureExclusiveTabOwnership())) {
                 giveawayData.__ending = false;
                 return false;
             }
@@ -6704,13 +6817,15 @@ body.host-panel-dragging * {
             }
 
             if (!(await ensureExclusiveTabOwnership())) {
-                logEvent(
-                    "Settlement output paused after send",
-                    `Stopped after ${label}: ownership changed while the message was in flight.`
-                );
+                // Leave the persisted checkpoint pending. The next owner will
+                // reconcile the chat before deciding whether a replay is needed.
                 giveawayData.__ending = false;
                 return false;
             }
+
+            checkpoint.status = "sent";
+            checkpoint.sentAt = Date.now();
+            snapshotGiveaway({ force: true });
             return true;
         };
 
@@ -6828,15 +6943,20 @@ body.host-panel-dragging * {
             const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
             if (
                 sponsorsMessage &&
-                !(await sendSettlementMessage(sponsorsMessage, "final sponsor summary"))
+                !(await sendSettlementMessage(sponsorsMessage, "final sponsor summary", "sponsor-summary"))
             ) return;
 
             // Gift History is already the canonical sponsor-note source and the
             // final sponsor sync above has just refreshed it. Reuse the persisted
             // matched notes here instead of performing a second network scrape.
             const sponsorMessageRecap = buildFinalSponsorMessageRecap(giveawayData);
-            for (const sponsorNoteMessage of sponsorMessageRecap) {
-                if (!(await sendSettlementMessage(sponsorNoteMessage, "final sponsor note"))) return;
+            for (let i = 0; i < sponsorMessageRecap.length; i++) {
+                const sponsorNoteMessage = sponsorMessageRecap[i];
+                if (!(await sendSettlementMessage(
+                    sponsorNoteMessage,
+                    "final sponsor note",
+                    `sponsor-note-${i}`
+                ))) return;
             }
         }
 
@@ -6852,7 +6972,8 @@ body.host-panel-dragging * {
                 if (!(await sendSettlementMessage(
                     `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
                     `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`,
-                    "zero-entry BON Pool outcome"
+                    "zero-entry BON Pool outcome",
+                    "zero-entry-pool-outcome"
                 ))) return;
 
                 let noEntryPoolResult = { attempted: false, confirmed: noEntryTotal <= 0, reason: noEntryTotal <= 0 ? "empty-pot" : "not-attempted" };
@@ -6865,7 +6986,8 @@ body.host-panel-dragging * {
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
                             `No entrants — 100% of the pot was contributed. ✨`,
-                            "zero-entry BON Pool confirmation"
+                            "zero-entry BON Pool confirmation",
+                            "zero-entry-pool-confirmation"
                         ))) return;
                     } else {
                         logEvent(
@@ -6941,7 +7063,8 @@ body.host-panel-dragging * {
                     (refundList
                         ? ` Sponsor contributions will be returned in full: ${refundList}.`
                         : ` There are no sponsor contributions to return.`),
-                    "zero-entry refund outcome"
+                    "zero-entry refund outcome",
+                    "zero-entry-refund-outcome"
                 ))) return;
 
                 const refundExpectedGifts = [];
@@ -7131,7 +7254,8 @@ body.host-panel-dragging * {
                 const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
                 if (!(await sendSettlementMessage(
                     `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
-                    "tie result"
+                    "tie result",
+                    "tie-result"
                 ))) return;
             }
 
@@ -7232,7 +7356,8 @@ body.host-panel-dragging * {
 
                 if (!(await sendSettlementMessage(
                     [summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag,
-                    "winner result"
+                    "winner result",
+                    "winner-result"
                 ))) return;
             } else {
                 // multi‐winner public message
@@ -7248,7 +7373,8 @@ body.host-panel-dragging * {
 
                 if (!(await sendSettlementMessage(
                     [summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag,
-                    "winner results"
+                    "winner results",
+                    "winner-result"
                 ))) return;
             }
 
@@ -7332,7 +7458,11 @@ body.host-panel-dragging * {
                     const paidMessage = riggedMode
                         ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
                         : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
-                    if (!(await sendSettlementMessage(paidMessage, "BON Pool confirmation"))) return;
+                    if (!(await sendSettlementMessage(
+                        paidMessage,
+                        "BON Pool confirmation",
+                        "bon-pool-confirmation"
+                    ))) return;
                 } else {
                     markFundGiftStatus("failed");
                     logEvent("BON Pool verification warning", `Direct contribution of ${fmtBONCurrency(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
@@ -7682,6 +7812,7 @@ body.host-panel-dragging * {
     async function verifySponsorRefundGifts(expectedGifts, hostName, baselineRows, fallbackContext = {}) {
         const statementId = fallbackContext?.statementId ?? currentStatement?.id ?? null;
         fallbackContext = { ...fallbackContext, statementId };
+        const verificationStillOwned = () => canMutateActiveGiveaway();
         const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
             .map(g => ({
                 recipient: String(g?.recipient || "").trim(),
@@ -7715,13 +7846,18 @@ body.host-panel-dragging * {
         let successfulReads = 0;
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            if (attempt > 1) await new Promise(resolve => setTimeout(resolve, delayMs));
+            if (attempt > 1) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                if (!verificationStillOwned()) return false;
+            }
 
             let rows;
             try {
                 rows = await tracker.fetchRecentGiftHistory();
+                if (!verificationStillOwned()) return false;
                 successfulReads += 1;
             } catch (e) {
+                if (!verificationStillOwned()) return false;
                 logEvent("Sponsor refund Gift History retry", `Attempt ${attempt}/${maxAttempts}: ${String(e?.message || e)}`);
                 continue;
             }
@@ -7753,6 +7889,7 @@ body.host-panel-dragging * {
             }
 
             if (expected.every(g => g.done)) {
+                if (!verificationStillOwned()) return false;
                 const targetStatement = getStatementRecordById(statementId);
                 if (targetStatement) {
                     targetStatement.verification = "all sponsor refunds confirmed in Gift History";
@@ -7763,10 +7900,12 @@ body.host-panel-dragging * {
         }
 
         if (successfulReads === 0) {
+            if (!verificationStillOwned()) return false;
             logEvent("Sponsor refund verification fallback", "Gift History became unavailable; using chat API verification.");
             return await verifyWinnerGifts(expected, hostName, fallbackContext);
         }
 
+        if (!verificationStillOwned()) return false;
         const missing = expected.filter(g => !g.done);
         missing.forEach(g => updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId));
         const targetStatement = getStatementRecordById(statementId);
@@ -7779,15 +7918,19 @@ body.host-panel-dragging * {
             .map(g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`)
             .join(", ");
         logEvent("Sponsor refund verification warning", `Gift History could not confirm: ${missingList}`);
+        if (!verificationStillOwned()) return false;
         await sendMessage(
             `[color=#ff4f4f][b]Warning:[/b][/color] Some sponsor refunds could not be confirmed. ` +
-            `Please verify manually: ${missingList}.`
+            `Please verify manually: ${missingList}.`,
+            { requireExclusiveGiveawayOwnership: true }
         );
+        if (!verificationStillOwned()) return false;
         return false;
     }
 
     async function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
         const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
+        const verificationStillOwned = () => canMutateActiveGiveaway();
         try {
             const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
                 ? Math.floor(Number(verificationContext.afterId))
@@ -7843,15 +7986,18 @@ body.host-panel-dragging * {
 
             // Give UNIT3D a short moment to emit SystemBot gift messages.
             await new Promise(resolve => setTimeout(resolve, 2000));
+            if (!verificationStillOwned()) return false;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
                     const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
                     if (afterId !== null) url.searchParams.set("after_id", String(afterId));
                     const res = await fetchWithTimeout(url, { credentials: "include" }, fetchTimeoutMs);
+                    if (!verificationStillOwned()) return false;
 
                     if (res && res.ok) {
                         const payload = await res.json();
+                        if (!verificationStillOwned()) return false;
                         const messages = Array.isArray(payload.data) ? payload.data : [];
 
                         for (const m of messages) {
@@ -7884,9 +8030,11 @@ body.host-panel-dragging * {
                         }
                     }
                 } catch {
+                    if (!verificationStillOwned()) return false;
                     // Retry below. Each fetch is independently bounded by timeout.
                 }
 
+                if (!verificationStillOwned()) return false;
                 if (expected.every(g => g.done)) {
                     finalizeStatementVerification(true, 0, statementId);
                     return true;
@@ -7894,22 +8042,28 @@ body.host-panel-dragging * {
 
                 if (attempt < maxAttempts) {
                     await new Promise(resolve => setTimeout(resolve, delayMs));
+                    if (!verificationStillOwned()) return false;
                 }
             }
 
+            if (!verificationStillOwned()) return false;
             const missing = expected.filter(g => !g.done);
             missing.forEach(markFailed);
             finalizeStatementVerification(false, missing.length, statementId);
 
             const missingList = missing.map(describe).join(", ");
             logEvent("Payout verification warning", `Could not confirm gifts for: ${missingList}`);
+            if (!verificationStillOwned()) return false;
             await sendMessage(
                 `[color=#ff4f4f][b]Warning:[/b][/color] ` +
                 `Some giveaway gifts could not be confirmed. ` +
-                `Please manually verify BON for: ${missingList}.`
+                `Please manually verify BON for: ${missingList}.`,
+                { requireExclusiveGiveawayOwnership: true }
             );
+            if (!verificationStillOwned()) return false;
             return false;
         } catch (e) {
+            if (!verificationStillOwned()) return false;
             logEvent("Payout verification error", "Unexpected error while confirming gift messages.");
             if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
                 markAllPendingWinnerGiftsFailed();
@@ -9287,7 +9441,7 @@ body.host-panel-dragging * {
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
 
-        if (DEBUG_SETTINGS.disable_chat_output) return;
+        if (DEBUG_SETTINGS.disable_chat_output) return true;
 
         if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: caching chat context if needed");
 
@@ -9297,7 +9451,7 @@ body.host-panel-dragging * {
         // --- Attempt API POST, fall back to chatbox on failure ---
         if (!DEBUG_SETTINGS.suppressApiMessages) {
             try {
-                if (await trySendViaApi(messageStr)) return;
+                if (await trySendViaApi(messageStr)) return true;
             } catch (e) {
                 if (DEBUG_SETTINGS.log_chat_messages) console.warn("API send failed, falling back to chatbox method:", e);
                 if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: API send failed, falling back to chatbox method");
