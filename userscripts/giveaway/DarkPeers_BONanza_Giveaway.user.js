@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.19
+// @version      1.3.20
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -121,6 +121,10 @@
 //   - v1.3.19 removes proactive chunking from the final sponsor list and makes the
 //     zero-entry outcome explicit: there are no winners and 100% of the final pot
 //     (host funding + sponsors) is contributed directly to the BON Pool and verified.
+//   - v1.3.20 makes zero-entry settlement respect the selected BON Pool mode: with
+//     Pool > 0 the full pot still goes to the Pool; with Pool = 0 the host keeps only
+//     their own funding and every sponsor contribution is returned in full, with
+//     idempotent refund gifts, chat verification and statement/audit tracking.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -6174,81 +6178,186 @@ body.host-panel-dragging * {
             }
         }
 
-        // No entries → no winners. Nothing returns to the host: the complete
-        // final pot (host funding + sponsor gifts) is contributed to BON Pool.
+        // No entries → no winners. Settlement follows the selected BON Pool mode:
+        //   - Pool > 0: 100% of the final pot goes to BON Pool.
+        //   - Pool = 0: host funding stays with the host and sponsors are refunded in full.
         if (numberEntries.size === 0) {
             const noEntryTotal = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
             const noEntryHostFunded = Math.max(0, noEntryTotal - finalSponsoredTotal);
+            const noEntryPoolPct = normalizeDonationPercent(giveawayData.donationPercent);
 
-            await sendMessage(
-                `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
-                `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`
-            );
+            if (noEntryPoolPct > 0) {
+                await sendMessage(
+                    `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
+                    `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`
+                );
 
-            let noEntryPoolResult = { attempted: false, confirmed: noEntryTotal <= 0, reason: noEntryTotal <= 0 ? "empty-pot" : "not-attempted" };
-            if (noEntryTotal > 0) {
-                noEntryPoolResult = await contributeBonPool(noEntryTotal);
+                let noEntryPoolResult = { attempted: false, confirmed: noEntryTotal <= 0, reason: noEntryTotal <= 0 ? "empty-pot" : "not-attempted" };
+                if (noEntryTotal > 0) {
+                    noEntryPoolResult = await contributeBonPool(noEntryTotal);
 
-                if (noEntryPoolResult.confirmed) {
-                    await sendMessage(
-                        `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
-                        `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
-                        `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
-                        `No entrants — 100% of the pot was contributed. ✨`
-                    );
-                } else {
-                    logEvent(
-                        "BON Pool verification warning",
-                        `Zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. No automatic retry was attempted.`
-                    );
-                    try {
-                        window.alert(
-                            `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. ` +
-                            `Check /bon-pool manually before retrying anything.`
+                    if (noEntryPoolResult.confirmed) {
+                        await sendMessage(
+                            `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
+                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
+                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
+                            `No entrants — 100% of the pot was contributed. ✨`
                         );
-                    } catch {}
+                    } else {
+                        logEvent(
+                            "BON Pool verification warning",
+                            `Zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. No automatic retry was attempted.`
+                        );
+                        try {
+                            window.alert(
+                                `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. ` +
+                                `Check /bon-pool manually before retrying anything.`
+                            );
+                        } catch {}
+                    }
+                }
+
+                logEvent(
+                    "Giveaway ended",
+                    `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED"})`
+                );
+
+                const noEntryDonationInfo = {
+                    total: noEntryTotal,
+                    percent: noEntryTotal > 0 ? 100 : 0,
+                    confirmed: !!noEntryPoolResult.confirmed
+                };
+                try {
+                    recordGiveawayStats(giveawayData, [], [], numberEntries, noEntryDonationInfo);
+                } catch (e) { /* ignore stats errors */ }
+
+                try {
+                    const noEntrySplit = {
+                        percent: noEntryDonationInfo.percent,
+                        net: [],
+                        donations: [],
+                        total: noEntryTotal
+                    };
+                    currentStatement = createStatementRecord({
+                        winners: [],
+                        gross: [],
+                        net: [],
+                        donations: [],
+                        split: noEntrySplit,
+                        poolStatus: noEntryPoolResult.confirmed
+                            ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
+                            : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
+                        entrants: 0,
+                        refunds: []
+                    });
+                    if (currentStatement) {
+                        currentStatement.verification = noEntryPoolResult.confirmed
+                            ? "nothing to verify"
+                            : "BON Pool contribution requires manual verification";
+                        persistCurrentStatement();
+                    }
+                } catch (e) { /* statements are best-effort */ }
+            } else {
+                const sponsorRefunds = getNonHostSponsorContributions(giveawayData);
+                const refundTotal = sponsorRefunds.reduce((sum, item) => sum + item.amount, 0);
+                const refundList = sponsorRefunds
+                    .map(item =>
+                        `[color=#1DDC5D][b]${sanitizeNick(item.name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(item.amount)} BON[/b][/color])`
+                    )
+                    .join(" · ");
+
+                await sendMessage(
+                    `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
+                    `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "↩️")} BON Pool is [b]0%[/b]: ` +
+                    `the host-funded [b][color=#ffc00a]${fmtBONCurrency(noEntryHostFunded)} BON[/color][/b] remains with the host.` +
+                    (refundList
+                        ? ` Sponsor contributions will be returned in full: ${refundList}.`
+                        : ` There are no sponsor contributions to return.`)
+                );
+
+                const refundExpectedGifts = [];
+                const refundRecords = sponsorRefunds.map(item => ({
+                    user: item.name,
+                    amount: item.amount,
+                    status: "pending"
+                }));
+                const refundNotBeforeTs = Date.now();
+                const refundAfterMessageId = sponsorRefunds.length ? await getLatestChatMessageId() : null;
+
+                for (const refund of sponsorRefunds) {
+                    const result = await giftBon(
+                        refund.name,
+                        refund.amount,
+                        `Giveaway ended with no entrants — returning your ${refund.amount} BON sponsorship in full.`,
+                        GIFT_PURPOSE.SPONSOR_REFUND
+                    );
+
+                    const record = refundRecords.find(item =>
+                        normalizeUserKey(item.user) === normalizeUserKey(refund.name)
+                    );
+                    if (record) {
+                        record.status = result?.attempted
+                            ? "sent, awaiting confirmation"
+                            : (result?.reason === "duplicate"
+                                ? "already attempted, check verification"
+                                : `NOT SENT (${result?.reason || "unknown error"})`);
+                    }
+
+                    if (result?.attempted) {
+                        refundExpectedGifts.push({
+                            recipient: refund.name,
+                            amount: refund.amount,
+                            purpose: GIFT_PURPOSE.SPONSOR_REFUND
+                        });
+                    }
+
+                    if (PAYOUT_GIFT_GAP_MS > 0) {
+                        await new Promise(resolve => setTimeout(resolve, PAYOUT_GIFT_GAP_MS));
+                    }
+                }
+
+                logEvent(
+                    "Giveaway ended",
+                    `Entrants=0 | Winners=0 | Pool=0% | Host retained=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsor refunds=${fmtBONCurrency(refundTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON`
+                );
+
+                try {
+                    recordGiveawayStats(
+                        giveawayData,
+                        [],
+                        [],
+                        numberEntries,
+                        null,
+                        { sponsorRefundedTotal: refundTotal }
+                    );
+                } catch (e) { /* ignore stats errors */ }
+
+                try {
+                    currentStatement = createStatementRecord({
+                        winners: [],
+                        gross: [],
+                        net: [],
+                        donations: [],
+                        split: null,
+                        poolStatus: "none (0% BON Pool; sponsor contributions returned)",
+                        entrants: 0,
+                        refunds: refundRecords
+                    });
+                    if (currentStatement) {
+                        currentStatement.verification = refundExpectedGifts.length
+                            ? "sponsor refunds awaiting chat verification"
+                            : (refundRecords.length ? "refund attempts require manual verification" : "nothing to verify");
+                        persistCurrentStatement();
+                    }
+                } catch (e) { /* statements are best-effort */ }
+
+                if (refundExpectedGifts.length) {
+                    verifyWinnerGifts(refundExpectedGifts, giveawayData.host, {
+                        afterId: refundAfterMessageId,
+                        notBeforeTs: refundNotBeforeTs
+                    });
                 }
             }
-
-            logEvent(
-                "Giveaway ended",
-                `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED"})`
-            );
-
-            const noEntryDonationInfo = {
-                total: noEntryTotal,
-                percent: noEntryTotal > 0 ? 100 : 0,
-                confirmed: !!noEntryPoolResult.confirmed
-            };
-            try {
-                recordGiveawayStats(giveawayData, [], [], numberEntries, noEntryDonationInfo);
-            } catch (e) { /* ignore stats errors */ }
-
-            try {
-                const noEntrySplit = {
-                    percent: noEntryDonationInfo.percent,
-                    net: [],
-                    donations: [],
-                    total: noEntryTotal
-                };
-                currentStatement = createStatementRecord({
-                    winners: [],
-                    gross: [],
-                    net: [],
-                    donations: [],
-                    split: noEntrySplit,
-                    poolStatus: noEntryPoolResult.confirmed
-                        ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
-                        : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
-                    entrants: 0
-                });
-                if (currentStatement) {
-                    currentStatement.verification = noEntryPoolResult.confirmed
-                        ? "nothing to verify"
-                        : "BON Pool contribution requires manual verification";
-                    persistCurrentStatement();
-                }
-            } catch (e) { /* statements are best-effort */ }
         } else {
             // Draw only after entries are closed and payout has been committed.
             // This keeps the result out of localStorage/DevTools during the giveaway.
@@ -7152,7 +7261,7 @@ body.host-panel-dragging * {
 
     /**
      * Create the statement record at the end of a giveaway.
-     * @param {object} p  { winners, gross, net, donations, split, poolStatus, entrants }
+     * @param {object} p  { winners, gross, net, donations, split, poolStatus, entrants, refunds? }
      */
     function createStatementRecord(p) {
         const data = giveawayData;
@@ -7196,6 +7305,13 @@ body.host-panel-dragging * {
 
         const pct = p.split ? p.split.percent : 0;
         const donationTotal = p.split ? p.split.total : 0;
+        const refunds = (Array.isArray(p.refunds) ? p.refunds : [])
+            .map(item => ({
+                user: String(item?.user || item?.recipient || "").trim(),
+                amount: Math.max(0, Math.floor(Number(item?.amount) || 0)),
+                status: String(item?.status || "sent, awaiting confirmation")
+            }))
+            .filter(item => item.user && item.amount > 0);
 
         return {
             id: getActiveGiveawayId() || Date.now(),
@@ -7218,6 +7334,7 @@ body.host-panel-dragging * {
             donationTotal,
             donationRecipient: "DarkPeers /bon-pool",
             donationStatus: donationTotal <= 0 ? "none" : (p.poolStatus || "contribution pending verification"),
+            refunds,
             winners,
             verification: "in progress",
             notes: []
@@ -7229,7 +7346,16 @@ body.host-panel-dragging * {
         if (!currentStatement) return;
         const label = ({ confirmed: "confirmed in chat", failed: "NOT CONFIRMED, check manually", self: "self (host, no gift sent)" })[status] || status;
         const key = normalizeUserKey(recipient);
-        currentStatement.winners.forEach(w => { if (normalizeUserKey(w.user) === key) w.status = label; });
+
+        if (purpose === GIFT_PURPOSE.SPONSOR_REFUND) {
+            (currentStatement.refunds || []).forEach(refund => {
+                if (normalizeUserKey(refund.user) === key) refund.status = label;
+            });
+        } else {
+            currentStatement.winners.forEach(w => {
+                if (normalizeUserKey(w.user) === key) w.status = label;
+            });
+        }
         persistCurrentStatement();
     }
 
@@ -7287,12 +7413,27 @@ body.host-panel-dragging * {
         } else {
             L.push("None (0%). Standard giveaway.");
         }
+        const refunds = Array.isArray(rec.refunds) ? rec.refunds : [];
+        if (refunds.length) {
+            L.push("");
+            L.push(line("-"));
+            L.push("SPONSOR REFUNDS");
+            L.push(line("-"));
+            refunds.forEach(refund => {
+                L.push(`  ${padR(refund.user, 28)} ${padL(money(refund.amount), 16)}  ${refund.status}`);
+            });
+            const refundTotal = refunds.reduce((sum, refund) => sum + Math.max(0, Number(refund.amount) || 0), 0);
+            L.push(line("-"));
+            L.push(`Refunded total  : ${money(refundTotal)}`);
+            L.push(`Check           : host keeps ${money(rec.hostFunded)} + refunds ${money(refundTotal)} = ${money(rec.hostFunded + refundTotal)} (pot ${money(rec.potTotal)})${rec.hostFunded + refundTotal === rec.potTotal ? " OK" : " MISMATCH"}`);
+        }
+
         L.push("");
         L.push(line("-"));
         L.push("WINNERS AND TRANSACTIONS");
         L.push(line("-"));
         if (!rec.winners.length) {
-            L.push("No entrants, no winners, no BON transferred.");
+            L.push("No entrants, no winners. No winner payout was made.");
         } else {
             L.push(`${padR("#", 3)} ${padR("User", 22)} ${padL("Guess", 6)} ${padL("Off", 5)} ${padL("Prize", 12)} ${padL("Donated", 12)} ${padL("Received", 12)}  Status`);
             rec.winners.forEach(w => {
@@ -7668,7 +7809,10 @@ body.host-panel-dragging * {
 
     // Winner gifts use the gift ledger. BON Pool contributions have their own
     // persisted ledger and are verified against /bon-pool counters.
-    const GIFT_PURPOSE = Object.freeze({ WINNER: "winner" });
+    const GIFT_PURPOSE = Object.freeze({
+        WINNER: "winner",
+        SPONSOR_REFUND: "sponsor-refund"
+    });
 
     function paidGiftKey(recipient, amount, purpose = GIFT_PURPOSE.WINNER) {
         return `${String(recipient || "").trim().toLowerCase()}::${Math.floor(Number(amount) || 0)}::${purpose}`;
@@ -8241,6 +8385,28 @@ body.host-panel-dragging * {
         }
     }
 
+    function getNonHostSponsorContributions(data) {
+        if (!data || !data.sponsorContribs || typeof data.sponsorContribs !== "object") return [];
+
+        const hostKey = normalizeUserKey(data.host);
+        const grouped = new Map();
+
+        for (const [rawName, rawAmount] of Object.entries(data.sponsorContribs)) {
+            const name = String(rawName || "").trim();
+            const key = normalizeUserKey(name);
+            const amount = Math.max(0, Math.floor(Number(rawAmount) || 0));
+            if (!key || key === hostKey || amount <= 0) continue;
+
+            if (!grouped.has(key)) grouped.set(key, { name, amount: 0 });
+            grouped.get(key).amount += amount;
+        }
+
+        return Array.from(grouped.values()).sort((a, b) =>
+            (b.amount - a.amount) ||
+            a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        );
+    }
+
     function sumSponsorContribs(contribs, hostName) {
         if (!contribs || typeof contribs !== "object") return 0;
         const hostKey = hostName ? normUserKey(hostName) : null;
@@ -8330,10 +8496,11 @@ body.host-panel-dragging * {
         markStatsDirty();
     }
 
-    function recordGiveawayStats(giveawayData, winners, allocated, entriesMap, donation = null) {
+    function recordGiveawayStats(giveawayData, winners, allocated, entriesMap, donation = null, settlement = {}) {
         if (!giveawayData) return;
         const donatedTotal = donation && donation.total > 0 && donation.confirmed ? Math.floor(donation.total) : 0;
         const donationPercent = donation && donation.total > 0 ? donation.percent : 0;
+        const sponsorRefundedTotal = Math.max(0, Math.floor(Number(settlement?.sponsorRefundedTotal) || 0));
 
         const stats = getStatsCached();
         const now = Date.now();
@@ -8361,6 +8528,7 @@ body.host-panel-dragging * {
                 host: String(giveawayData.host || "").trim(),
                 hostOnly,
                 sponsorTotal,
+                sponsorRefundedTotal,
                 winners: Array.isArray(winners) ? winners.length : 0,
                 entries: entriesMap ? entriesMap.size : 0,
                 donationPercent,
@@ -8384,9 +8552,11 @@ body.host-panel-dragging * {
             // Host pot only (excludes sponsors)
             hostRec.hostedTotal = (hostRec.hostedTotal || 0) + hostOnly;
 
-            // Total sponsor BON the host has received across hosted giveaways
-            if (sponsorTotal > 0) {
-                hostRec.sponsorReceivedTotal = (hostRec.sponsorReceivedTotal || 0) + sponsorTotal;
+            // Total sponsor BON the host actually retained across hosted giveaways.
+            // A zero-entry / 0%-Pool settlement can return sponsor gifts in full.
+            const sponsorRetainedTotal = Math.max(0, sponsorTotal - sponsorRefundedTotal);
+            if (sponsorRetainedTotal > 0) {
+                hostRec.sponsorReceivedTotal = (hostRec.sponsorReceivedTotal || 0) + sponsorRetainedTotal;
             }
 
             // BON Pool contributions generated by this host's giveaways
@@ -9285,29 +9455,8 @@ body.host-panel-dragging * {
 
     function buildSponsorsSummaryMessage(data) {
         if (!data) return "";
-        const hostKey = normalizeUserKey(data.host);
-        const contribEntries = Object.entries(data.sponsorContribs || {});
 
-        const sponsorNames = Array.from(new Set([
-            ...(data.sponsors || []),
-            ...contribEntries.map(([name]) => name)
-        ]));
-
-        const safe = sponsorNames
-            .map(name => {
-                const key = normalizeUserKey(name);
-                const matching = contribEntries.find(([storedName]) => normalizeUserKey(storedName) === key);
-                return {
-                    name,
-                    key,
-                    amount: matching ? Math.max(0, Math.floor(Number(matching[1]) || 0)) : 0
-                };
-            })
-            .filter(item => item.name && item.key && item.key !== hostKey && item.amount > 0)
-            .sort((a, b) =>
-                (b.amount - a.amount) ||
-                a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-            )
+        const safe = getNonHostSponsorContributions(data)
             .map(({ name, amount }) =>
                 `[color=#1DDC5D][b]${sanitizeNick(name)}[/b][/color] ([color=#ffc00a][b]${fmtBONCurrency(amount)} BON[/b][/color])`
             );
