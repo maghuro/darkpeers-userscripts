@@ -143,13 +143,15 @@
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
 //     BFCache documents quarantine all giveaway mutations/snapshots from pagehide and
 //     persisted pageshow always reloads authoritative saved state instead of resuming stale
-//     memory, quarantined documents cannot reacquire ownership, and settlement resumes
+//     memory, quarantined documents cannot acquire/reacquire ownership even from queued
+//     Web Lock callbacks, and settlement resumes
 //     must also reacquire exclusive ownership before transfers;
 //     cross-tab gift attempts stay pending until their originating request resolves; a
 //     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
 //     while superseded fallbacks abort before sending; rejected attempts remain retryable;
 //     unknown Gift History clock offsets accept either timestamp interpretation when it
-//     overlaps the window, while coarse closing-second rows require precise chat proof;
+//     overlaps the window, while coarse closing-second rows require one-to-one precise
+//     chat proof and the chat-only fallback applies the same timestamp intervals;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -2649,7 +2651,10 @@ body.host-panel-dragging * {
             return false;
         }
 
-        if (tabWebLockAcquirePromise) return tabWebLockAcquirePromise;
+        if (tabWebLockAcquirePromise) {
+            const acquired = await tabWebLockAcquirePromise;
+            return !giveawayMutationQuarantined && !!acquired && ownsTabLock();
+        }
 
         tabWebLockAcquirePromise = new Promise((resolve) => {
             let settled = false;
@@ -2663,7 +2668,7 @@ body.host-panel-dragging * {
                 TAB_WEB_LOCK_NAME,
                 { mode: "exclusive", ifAvailable: true },
                 async (lock) => {
-                    if (!lock) {
+                    if (!lock || giveawayMutationQuarantined) {
                         settle(false);
                         return;
                     }
@@ -2682,7 +2687,13 @@ body.host-panel-dragging * {
                         leasePersisted = !!(lease && lease.tabId === TAB_ID);
                     } catch {}
 
-                    if (!leasePersisted) {
+                    if (!leasePersisted || giveawayMutationQuarantined) {
+                        try {
+                            const lease = readTabLock();
+                            if (lease && lease.tabId === TAB_ID) {
+                                localStorage.removeItem(LS_TAB_LOCK);
+                            }
+                        } catch {}
                         tabWebLockRelease = null;
                         try { releaseHold(); } catch {}
                         settle(false);
@@ -2703,7 +2714,8 @@ body.host-panel-dragging * {
             tabWebLockAcquirePromise = null;
         });
 
-        return tabWebLockAcquirePromise;
+        const acquired = await tabWebLockAcquirePromise;
+        return !giveawayMutationQuarantined && !!acquired && ownsTabLock();
     }
 
     /** Release the tab lock and stop the heartbeat. */
@@ -2729,6 +2741,7 @@ body.host-panel-dragging * {
     }
 
     function ownsTabLock() {
+        if (giveawayMutationQuarantined) return false;
         const lock = readTabLock();
         if (!lock || lock.tabId !== TAB_ID || !isFreshTabLock(lock)) return false;
         if (navigator.locks && typeof navigator.locks.request === "function") {
@@ -2742,6 +2755,7 @@ body.host-panel-dragging * {
         if (ownsTabLock()) return true;
         try {
             const acquired = await acquireTabLock();
+            if (giveawayMutationQuarantined) return false;
             return !!acquired && ownsTabLock();
         } catch {
             return false;
@@ -4537,11 +4551,15 @@ body.host-panel-dragging * {
                 aStart < (bStart + bResolution) &&
                 bStart < (aStart + aResolution);
 
+            const consumedBoundaryChatEvents = new Set();
             const chatProvesBeforeClose = (item, historyStarts, historyResolutionMs) => {
                 if (max === null || !Array.isArray(chatEvents) || !chatEvents.length) return false;
 
-                return chatEvents.some(event => {
-                    if (!rowMatchesChatEvent(item, event)) return false;
+                for (let index = 0; index < chatEvents.length; index++) {
+                    if (consumedBoundaryChatEvents.has(index)) continue;
+                    const event = chatEvents[index];
+                    if (!rowMatchesChatEvent(item, event)) continue;
+
                     const chatStart = Number(event?.createdAtTs);
                     const chatResolution = Math.max(
                         1,
@@ -4549,13 +4567,13 @@ body.host-panel-dragging * {
                             ? Number(event.timestampResolutionMs)
                             : 1
                     );
-                    if (!Number.isFinite(chatStart)) return false;
+                    if (!Number.isFinite(chatStart)) continue;
 
                     // A chat event only proves pre-cutoff timing when its entire
                     // source-time interval finishes by the inclusive close instant.
-                    if ((chatStart + chatResolution) > (max + 1)) return false;
+                    if ((chatStart + chatResolution) > (max + 1)) continue;
 
-                    return historyStarts.some(historyStart =>
+                    const overlaps = historyStarts.some(historyStart =>
                         Number.isFinite(historyStart) &&
                         intervalsOverlap(
                             historyStart,
@@ -4564,7 +4582,15 @@ body.host-panel-dragging * {
                             chatResolution
                         )
                     );
-                });
+                    if (!overlaps) continue;
+
+                    // One SystemBot event may prove at most one coarse history row.
+                    // This prevents one pre-cutoff event from validating a second,
+                    // identical-amount gift that actually occurred after closing.
+                    consumedBoundaryChatEvents.add(index);
+                    return true;
+                }
+                return false;
             };
 
             const accepted = [];
@@ -4839,8 +4865,16 @@ body.host-panel-dragging * {
                 if (this.processedIds.has(m.id)) continue;
 
                 const createdAtTs = Date.parse(m.created_at);
-                if (Number.isFinite(createdAtTs) && createdAtTs <= this.giveawayStartTs) continue;
-                if (maxCreatedAtTs !== null && Number.isFinite(createdAtTs) && createdAtTs > maxCreatedAtTs) continue;
+                const timestampResolutionMs = unit3dTimestampResolutionMs(m.created_at);
+                if (
+                    Number.isFinite(createdAtTs) &&
+                    (createdAtTs + timestampResolutionMs) <= this.giveawayStartTs
+                ) continue;
+                if (
+                    maxCreatedAtTs !== null &&
+                    Number.isFinite(createdAtTs) &&
+                    (createdAtTs + timestampResolutionMs) > (maxCreatedAtTs + 1)
+                ) continue;
 
                 const msgText = m.message || "";
                 const isSystemBot = !!m.bot?.is_systembot;
@@ -4869,7 +4903,8 @@ body.host-panel-dragging * {
                     recipient,
                     amount: cleanAmount,
                     rawAmount: Number(amount),
-                    createdAtTs: parseUnit3dTimestamp(msg.created_at)
+                    createdAtTs: parseUnit3dTimestamp(msg.created_at),
+                    timestampResolutionMs: unit3dTimestampResolutionMs(msg.created_at)
                 });
                 this.applyGift(gifter, cleanAmount); // update totals immediately
             }
