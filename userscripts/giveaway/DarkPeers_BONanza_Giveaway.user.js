@@ -2616,12 +2616,22 @@ body.host-panel-dragging * {
                     const hold = new Promise(r => { releaseHold = r; });
                     tabWebLockRelease = releaseHold;
 
+                    let leasePersisted = false;
                     try {
                         localStorage.setItem(
                             LS_TAB_LOCK,
                             JSON.stringify({ tabId: TAB_ID, ts: Date.now(), transport: "web-lock" })
                         );
+                        const lease = readTabLock();
+                        leasePersisted = !!(lease && lease.tabId === TAB_ID);
                     } catch {}
+
+                    if (!leasePersisted) {
+                        tabWebLockRelease = null;
+                        try { releaseHold(); } catch {}
+                        settle(false);
+                        return;
+                    }
 
                     startTabLockHeartbeat();
                     settle(true);
@@ -7249,8 +7259,11 @@ body.host-panel-dragging * {
                 : null;
             const selfKeys = resolveSelfKeys(hostName);
             if (!selfKeys.size) {
-                // If UI is showing pending spinners, don’t leave them stuck
-                markAllPendingWinnerGiftsFailed();
+                // Only touch the live table if this verifier still belongs to
+                // the statement currently represented by that UI.
+                if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
+                    markAllPendingWinnerGiftsFailed();
+                }
                 const targetStatement = getStatementRecordById(statementId);
                 if (targetStatement) {
                     targetStatement.verification = "could not verify (host name unknown)";
@@ -7281,13 +7294,17 @@ body.host-panel-dragging * {
             let done = false;
 
             const describe = g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`;
+            const canTouchLiveUI = () =>
+                currentStatement &&
+                statementId != null &&
+                String(currentStatement.id) === String(statementId);
 
             function markConfirmed(g) {
-                markWinnerGiftConfirmed(g.recipient);
+                if (canTouchLiveUI()) markWinnerGiftConfirmed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "confirmed", statementId);
             }
             function markFailed(g) {
-                markWinnerGiftFailed(g.recipient);
+                if (canTouchLiveUI()) markWinnerGiftFailed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
             }
 
@@ -7387,8 +7404,11 @@ body.host-panel-dragging * {
             setTimeout(checkOnce, 2000);
         } catch (e) {
             logEvent("Payout verification error", "Unexpected error while confirming gift messages.");
-            markAllPendingWinnerGiftsFailed();
-            const targetStatement = getStatementRecordById(verificationContext?.statementId ?? null);
+            const failedStatementId = verificationContext?.statementId ?? null;
+            if (currentStatement && failedStatementId != null && String(currentStatement.id) === String(failedStatementId)) {
+                markAllPendingWinnerGiftsFailed();
+            }
+            const targetStatement = getStatementRecordById(failedStatementId);
             if (targetStatement) {
                 targetStatement.verification = "verification error, check manually";
                 persistStatementRecord(targetStatement);
