@@ -155,7 +155,8 @@
 //     chat proof reserved across polling passes and the chat-only fallback applies the
 //     same timestamp intervals; ambiguous cutoff rows remain unseen/retryable until
 //     evidence resolves, and authoritative settlement output rechecks ownership before
-//     and after every awaited closing send;
+//     and after every awaited closing send while its internal chatbox fallback also
+//     fails closed after an ownership/quarantine handoff;
 //     optional sponsor cutoffs/clock offsets
 //     preserve null instead of coercing it to epoch zero; and Gift
 //     History opening bounds honor the source timestamp precision (including fractions).
@@ -6694,7 +6695,13 @@ body.host-panel-dragging * {
                 return false;
             }
 
-            await sendMessage(message);
+            const sent = await sendMessage(message, {
+                requireExclusiveGiveawayOwnership: true
+            });
+            if (sent === false) {
+                giveawayData.__ending = false;
+                return false;
+            }
 
             if (!(await ensureExclusiveTabOwnership())) {
                 logEvent(
@@ -9275,8 +9282,10 @@ body.host-panel-dragging * {
         }, 50);
     }
 
-    async function sendMessage(messageStr) {
+    async function sendMessage(messageStr, options = {}) {
         messageStr = prepareOutgoingMessage(messageStr);
+        const requireExclusiveGiveawayOwnership =
+            options?.requireExclusiveGiveawayOwnership === true;
 
         if (DEBUG_SETTINGS.disable_chat_output) return;
 
@@ -9295,7 +9304,22 @@ body.host-panel-dragging * {
             }
         }
 
+        // Settlement output is authoritative. If the API attempt yielded while a
+        // BFCache/pagehide handoff quarantined this document, never let the stale
+        // continuation escape through the synchronous chatbox fallback.
+        if (
+            requireExclusiveGiveawayOwnership &&
+            !canMutateActiveGiveaway()
+        ) {
+            logEvent(
+                "Chatbox fallback blocked (ownership lost)",
+                "Authoritative settlement output was not retried through the chatbox because this tab no longer owns the giveaway."
+            );
+            return false;
+        }
+
         sendViaChatbox(messageStr);
+        return true;
     }
 
     function countdownTimer (display, giveawayData) {
