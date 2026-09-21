@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.20
+// @version      1.3.21
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -125,6 +125,9 @@
 //     Pool > 0 the full pot still goes to the Pool; with Pool = 0 the host keeps only
 //     their own funding and every sponsor contribution is returned in full, with
 //     idempotent refund gifts, chat verification and statement/audit tracking.
+//   - v1.3.21 shortens refund gift notes to "Giveaway refund" and verifies outgoing
+//     sponsor refunds primarily against authenticated Gift History; the chat API is
+//     retained only as a fallback when Gift History itself is unavailable.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -6281,14 +6284,27 @@ body.host-panel-dragging * {
                     amount: item.amount,
                     status: "pending"
                 }));
+                let refundGiftHistoryBaseline = null;
+                try {
+                    refundGiftHistoryBaseline = sponsorRefunds.length && window.__activeTracker && typeof window.__activeTracker.fetchRecentGiftHistory === "function"
+                        ? await window.__activeTracker.fetchRecentGiftHistory()
+                        : [];
+                } catch (e) {
+                    refundGiftHistoryBaseline = null;
+                    logEvent("Sponsor refund Gift History preflight", String(e?.message || e));
+                }
+
+                // Chat cursor/timestamp are only needed if Gift History is unavailable.
                 const refundNotBeforeTs = Date.now();
-                const refundAfterMessageId = sponsorRefunds.length ? await getLatestChatMessageId() : null;
+                const refundAfterMessageId = refundGiftHistoryBaseline === null && sponsorRefunds.length
+                    ? await getLatestChatMessageId()
+                    : null;
 
                 for (const refund of sponsorRefunds) {
                     const result = await giftBon(
                         refund.name,
                         refund.amount,
-                        `Giveaway ended with no entrants — returning your ${refund.amount} BON sponsorship in full.`,
+                        SPONSOR_REFUND_NOTE,
                         GIFT_PURPOSE.SPONSOR_REFUND
                     );
 
@@ -6352,10 +6368,15 @@ body.host-panel-dragging * {
                 } catch (e) { /* statements are best-effort */ }
 
                 if (refundExpectedGifts.length) {
-                    verifyWinnerGifts(refundExpectedGifts, giveawayData.host, {
-                        afterId: refundAfterMessageId,
-                        notBeforeTs: refundNotBeforeTs
-                    });
+                    await verifySponsorRefundGifts(
+                        refundExpectedGifts,
+                        giveawayData.host,
+                        refundGiftHistoryBaseline,
+                        {
+                            afterId: refundAfterMessageId,
+                            notBeforeTs: refundNotBeforeTs
+                        }
+                    );
                 }
             }
         } else {
@@ -6854,6 +6875,111 @@ body.host-panel-dragging * {
      * @param {string} hostName
      * @param {{afterId?:number|null, notBeforeTs?:number|null}} verificationContext
      */
+    async function verifySponsorRefundGifts(expectedGifts, hostName, baselineRows, fallbackContext = {}) {
+        const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
+            .map(g => ({
+                recipient: String(g?.recipient || "").trim(),
+                key: normalizeUserKey(g?.recipient),
+                amount: Math.max(0, Math.floor(Number(g?.amount) || 0)),
+                purpose: GIFT_PURPOSE.SPONSOR_REFUND,
+                done: false
+            }))
+            .filter(g => g.recipient && g.key && g.amount > 0);
+
+        if (!expected.length) return true;
+
+        const tracker = window.__activeTracker;
+        const canUseHistory = Array.isArray(baselineRows) && tracker && typeof tracker.fetchRecentGiftHistory === "function";
+        const selfKeys = resolveSelfKeys(hostName);
+
+        if (!canUseHistory || !selfKeys.size) {
+            logEvent("Sponsor refund verification fallback", "Gift History baseline unavailable; using chat API verification.");
+            verifyWinnerGifts(expected, hostName, fallbackContext);
+            return null;
+        }
+
+        const baselineCounts = new Map();
+        for (const row of baselineRows) {
+            const key = giftHistoryBaseKey(row);
+            if (!key) continue;
+            baselineCounts.set(key, (baselineCounts.get(key) || 0) + 1);
+        }
+
+        const maxAttempts = 6;
+        const delayMs = 2500;
+        let successfulReads = 0;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (attempt > 1) await new Promise(resolve => setTimeout(resolve, delayMs));
+
+            let rows;
+            try {
+                rows = await tracker.fetchRecentGiftHistory();
+                successfulReads += 1;
+            } catch (e) {
+                logEvent("Sponsor refund Gift History retry", `Attempt ${attempt}/${maxAttempts}: ${String(e?.message || e)}`);
+                continue;
+            }
+
+            const currentCounts = new Map();
+            const freshRows = [];
+            for (const row of rows) {
+                const key = giftHistoryBaseKey(row);
+                if (!key) continue;
+                const occurrence = (currentCounts.get(key) || 0) + 1;
+                currentCounts.set(key, occurrence);
+                if (occurrence > (baselineCounts.get(key) || 0)) freshRows.push(row);
+            }
+
+            const consumed = new Set();
+            for (const gift of expected) {
+                if (gift.done) continue;
+                const index = freshRows.findIndex((row, idx) =>
+                    !consumed.has(idx) &&
+                    selfKeys.has(normalizeUserKey(row?.sender)) &&
+                    normalizeUserKey(row?.recipient) === gift.key &&
+                    Math.max(0, Math.floor(Number(row?.amount) || 0)) === gift.amount &&
+                    sanitizeSponsorGiftMessage(row?.message) === SPONSOR_REFUND_NOTE
+                );
+                if (index < 0) continue;
+                consumed.add(index);
+                gift.done = true;
+                updateStatementGiftStatus(gift.recipient, gift.purpose, "confirmed");
+            }
+
+            if (expected.every(g => g.done)) {
+                if (currentStatement) {
+                    currentStatement.verification = "all sponsor refunds confirmed in Gift History";
+                    persistCurrentStatement();
+                }
+                return true;
+            }
+        }
+
+        if (successfulReads === 0) {
+            logEvent("Sponsor refund verification fallback", "Gift History became unavailable; using chat API verification.");
+            verifyWinnerGifts(expected, hostName, fallbackContext);
+            return null;
+        }
+
+        const missing = expected.filter(g => !g.done);
+        missing.forEach(g => updateStatementGiftStatus(g.recipient, g.purpose, "failed"));
+        if (currentStatement) {
+            currentStatement.verification = `${missing.length} sponsor refund(s) could not be confirmed in Gift History`;
+            persistCurrentStatement();
+        }
+
+        const missingList = missing
+            .map(g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`)
+            .join(", ");
+        logEvent("Sponsor refund verification warning", `Gift History could not confirm: ${missingList}`);
+        await sendMessage(
+            `[color=#ff4f4f][b]Warning:[/b][/color] Some sponsor refunds could not be confirmed. ` +
+            `Please verify manually: ${missingList}.`
+        );
+        return false;
+    }
+
     function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
         try {
             const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
@@ -7813,6 +7939,7 @@ body.host-panel-dragging * {
         WINNER: "winner",
         SPONSOR_REFUND: "sponsor-refund"
     });
+    const SPONSOR_REFUND_NOTE = "Giveaway refund";
 
     function paidGiftKey(recipient, amount, purpose = GIFT_PURPOSE.WINNER) {
         return `${String(recipient || "").trim().toLowerCase()}::${Math.floor(Number(amount) || 0)}::${purpose}`;
