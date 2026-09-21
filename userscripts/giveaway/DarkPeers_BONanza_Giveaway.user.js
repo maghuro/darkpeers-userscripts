@@ -141,9 +141,9 @@
 //     verification; sponsor opening/closing boundaries constrain Gift History and both
 //     in-flight Gift History/chat-fallback polls; host top-ups are serialized; delayed
 //     verification is statement-bound with persisted pre-transfer verification boundaries;
-//     BFCache documents quarantine all giveaway mutations/snapshots from pagehide until
-//     persisted pageshow proves exclusive ownership again; settlement resumes must also
-//     reacquire exclusive ownership before transfers;
+//     BFCache documents quarantine all giveaway mutations/snapshots from pagehide and
+//     persisted pageshow always reloads authoritative saved state instead of resuming stale
+//     memory; settlement resumes must also reacquire exclusive ownership before transfers;
 //     cross-tab gift attempts stay pending until their originating request resolves; a
 //     new exclusive owner converts foreign orphaned pendings to ambiguous terminal work,
 //     while superseded fallbacks abort before sending; rejected attempts remain retryable;
@@ -2771,23 +2771,14 @@ body.host-panel-dragging * {
         releaseTabLock();
     }
 
-    // BFCache can restore the exact same JS document after pagehide. Reclaim the
-    // lock on pageshow; if another tab legitimately owns it now, reload into a
-    // passive page rather than running two copies of the giveaway.
-    async function handleGiveawayPageShow(event) {
+    // BFCache can restore the exact same JS document after pagehide. Because
+    // ownership was released, another tab may have restored and persisted newer
+    // giveaway state in the meantime. Never resume this document's stale memory:
+    // quarantine synchronously and reload from the authoritative persisted state.
+    function handleGiveawayPageShow(event) {
         if (!event || !event.persisted || !giveawayData) return;
 
-        // Keep this restored document quarantined synchronously while ownership is
-        // being reacquired. Other pending Promise continuations are free to run
-        // during the await below, but every mutation/snapshot path fails closed.
         giveawayMutationQuarantined = true;
-
-        // pagehide releases the Web Lock even during a committed settlement.
-        if (await ensureExclusiveTabOwnership()) {
-            giveawayMutationQuarantined = false;
-            return;
-        }
-
         window.onbeforeunload = null;
         window.location.reload();
     }
@@ -5136,7 +5127,9 @@ body.host-panel-dragging * {
             }
 
             logEvent("Scaled winners increased", `${oldWinners} -> ${newWinners} (+${delta})${reachedCap ? ` | cap reached=${fmtBON(cap)}` : ""}`);
+            if (!canMutateActiveGiveaway()) return;
             await sendMessage(message);
+            if (!canMutateActiveGiveaway()) return;
             flashWinnersUI();
             data.lastAnnouncedWinners = newWinners;
         }
@@ -5149,6 +5142,7 @@ body.host-panel-dragging * {
             // In off mode, don't clutter chat at all (still counts + updates pot)
             if (SPONSOR_ANNOUNCE.mode === "off") {
                 await this.announceWinnerScalingIfNeeded();
+                if (!canMutateActiveGiveaway()) return;
                 this.buffer.length = 0;
                 this.sponsorWindowStartAt = 0;
                 return;
@@ -5346,13 +5340,25 @@ body.host-panel-dragging * {
             }
 
             if (announce) {
+                if (!canMutateActiveGiveaway()) return;
                 await sendMessage(msg);
+                if (!canMutateActiveGiveaway()) return;
+
                 for (const noteMessage of noteContinuationMessages) {
+                    if (!canMutateActiveGiveaway()) return;
                     await sendMessage(noteMessage);
+                    if (!canMutateActiveGiveaway()) return;
                 }
+
+                if (!canMutateActiveGiveaway()) return;
                 flashPotTotalUI();
+
+                if (!canMutateActiveGiveaway()) return;
                 await this.announceWinnerScalingIfNeeded();
+                if (!canMutateActiveGiveaway()) return;
             }
+
+            if (!canMutateActiveGiveaway()) return;
             this.buffer.length = 0; // clear the batch/digest
             this.sponsorWindowStartAt = 0; // reset digest window
         }
