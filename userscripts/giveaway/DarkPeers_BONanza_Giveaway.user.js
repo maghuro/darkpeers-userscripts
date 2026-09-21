@@ -135,10 +135,11 @@
 //     Gift History/chat-fallback passes from double-counting gifts, restore the intended
 //     six-reminder cap, normalize host checks, await host pot announcements, and make
 //     refund verification/status labels accurately distinguish Gift History from chat.
-//   - v1.3.24 closes the one-shot audit findings: restores are host-bound, cross-tab
-//     ownership uses Web Locks where available, settlement remains resumable until
-//     completion, sponsor opening/closing boundaries constrain Gift History and in-flight
-//     polls, host top-ups are serialized, and delayed verification is statement-bound.
+//   - v1.3.24 closes the one-shot audit findings: restores are host-bound, atomic
+//     cross-tab ownership requires the browser Web Locks API, settlement remains resumable
+//     through transfer verification, sponsor opening/closing boundaries constrain Gift
+//     History and in-flight polls, host top-ups are serialized, and delayed verification
+//     is statement-bound with persisted pre-transfer verification boundaries.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
