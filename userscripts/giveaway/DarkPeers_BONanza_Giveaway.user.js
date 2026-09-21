@@ -2692,6 +2692,15 @@ body.host-panel-dragging * {
         return isFreshTabLock(lock);
     }
 
+    function ownsTabLock() {
+        const lock = readTabLock();
+        if (!lock || lock.tabId !== TAB_ID || !isFreshTabLock(lock)) return false;
+        if (navigator.locks && typeof navigator.locks.request === "function") {
+            return !!tabWebLockRelease;
+        }
+        return true;
+    }
+
     // Release the localStorage lock only when this document really leaves.
     // This makes a normal reload recover immediately instead of leaving the new
     // document blocked behind the previous document's fresh heartbeat.
@@ -2824,12 +2833,16 @@ body.host-panel-dragging * {
             }
 
             const overdueMs = Date.now() - endTs;
-            if (overdueMs > EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS) {
-                console.warn("[BON Giveaway] Discarding stale expired snapshot; automatic settlement grace exceeded.");
+            const committedSettlement = snap.giveawayData?.settlement?.committed === true;
+            if (overdueMs > EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS && !committedSettlement) {
+                console.warn("[BON Giveaway] Discarding stale expired active snapshot; automatic settlement grace exceeded.");
                 clearGiveawaySnapshot();
                 return null;
             }
 
+            // Once settlement is committed, retain it until a terminal cleanup.
+            // Money/state recovery is more important than the normal one-hour
+            // active-giveaway grace window.
             snap.__expiredAtLoad = overdueMs >= 0;
             return snap;
         } catch {
@@ -6176,7 +6189,7 @@ body.host-panel-dragging * {
         try {
             const currentBon = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
             const currentPot = Math.max(0, Math.floor(Number(giveawayData.amount) || 0));
-                const newTotal = currentPot + amount;
+            const newTotal = currentPot + amount;
     
             if (!Number.isFinite(currentBon) || currentBon == null || currentBon < 0) {
                 reply(
@@ -6198,9 +6211,9 @@ body.host-panel-dragging * {
                 1,
                 Math.floor(Number(giveawayData.effectiveWinnersNum || giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1)
             );
-    
-                giveawayData.amount = newTotal;
-    
+
+            giveawayData.amount = newTotal;
+
             // ✅ host-only tracking (excludes sponsors)
             giveawayData.hostAdded = (giveawayData.hostAdded || 0) + amount;
     
@@ -6308,12 +6321,12 @@ body.host-panel-dragging * {
         // TAB_LOCK_STALE_MS), do NOT proceed with payout. Without this, a tab that
         // restored from snapshot while the original tab was alive could end up
         // paying every winner twice.
-        if (isLockedByAnotherTab()) {
+        if (!ownsTabLock()) {
             logEvent(
-                "End aborted (another tab owns this giveaway)",
-                "Refusing to send gifts to avoid double-payout. The owning tab will handle payout."
+                "End aborted (this tab does not own the giveaway)",
+                "Refusing to send gifts because this tab cannot prove exclusive ownership. Reload the owning tab to resume safely."
             );
-            // Don't tear down state here — the owning tab is the source of truth.
+            // Don't tear down state here — the verified owning tab is the source of truth.
             // Just back off and let it run.
             giveawayData.__ending = false;
             return;
@@ -6480,7 +6493,11 @@ body.host-panel-dragging * {
                     confirmed: !!noEntryPoolResult.confirmed
                 };
                 try {
-                    recordGiveawayStats(giveawayData, [], [], numberEntries, noEntryDonationInfo);
+                    if (!giveawayData.settlement?.statsRecorded) {
+                        recordGiveawayStats(giveawayData, [], [], numberEntries, noEntryDonationInfo);
+                        giveawayData.settlement.statsRecorded = true;
+                        snapshotGiveaway({ force: true });
+                    }
                 } catch (e) { /* ignore stats errors */ }
 
                 try {
@@ -6587,14 +6604,18 @@ body.host-panel-dragging * {
                 );
 
                 try {
-                    recordGiveawayStats(
-                        giveawayData,
-                        [],
-                        [],
-                        numberEntries,
-                        null,
-                        { sponsorRefundedTotal: refundTotal }
-                    );
+                    if (!giveawayData.settlement?.statsRecorded) {
+                        recordGiveawayStats(
+                            giveawayData,
+                            [],
+                            [],
+                            numberEntries,
+                            null,
+                            { sponsorRefundedTotal: refundTotal }
+                        );
+                        giveawayData.settlement.statsRecorded = true;
+                        snapshotGiveaway({ force: true });
+                    }
                 } catch (e) { /* ignore stats errors */ }
 
                 try {
@@ -6830,7 +6851,11 @@ body.host-panel-dragging * {
                 }
             }
             try {
-                recordGiveawayStats(giveawayData, winners, net, numberEntries, donationInfo);
+                if (!giveawayData.settlement?.statsRecorded) {
+                    recordGiveawayStats(giveawayData, winners, net, numberEntries, donationInfo);
+                    giveawayData.settlement.statsRecorded = true;
+                    snapshotGiveaway({ force: true });
+                }
             } catch (e) { /* ignore stats errors */ }
             try {
                 currentStatement = createStatementRecord({
@@ -7645,8 +7670,13 @@ body.host-panel-dragging * {
 
     function persistStatementRecord(record, { selectLatest = false } = {}) {
         if (!record || record.id == null) return;
-        const list = readStatements().filter(r => r && String(r.id) !== String(record.id));
-        list.unshift(record);
+        const list = readStatements();
+        const index = list.findIndex(r => r && String(r.id) === String(record.id));
+        if (index >= 0) {
+            list[index] = record;
+        } else {
+            list.unshift(record);
+        }
         writeStatements(list);
         if (currentStatement && String(currentStatement.id) === String(record.id)) {
             currentStatement = record;
