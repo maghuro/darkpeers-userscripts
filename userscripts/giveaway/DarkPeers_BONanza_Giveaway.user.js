@@ -6541,21 +6541,47 @@ body.host-panel-dragging * {
                     amount: item.amount,
                     status: "pending"
                 }));
-                let refundGiftHistoryBaseline = null;
-                try {
-                    refundGiftHistoryBaseline = sponsorRefunds.length && window.__activeTracker && typeof window.__activeTracker.fetchRecentGiftHistory === "function"
-                        ? await window.__activeTracker.fetchRecentGiftHistory()
-                        : [];
-                } catch (e) {
-                    refundGiftHistoryBaseline = null;
-                    logEvent("Sponsor refund Gift History preflight", String(e?.message || e));
+                // Freeze verification boundaries before the first refund. A resumed
+                // settlement must reuse these original boundaries; taking a fresh
+                // baseline/cursor after a crash would make already-sent refunds look old.
+                const settlement = giveawayData.settlement;
+                const hasSavedRefundBaseline = Object.prototype.hasOwnProperty.call(
+                    settlement,
+                    "refundGiftHistoryBaseline"
+                );
+                let refundGiftHistoryBaseline = hasSavedRefundBaseline
+                    ? settlement.refundGiftHistoryBaseline
+                    : null;
+
+                if (!hasSavedRefundBaseline) {
+                    try {
+                        refundGiftHistoryBaseline = sponsorRefunds.length &&
+                            window.__activeTracker &&
+                            typeof window.__activeTracker.fetchRecentGiftHistory === "function"
+                            ? await window.__activeTracker.fetchRecentGiftHistory()
+                            : [];
+                    } catch (e) {
+                        refundGiftHistoryBaseline = null;
+                        logEvent("Sponsor refund Gift History preflight", String(e?.message || e));
+                    }
+                    settlement.refundGiftHistoryBaseline = refundGiftHistoryBaseline;
                 }
 
-                // Chat cursor/timestamp are only needed if Gift History is unavailable.
-                const refundNotBeforeTs = Date.now();
-                const refundAfterMessageId = refundGiftHistoryBaseline === null && sponsorRefunds.length
-                    ? await getLatestChatMessageId()
-                    : null;
+                const refundNotBeforeTs = Number.isFinite(settlement.refundNotBeforeTs)
+                    ? settlement.refundNotBeforeTs
+                    : Date.now();
+
+                const hasSavedRefundCursor = Object.prototype.hasOwnProperty.call(
+                    settlement,
+                    "refundAfterMessageId"
+                );
+                const refundAfterMessageId = hasSavedRefundCursor
+                    ? settlement.refundAfterMessageId
+                    : (sponsorRefunds.length ? await getLatestChatMessageId() : null);
+
+                settlement.refundNotBeforeTs = refundNotBeforeTs;
+                settlement.refundAfterMessageId = refundAfterMessageId;
+                snapshotGiveaway({ force: true });
 
                 for (const refund of sponsorRefunds) {
                     const result = await giftBon(
@@ -6791,8 +6817,21 @@ body.host-panel-dragging * {
             // payout so verification cannot accidentally match an older identical gift.
             const selfKeys = resolveSelfKeys(giveawayData.host);
             const expectedGifts = [];
-            const payoutNotBeforeTs = Date.now();
-            const payoutAfterMessageId = await getLatestChatMessageId();
+            const settlement = giveawayData.settlement;
+            const payoutNotBeforeTs = Number.isFinite(settlement.payoutNotBeforeTs)
+                ? settlement.payoutNotBeforeTs
+                : Date.now();
+            const hasSavedPayoutCursor = Object.prototype.hasOwnProperty.call(
+                settlement,
+                "payoutAfterMessageId"
+            );
+            const payoutAfterMessageId = hasSavedPayoutCursor
+                ? settlement.payoutAfterMessageId
+                : await getLatestChatMessageId();
+
+            settlement.payoutNotBeforeTs = payoutNotBeforeTs;
+            settlement.payoutAfterMessageId = payoutAfterMessageId;
+            snapshotGiveaway({ force: true });
 
             for (let i = 0; i < winners.length; i++) {
                 const w = winners[i];
