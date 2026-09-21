@@ -2583,91 +2583,61 @@ body.host-panel-dragging * {
      * Returns true only if our claim is visible after the write.
      */
     async function acquireTabLock() {
-        // Atomic cross-tab ownership on modern browsers. Holding this Web Lock
-        // for the entire giveaway removes the localStorage read/write race where
-        // two tabs could both briefly believe they owned settlement.
+        // Web Locks provides the atomic cross-tab mutex required for money/state
+        // safety. A localStorage-only fallback cannot make compare-and-set atomic,
+        // so unsupported browsers fail closed instead of risking double settlement.
         if (tabWebLockRelease) return true;
 
-        if (navigator.locks && typeof navigator.locks.request === "function") {
-            if (tabWebLockAcquirePromise) return tabWebLockAcquirePromise;
-
-            tabWebLockAcquirePromise = new Promise((resolve) => {
-                let settled = false;
-                const settle = (value) => {
-                    if (settled) return;
-                    settled = true;
-                    resolve(value);
-                };
-
-                navigator.locks.request(
-                    TAB_WEB_LOCK_NAME,
-                    { mode: "exclusive", ifAvailable: true },
-                    async (lock) => {
-                        if (!lock) {
-                            settle(false);
-                            return;
-                        }
-
-                        let releaseHold;
-                        const hold = new Promise(r => { releaseHold = r; });
-                        tabWebLockRelease = releaseHold;
-
-                        try {
-                            localStorage.setItem(
-                                LS_TAB_LOCK,
-                                JSON.stringify({ tabId: TAB_ID, ts: Date.now(), transport: "web-lock" })
-                            );
-                        } catch {}
-
-                        startTabLockHeartbeat();
-                        settle(true);
-
-                        try {
-                            await hold;
-                        } finally {
-                            tabWebLockRelease = null;
-                        }
-                    }
-                ).catch(() => settle(false));
-            }).finally(() => {
-                tabWebLockAcquirePromise = null;
-            });
-
-            return tabWebLockAcquirePromise;
-        }
-
-        // Compatibility fallback for browsers without Web Locks. A stabilized
-        // two-phase lease is safer than the former immediate read/write/read.
-        try {
-            const now = Date.now();
-            const existing = readTabLock();
-            if (existing && existing.tabId !== TAB_ID && isFreshTabLock(existing, now)) {
-                return false;
-            }
-
-            const claim = {
-                tabId: TAB_ID,
-                ts: now,
-                claim: `${TAB_ID}:${Math.random().toString(36).slice(2)}`,
-                transport: "lease"
-            };
-            localStorage.setItem(LS_TAB_LOCK, JSON.stringify(claim));
-            await new Promise(resolve => setTimeout(resolve, 120));
-
-            let verified = null;
-            try {
-                verified = JSON.parse(localStorage.getItem(LS_TAB_LOCK) || "null");
-            } catch {}
-
-            if (!verified || verified.tabId !== TAB_ID || verified.claim !== claim.claim) {
-                return false;
-            }
-
-            startTabLockHeartbeat();
-            return true;
-        } catch {
+        if (!navigator.locks || typeof navigator.locks.request !== "function") {
+            console.warn("[BON Giveaway] Web Locks API unavailable; refusing to start/restore because exclusive cross-tab ownership cannot be guaranteed.");
             return false;
         }
+
+        if (tabWebLockAcquirePromise) return tabWebLockAcquirePromise;
+
+        tabWebLockAcquirePromise = new Promise((resolve) => {
+            let settled = false;
+            const settle = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+
+            navigator.locks.request(
+                TAB_WEB_LOCK_NAME,
+                { mode: "exclusive", ifAvailable: true },
+                async (lock) => {
+                    if (!lock) {
+                        settle(false);
+                        return;
+                    }
+
+                    let releaseHold;
+                    const hold = new Promise(r => { releaseHold = r; });
+                    tabWebLockRelease = releaseHold;
+
+                    try {
+                        localStorage.setItem(
+                            LS_TAB_LOCK,
+                            JSON.stringify({ tabId: TAB_ID, ts: Date.now(), transport: "web-lock" })
+                        );
+                    } catch {}
+
+                    startTabLockHeartbeat();
+                    settle(true);
+
+                    try {
+                        await hold;
+                    } finally {
+                        tabWebLockRelease = null;
+                    }
+                }
+            ).catch(() => settle(false));
+        }).finally(() => {
+            tabWebLockAcquirePromise = null;
+        });
+
+        return tabWebLockAcquirePromise;
     }
 
     /** Release the tab lock and stop the heartbeat. */
@@ -3202,7 +3172,7 @@ body.host-panel-dragging * {
         // Claim ownership BEFORE mutating UI/state. Never steal a fresh lock from
         // another tab: that is the primary cross-tab double-payout defence.
         if (!await acquireTabLock()) {
-            window.alert("Another DarkPeers tab is already running an active giveaway. End it there (or wait for its lock to expire) before starting another one.");
+            window.alert("Could not acquire exclusive giveaway ownership. Another DarkPeers tab may already be running a giveaway, or this browser does not provide the Web Locks safety API.");
             return;
         }
 
