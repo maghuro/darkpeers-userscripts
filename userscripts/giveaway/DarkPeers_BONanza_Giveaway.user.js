@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.22
+// @version      1.3.23
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -131,6 +131,10 @@
 //   - v1.3.22 hardens the chat fallback: only genuine SystemBot gift events whose
 //     parsed sender is one of the host/self identities may satisfy an expected payout
 //     or refund. User-written lookalike messages can never confirm a transaction.
+//   - v1.3.23 full-audit hardening: serialize sponsor polls to prevent overlapping
+//     Gift History/chat-fallback passes from double-counting gifts, restore the intended
+//     six-reminder cap, normalize host checks, await host pot announcements, and make
+//     refund verification/status labels accurately distinguish Gift History from chat.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3629,13 +3633,14 @@ body.host-panel-dragging * {
         const isHost = giveawayData && normalizeUserKey(author) === normalizeUserKey(giveawayData.host);
         if (isHost || isAdmin(fancyName)) return false;
 
-        if (!naughtyWarned.has(author)) {
+        const naughtyKey = normalizeUserKey(author);
+        if (!naughtyWarned.has(naughtyKey)) {
             sendCommandResponse(author,
                                 `[color=#d85e27]${sanitizeNick(author)}[/color], ` +
                                 `you are on the [b]naughty list[/b] and may not ` +
                                 `enter the giveaway or use its commands.`
                                );
-            naughtyWarned.add(author);
+            naughtyWarned.add(naughtyKey);
         }
         return true;
     }
@@ -4135,6 +4140,7 @@ body.host-panel-dragging * {
                     .filter(key => typeof key === "string" && key)
             );
             this.historyFallbackActive = !!historyFallbackActive;
+            this.pollInFlight = null; // serialize/coalesce polling so the same gift cannot be applied twice
             this.processedIds = new Set(); // chat-fallback de-dupe within this page lifetime
             this.buffer = []; // gifts waiting to be announced
             this.sponsorWindowStartAt = 0; // digest window start (ms)
@@ -4342,6 +4348,27 @@ body.host-panel-dragging * {
 
         /* ---- Primary sponsor poll: UNIT3D Gift History ---- */
         async poll(options = {}) {
+            const needsDedicatedPass =
+                Number.isFinite(Number(options?.maxCreatedAtTs)) ||
+                options?.announce === false;
+
+            // Ordinary interval ticks coalesce onto the active poll. Settlement/final
+            // passes wait for it and then run once with their own cutoff/options.
+            if (this.pollInFlight) {
+                if (!needsDedicatedPass) return this.pollInFlight;
+                try { await this.pollInFlight; } catch {}
+            }
+
+            const run = this._pollOnce(options);
+            this.pollInFlight = run;
+            try {
+                return await run;
+            } finally {
+                if (this.pollInFlight === run) this.pollInFlight = null;
+            }
+        }
+
+        async _pollOnce(options = {}) {
             const perfStart = PERF ? performance.now() : 0;
             let historyRows;
 
@@ -5188,7 +5215,13 @@ body.host-panel-dragging * {
             const a = div.querySelector('a.user-tag__link');
             if (a) {
                 const title = a.getAttribute('title')?.toLowerCase() || '';
-                result = title.includes('leader') || title.includes('onlyguardians') || title.includes('administrator') || title.includes('admin') || title.includes('moderator') || title.includes('mod') || title.includes('developer') || title.includes('operator');
+                const roleTokens = title.split(/[^a-z0-9]+/).filter(Boolean);
+                const privilegedRoles = new Set([
+                    'leader', 'administrator', 'admin', 'moderator', 'mod', 'developer', 'operator'
+                ]);
+                const collapsedTitle = title.replace(/[^a-z0-9]+/g, '');
+                result = roleTokens.some(token => privilegedRoles.has(token)) ||
+                    collapsedTitle.includes('onlyguardians');
             }
         } catch {
             result = false;
@@ -5667,7 +5700,9 @@ body.host-panel-dragging * {
         addbon: hostAddBon,
 
         reminder(ctx) {
-            if (ctx.author === ctx.giveawayData.host) sendReminder();
+            if (normalizeUserKey(ctx.author) === normalizeUserKey(ctx.giveawayData.host)) {
+                sendReminder();
+            }
         },
 
         winners(ctx) {
@@ -6012,7 +6047,7 @@ body.host-panel-dragging * {
             }
         }
 
-        sendMessage(
+        await sendMessage(
             `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
             [addedPart, totalPart, scalingPart].filter(Boolean).join(" ")
         );
@@ -6364,7 +6399,7 @@ body.host-panel-dragging * {
                     });
                     if (currentStatement) {
                         currentStatement.verification = refundExpectedGifts.length
-                            ? "sponsor refunds awaiting chat verification"
+                            ? "sponsor refunds awaiting verification"
                             : (refundRecords.length ? "refund attempts require manual verification" : "nothing to verify");
                         persistCurrentStatement();
                     }
@@ -6947,7 +6982,7 @@ body.host-panel-dragging * {
                 if (index < 0) continue;
                 consumed.add(index);
                 gift.done = true;
-                updateStatementGiftStatus(gift.recipient, gift.purpose, "confirmed");
+                updateStatementGiftStatus(gift.recipient, gift.purpose, "confirmed-history");
             }
 
             if (expected.every(g => g.done)) {
@@ -7481,7 +7516,12 @@ body.host-panel-dragging * {
     /** Update a gift line in the current statement when the verifier reports. */
     function updateStatementGiftStatus(recipient, purpose, status) {
         if (!currentStatement) return;
-        const label = ({ confirmed: "confirmed in chat", failed: "NOT CONFIRMED, check manually", self: "self (host, no gift sent)" })[status] || status;
+        const label = ({
+            confirmed: "confirmed in chat",
+            "confirmed-history": "confirmed in Gift History",
+            failed: "NOT CONFIRMED, check manually",
+            self: "self (host, no gift sent)"
+        })[status] || status;
         const key = normalizeUserKey(recipient);
 
         if (purpose === GIFT_PURPOSE.SPONSOR_REFUND) {
@@ -9088,7 +9128,7 @@ body.host-panel-dragging * {
     function getReminderLimits(totalMinutes) {
         const MIN_INTERVAL = 5; // 5 min between reminders
         if (totalMinutes < MIN_INTERVAL) return [0, null];
-        let max = Math.floor(totalMinutes / MIN_INTERVAL);
+        const max = Math.min(MAX_REMINDERS, Math.floor(totalMinutes / MIN_INTERVAL));
         return [max, MIN_INTERVAL];
     }
 
