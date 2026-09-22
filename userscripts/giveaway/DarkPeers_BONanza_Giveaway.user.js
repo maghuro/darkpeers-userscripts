@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.25
+// @version      1.3.26
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -167,6 +167,10 @@
 //     History opening bounds honor the source timestamp precision (including fractions).
 //   - v1.3.25 promotes the completed v1.3.24 full-audit hardening to the stable
 //     post-audit release. No new settlement logic is introduced in this bump.
+//   - v1.3.26 fixes sponsor-scaling status semantics, keeps auto thresholds auto
+//     unless explicitly edited, centralizes next-winner progress math, raises the
+//     final sponsor-note recap limit to 900 visible characters, improves the bridge
+//     marker used by sponsor-message recaps, and uses "spot on!" for exact guesses.
 //     Follow-up: scaling status now distinguishes auto vs custom thresholds correctly,
 //     uses one canonical next-winner progress calculation, and reports explicit
 //     "progress" / "still needed" values at zero and exact-threshold boundaries.
