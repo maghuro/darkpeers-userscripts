@@ -1001,7 +1001,7 @@
             rigNotEnabled: "[color=#32cd53][b]O Modo Viciado não está ativo.[/b][/color]",
             rigDenyRig: [
                 "🛑 Boa tentativa, {user}. A Alavanca do Modo Viciado™ está reservada ao organizador.",
-                "🚨 Tentativa de viciar o passatempo por {user}. A chamar a Polícia da Justiça…",
+                "🚨 Tentativa de viciar o passatempo por {user}. A chamar a Polícia Judiciária…",
                 "{user} tentou viciar o passatempo. O universo respondeu: “lol, não.”",
                 "Desculpa {user} — só o organizador tem licença para operar o Vicia-O-Matic™."
             ],
