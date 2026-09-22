@@ -3,8 +3,8 @@
 **Date:** 2026-09-19  
 **Host:** maghuro  
 **Live userscript version:** v1.2.12  
-**Live source commit:** [`d2ce149474b3e4f30420ad342fd7dbb06dab4518`](https://github.com/maghuro/darkpeers-userscripts/commit/d2ce149474b3e4f30420ad342fd7dbb06dab4518)  
-**Source file used by the live run:** [DarkPeers_BONanza_Giveaway.user.js @ v1.2.12](https://github.com/maghuro/darkpeers-userscripts/blob/d2ce149474b3e4f30420ad342fd7dbb06dab4518/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js)
+**Live source commit:** [`d2ce149474b3e4f30420ad342fd7dbb06dab4518`](https://github.com/maghuro/unit3d-userscripts/commit/d2ce149474b3e4f30420ad342fd7dbb06dab4518)  
+**Source file used by the live run:** [DarkPeers_BONanza_Giveaway.user.js @ v1.2.12](https://github.com/maghuro/unit3d-userscripts/blob/d2ce149474b3e4f30420ad342fd7dbb06dab4518/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js)
 
 This document is a straightforward reconciliation of the first real end-to-end giveaway settlement using the Maghuro fork.
 
@@ -233,9 +233,9 @@ The DarkPeers before/after counters independently reconcile to the same **65,634
 
 The userscript is public:
 
-- Repository: https://github.com/maghuro/darkpeers-userscripts
-- Exact live-run commit: https://github.com/maghuro/darkpeers-userscripts/commit/d2ce149474b3e4f30420ad342fd7dbb06dab4518
-- Exact live-run source file: https://github.com/maghuro/darkpeers-userscripts/blob/d2ce149474b3e4f30420ad342fd7dbb06dab4518/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+- Repository: https://github.com/maghuro/unit3d-userscripts
+- Exact live-run commit: https://github.com/maghuro/unit3d-userscripts/commit/d2ce149474b3e4f30420ad342fd7dbb06dab4518
+- Exact live-run source file: https://github.com/maghuro/unit3d-userscripts/blob/d2ce149474b3e4f30420ad342fd7dbb06dab4518/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
 
 The live giveaway was run with **v1.2.12**. Later versions contain follow-up presentation/bridge-marker improvements and are not being substituted retroactively for the code used in this audit.
 
