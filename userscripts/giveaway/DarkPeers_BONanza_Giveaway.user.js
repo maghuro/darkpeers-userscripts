@@ -2,7 +2,7 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.0
+// @version      1.4.1
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -12,8 +12,7 @@
 // @grant        GM_setValue
 // @license      GPL-3.0-or-later
 // @match        https://darkpeers.org/
-// @match        https://portugas.org/
-// @match        https://www.portugas.org/
+// @match        https://*.portugas.org/
 // @run-at document-idle
 // ==/UserScript==
 
@@ -193,6 +192,10 @@
 //     locale-safe usernames/amounts, and compact podium + remaining-winners results.
 //     The experimental probes and the one-off 1000 BON Pool write test are removed
 //     from the production release.
+//   - v1.4.1 polishes the production generalization: Portugas uses one wildcard
+//     host match, UNIT3D Gift History parses both decimal and locale-grouped BON
+//     amounts safely, and the latest PT-PT wording/result presentation refinements
+//     remain in the stable release.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -5739,6 +5742,38 @@ body.host-panel-dragging * {
         return String(cell.textContent || "").trim();
     }
 
+    function parseUnit3dBonAmount(value) {
+        const raw = String(value || "")
+            .replace(/\u00a0/g, " ")
+            .trim();
+        if (!raw) return NaN;
+
+        // UNIT3D installations use a mixture of raw decimal currency
+        // ("140000.00", "999.00") and locale/grouped formatting
+        // ("1,500,000.00", "1.500.000,00", "1 500 000,00").
+        // A final separator followed by exactly two digits is treated as the
+        // decimal separator. Everything else is grouping and is discarded.
+        const compact = raw.replace(/\s+/g, "");
+        const decimalMatch = compact.match(/([.,])(\d{2})$/);
+
+        let integerPart = compact;
+        let fractionalPart = "";
+        if (decimalMatch) {
+            integerPart = compact.slice(0, -3);
+            fractionalPart = decimalMatch[2];
+        }
+
+        const integerDigits = integerPart.replace(/[^0-9]/g, "");
+        if (!integerDigits) return NaN;
+
+        const whole = Number(integerDigits);
+        if (!Number.isFinite(whole)) return NaN;
+
+        if (!fractionalPart) return whole;
+        const fraction = Number(fractionalPart) / 100;
+        return Number.isFinite(fraction) ? whole + fraction : whole;
+    }
+
     function parseUnit3dTimestamp(value) {
         const raw = String(value || "").trim();
         if (!raw) return NaN;
@@ -5780,8 +5815,7 @@ body.host-panel-dragging * {
                 const cells = row.querySelectorAll("td");
                 if (cells.length < 5) return null;
 
-                const amountDigits = String(cells[2].textContent || "").replace(/[^0-9]/g, "");
-                const amount = amountDigits ? parseInt(amountDigits, 10) : NaN;
+                const amount = parseUnit3dBonAmount(cells[2].textContent);
 
                 const timeEl = cells[4].querySelector("time");
                 const rawTimestamp = timeEl?.getAttribute("datetime") || "";
