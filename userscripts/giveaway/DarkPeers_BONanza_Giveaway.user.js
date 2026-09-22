@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
-// @namespace    https://github.com/maghuro/darkpeers-userscripts
+// @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
 // @version      1.3.26
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
-// @homepageURL  https://github.com/maghuro/darkpeers-userscripts
-// @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
-// @updateURL    https://raw.githubusercontent.com/maghuro/darkpeers-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
-// @downloadURL  https://raw.githubusercontent.com/maghuro/darkpeers-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @homepageURL  https://github.com/maghuro/unit3d-userscripts
+// @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
+// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
 // @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
 // @grant        GM_setValue
