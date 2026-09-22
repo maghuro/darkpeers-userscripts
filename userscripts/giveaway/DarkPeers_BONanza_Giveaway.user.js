@@ -198,7 +198,8 @@
 //     remain in the stable release.
 //   - v1.4.2 compacts PT-PT configuration labels and donation guidance so the
 //     450 px control panel stays readable without overflowing narrow controls.
-//     The winner-scaling fields also use the available row width more efficiently;\n//     BON Pool contribution choices now run from 0% to 50% in 5% steps.
+//     The winner-scaling fields also use the available row width more efficiently;
+//     BON Pool contribution choices now run from 0% to 50% in 5% steps.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -1113,10 +1114,10 @@
             uiMaxWinnersTitle: "Limite absoluto: {max}. O número de vencedores nunca pode ultrapassá-lo.",
             uiScaleBonTitle: "BON adicionais necessários para desbloquear cada vencedor extra. Deixa vazio para calcular automaticamente a partir do prémio inicial.",
             uiScaleBonShortTitle: "BON adicionais necessários para desbloquear cada vencedor extra.",
-            uiBonPerWinner: "BON/+vencedor",
+            uiBonPerWinner: "BON/vencedor extra",
             uiAuto: "automático",
             uiMaxChars: "Máx. 100 caracteres",
-            uiCustomMessage: "Mensagem",
+            uiCustomMessage: "Mensagem personalizada",
             uiPoolDonation: "{poolName} (%)",
             uiPoolDonationTitle: "Percentagem do prémio final (organizador + patrocínios) contribuída para a {poolName}. Com 0%, não há contribuição.",
             uiStart: "Iniciar",
@@ -1138,26 +1139,26 @@
             uiCopy: "Copiar",
             uiCopyStatementTitle: "Copiar o relatório selecionado para a área de transferência",
 
-            uiEntryModes: "Participação",
+            uiEntryModes: "Formas de participar",
             uiChatReplies: "Chat e respostas",
             uiScalingRules: "Vencedores e regras",
-            uiToggleAll: "Alternar",
+            uiToggleAll: "Ativar/desativar todos",
             uiToggleEntryModes: "Ativar/desativar todas as opções de participação.",
             uiToggleChatReplies: "Ativar/desativar todas as opções de chat e respostas.",
             uiToggleScalingRules: "Ativar/desativar todas as opções de vencedores e regras.",
             uiRandom: "Aleatório",
             uiRandomTip: "Ativar !random (entrar com um número livre aleatório).",
-            uiLucky: "Sorte",
+            uiLucky: "N.º da sorte",
             uiLuckyTip: "Ativar !lucky (mostrar o número da sorte) e !luckye (entrar com esse número).",
             uiFree: "Livres",
             uiFreeTip: "Ativar !free (mostrar alguns números disponíveis).",
-            uiEntryReplies: "Respostas",
+            uiEntryReplies: "Respostas às entradas",
             uiEntryRepliesTip: "Quando ativo, o bot responde quando uma entrada é registada. Desativa para reduzir spam no chat.",
             uiSilentMode: "Modo silencioso",
             uiSilentModeTip: "Quando ativo, as respostas aos comandos são enviadas em privado por /msg em vez do chat público.",
-            uiScaleWinners: "Vencedores extra",
+            uiScaleWinners: "Vencedores adicionais",
             uiScaleWinnersTip: "Quando ativo, os patrocínios podem aumentar o número de vencedores, até ao limite definido no formulário.",
-            uiRiggedMode: "Modo Viciado",
+            uiRiggedMode: "Modo Viciado (apenas visual)",
             uiRiggedModeTip: "O Modo Viciado é apenas visual… alegadamente.",
             uiShowLog: "Mostrar registo",
             uiShowLogTip: "Controla apenas a visibilidade do painel de registo. O registo continua em segundo plano.",
