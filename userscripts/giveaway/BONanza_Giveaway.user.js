@@ -6,14 +6,13 @@
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
-// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
-// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
+// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/bonanza-unit3d-portugas/userscripts/giveaway/BONanza_Giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/bonanza-unit3d-portugas/userscripts/giveaway/BONanza_Giveaway.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @license      GPL-3.0-or-later
 // @match        https://darkpeers.org/
-// @match        https://portugas.org/
-// @match        https://www.portugas.org/
+// @match        https://*.portugas.org/
 // @run-at document-idle
 // ==/UserScript==
 
