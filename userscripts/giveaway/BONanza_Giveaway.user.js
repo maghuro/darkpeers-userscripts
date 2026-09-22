@@ -2,12 +2,12 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.1-alpha.1
+// @version      1.4.1
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
-// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/bonanza-unit3d-portugas/userscripts/giveaway/BONanza_Giveaway.user.js
-// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/bonanza-unit3d-portugas/userscripts/giveaway/BONanza_Giveaway.user.js
+// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @license      GPL-3.0-or-later
@@ -192,6 +192,10 @@
 //     locale-safe usernames/amounts, and compact podium + remaining-winners results.
 //     The experimental probes and the one-off 1000 BON Pool write test are removed
 //     from the production release.
+//   - v1.4.1 polishes the production generalization: Portugas uses one wildcard
+//     host match, UNIT3D Gift History parses both decimal and locale-grouped BON
+//     amounts safely, and the latest PT-PT wording/result presentation refinements
+//     remain in the stable release.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
