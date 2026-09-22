@@ -198,7 +198,7 @@
 //     remain in the stable release.
 //   - v1.4.2 compacts PT-PT configuration labels and donation guidance so the
 //     450 px control panel stays readable without overflowing narrow controls.
-//     The winner-scaling fields also use the available row width more efficiently.
+//     The winner-scaling fields also use the available row width more efficiently;\n//     BON Pool contribution choices now run from 0% to 50% in 5% steps.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -886,7 +886,7 @@
             introOpenFor: "Aberto durante [b][color=#1DDC5D]{duration}[/color][/b]. ",
             pickNumber: "Escolhe um número [b]entre [color=#DC3D1D]{start} e {end}[/color][/b]. ",
             giftHostHint: "✨[b][color=#FB4F4F]Envia uma oferta ao organizador para aumentar o prémio! [color={hintColor}]/gift {host} VALOR MENSAGEM[/color][/color][/b]✨",
-            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] do prémio final (incluindo as ofertas dos patrocinadores) será contribuído diretamente para a [b]{poolName}[/b]. Os vencedores recebem os restantes {remaining}%.",
+            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] do prémio final (onde se incluem as ofertas dos patrocinadores) será contribuído diretamente para a [b]{poolName}[/b]. Os vencedores recebem os restantes {remaining}%.",
             introTaxAllocation: "\n[b][color=#FF4F9A]{percent}% de imposto do Modo Viciado[/color][/b] será retirado do prémio final (incluindo as ofertas dos patrocinadores) e enviado diretamente para a [b]{poolName}[/b]. Os vencedores ficam com os restantes {remaining}%. Contabilidade totalmente legítima. 😈",
             riggedModeIntro: "\n[color=#FF4F9A][b]MODO VICIADO ATIVADO![/b][/color] [i][color=#FF9AE6]É só espetáculo — as contas continuam certas... provavelmente.[/color][/i] 😈",
             silentModeIntro: "\n[color=#ff3333][b]MODO SILENCIOSO ATIVADO![/b][/color] [i][color=#B0B0B0]As respostas aos comandos serão enviadas em privado por /msg.[/color][/i] 🤫",
@@ -1466,8 +1466,8 @@
         FUND_NAME: "BON Pool",
         POOL_PATH: SITE.pool.path,
         POOL_STORE_PATH: SITE.pool.storePath,
-        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
-        MAX_PERCENT: 30,
+        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]),
+        MAX_PERCENT: 50,
         ACCENT_COLOR: "#4FAFFF",
         GIVEAWAY_COLOR: "#4FAFFF",
         VERIFY_ATTEMPTS: 6,
@@ -10136,7 +10136,7 @@ body.host-panel-dragging * {
      * never allowed to reduce a positive gross prize below 1 BON.
      *
      * @param {number[]} allocated gross prizes
-     * @param {number} percent 0..30 in steps of 5
+     * @param {number} percent 0..50 in steps of 5
      * @returns {{percent:number, net:number[], donations:number[], total:number}}
      */
     function computeDonationSplit(allocated, percent) {
