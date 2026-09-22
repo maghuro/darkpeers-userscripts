@@ -167,6 +167,9 @@
 //     History opening bounds honor the source timestamp precision (including fractions).
 //   - v1.3.25 promotes the completed v1.3.24 full-audit hardening to the stable
 //     post-audit release. No new settlement logic is introduced in this bump.
+//     Follow-up: scaling status now distinguishes auto vs custom thresholds correctly,
+//     uses one canonical next-winner progress calculation, and reports explicit
+//     "progress" / "still needed" values at zero and exact-threshold boundaries.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -1039,13 +1042,13 @@
             class="form__text"
             type="number"
             id="scaleBonPerWinnerNum"
-            title="BON sponsored per extra winner. Leave empty to auto-calculate from pot size."
+            title="Additional BON required to unlock each extra winner. Leave empty to auto-calculate from the starting pot."
             min="1"
             step="1"
             placeholder="auto"
             disabled
           >
-          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="BON per additional winner via sponsorship.">BON/Winner</label>
+          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="Additional BON required to unlock each extra winner.">BON/+Winner</label>
         </p>
       </div>
 
@@ -3376,9 +3379,16 @@ body.host-panel-dragging * {
         ? Math.floor(Number(maxScaledWinnersRawValue || maxScaledWinnersInput.value) || winnersNum)
         : getClampedMaxScaledWinnersValue(winnersNum);
 
-        // Custom scaling threshold (null = auto-calculate from pot / base winners)
+        // Custom scaling threshold (null = auto-calculate from starting pot / base winners).
+        // The UI is auto-populated for convenience, so the numeric field having a value
+        // does NOT by itself mean the host chose a custom threshold.
         const customBonPerWinner = scaleBonPerWinnerInput ? parseInt(scaleBonPerWinnerInput.value, 10) : NaN;
-        const scaleBonPerWinner = (scaleWinnersWithSponsors && Number.isFinite(customBonPerWinner) && customBonPerWinner > 0)
+        const scaleBonPerWinner = (
+            scaleWinnersWithSponsors &&
+            bonPerWinnerManuallyEdited &&
+            Number.isFinite(customBonPerWinner) &&
+            customBonPerWinner > 0
+        )
             ? customBonPerWinner
             : null;
 
@@ -6352,27 +6362,29 @@ body.host-panel-dragging * {
                 return;
             }
 
-            const baseWinners = Math.max(1, Math.floor(Number(giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1));
-            const effective = Math.max(1, Math.floor(Number(giveawayData.effectiveWinnersNum) || baseWinners));
-            const cap = Math.max(baseWinners, Math.min(Math.floor(Number(giveawayData.hostMaxScaledWinners) || baseWinners), MAX_WINNERS));
-            const threshold = getScalingBonPerWinner(giveawayData);
-            const totalContrib = Math.max(0, Math.floor(getTotalContribForScaling(giveawayData)));
-            const progress = totalContrib % threshold;
-            const remaining = progress === 0 ? threshold : threshold - progress;
-            const extraWinners = effective - baseWinners;
-            const isCustomThreshold = !!(giveawayData.scaleBonPerWinner && giveawayData.scaleBonPerWinner > 0);
+            const state = getScalingProgressState(giveawayData);
+            if (!state) {
+                reply("Winner scaling is not available for this giveaway.");
+                return;
+            }
 
+            const extraWinners = state.effectiveWinners - state.baseWinners;
             let msg = `[b][color=${SCALING_ACCENT_COLOR}]Scaling Status:[/color][/b] ` +
-                `Winners: [b][color=#5DE2E7]${effective}[/color][/b] (base ${baseWinners}` +
-                (extraWinners > 0 ? ` + ${extraWinners} from sponsorships` : ``) + `). ` +
-                `Threshold: [b]${fmtBONCurrency(threshold)} BON[/b]/winner` +
-                (isCustomThreshold ? ` (custom)` : ``) + `. ` +
-                `Total contributions: [b][color=#ffc00a]${fmtBONCurrency(totalContrib)} BON[/color][/b]. `;
+                `Winners: [b][color=#5DE2E7]${state.effectiveWinners}[/color][/b] ` +
+                `(base ${state.baseWinners}` +
+                (extraWinners > 0 ? ` + ${extraWinners} from scaling` : ``) +
+                `, max ${state.cap}). ` +
+                `Extra-winner threshold: [b]${fmtBONCurrency(state.threshold)} BON[/b] ` +
+                `(${state.isCustomThreshold ? "custom" : "auto"}). ` +
+                `Scaling contributions: [b][color=#ffc00a]${fmtBONCurrency(state.totalContrib)} BON[/color][/b]. `;
 
-            if (effective >= cap) {
-                msg += `[b]Max winners reached[/b] (${cap}).`;
+            if (state.effectiveWinners >= state.cap) {
+                msg += `[b]Max winners reached[/b].`;
             } else {
-                msg += `[b]${fmtBONCurrency(remaining)} BON[/b] needed for next winner (${fmtBONCurrency(progress)}/${fmtBONCurrency(threshold)}). Max: [b]${cap}[/b].`;
+                msg +=
+                    `Progress to winner #${state.nextWinner}: ` +
+                    `[b]${fmtBONCurrency(state.progress)} / ${fmtBONCurrency(state.threshold)} BON[/b]. ` +
+                    `Still needed: [b][color=#FFDE59]${fmtBONCurrency(state.remaining)} BON[/color][/b].`;
             }
 
             reply(msg);
@@ -10792,7 +10804,7 @@ body.host-panel-dragging * {
         fitSettingsMenuHeight();
     }
 
-    /** Auto-populate the BON/Winner field with the calculated threshold (unless manually edited). */
+    /** Auto-populate the BON/+Winner field with the calculated threshold (unless manually edited). */
     function syncBonPerWinnerValue() {
         if (!scaleBonPerWinnerInput || !coinInput || !winnersInput) return;
         if (bonPerWinnerManuallyEdited) return;
@@ -10877,6 +10889,77 @@ body.host-panel-dragging * {
         return Math.max(1, Math.floor(initialPotVerified / baseWinners));
     }
 
+    function getScalingProgressState(data) {
+        if (!data || !data.scaleWinnersWithSponsors) return null;
+
+        const baseWinners = Math.max(
+            1,
+            Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1))
+        );
+        const cap = Math.max(
+            baseWinners,
+            Math.min(Math.floor(Number(data.hostMaxScaledWinners) || baseWinners), MAX_WINNERS)
+        );
+        const effectiveWinners = recomputeEffectiveWinners(data);
+        const threshold = getScalingBonPerWinner(data);
+        const totalContrib = Math.max(0, Math.floor(getTotalContribForScaling(data)));
+        const isCustomThreshold = Number.isFinite(Number(data.scaleBonPerWinner)) &&
+            Number(data.scaleBonPerWinner) > 0;
+
+        if (effectiveWinners >= cap) {
+            return {
+                baseWinners,
+                effectiveWinners,
+                cap,
+                threshold,
+                totalContrib,
+                isCustomThreshold,
+                nextWinner: null,
+                progress: threshold,
+                thresholdRemaining: 0,
+                fundingRemaining: 0,
+                remaining: 0
+            };
+        }
+
+        const nextWinner = effectiveWinners + 1;
+
+        // Progress is relative to the CURRENT winner tier, not simply total % threshold.
+        // Example: base=1, threshold=350k, contributions=350k => winner #2 is unlocked,
+        // so progress toward winner #3 must restart at 0/350k rather than "threshold reached".
+        const currentTierStart = Math.max(0, (effectiveWinners - baseWinners) * threshold);
+        const progress = Math.max(
+            0,
+            Math.min(threshold, totalContrib - currentTierStart)
+        );
+        const thresholdRemaining = Math.max(0, threshold - progress);
+
+        // A very small custom threshold can reach the scaling gate before the weighted
+        // prize scheme has enough BON to give every announced winner at least 1 BON.
+        // Any new sponsor/host contribution also grows the pot, so the true requirement
+        // is whichever is larger: the scaling threshold remainder or the funding floor.
+        const potTotal = Math.max(0, Math.floor(Number(data.amount) || 0));
+        const fundingRemaining = Math.max(
+            0,
+            minimumPotForWeightedWinners(nextWinner) - potTotal
+        );
+        const remaining = Math.max(thresholdRemaining, fundingRemaining);
+
+        return {
+            baseWinners,
+            effectiveWinners,
+            cap,
+            threshold,
+            totalContrib,
+            isCustomThreshold,
+            nextWinner,
+            progress,
+            thresholdRemaining,
+            fundingRemaining,
+            remaining
+        };
+    }
+
     function initializeScaledWinnersAnnouncementState(data) {
         if (!data) return;
         const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
@@ -10919,38 +11002,22 @@ body.host-panel-dragging * {
     }
 
     function getSponsorshipNextWinnerLine(data, options = {}) {
-        if (!data || !data.scaleWinnersWithSponsors) return "";
+        const state = getScalingProgressState(data);
+        if (!state) return "";
 
-        const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
-        const effectiveWinners = Math.max(1, Math.floor(Number(data.effectiveWinnersNum || recomputeEffectiveWinners(data)) || baseWinners));
-        const cap = Math.min(
-            Math.max(baseWinners, Math.min(Math.floor(Number(data.hostMaxScaledWinners) || baseWinners), MAX_WINNERS)),
-            MAX_WINNERS
-        );
-
-        if (effectiveWinners >= cap) {
+        if (state.effectiveWinners >= state.cap) {
             return options.plain
-                ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Max winners reached[/b] (${fmtBON(cap)}).`
-            : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] (${fmtBON(cap)}).[/color][/i]`;
+                ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Max winners reached[/b] (${fmtBON(state.cap)}).`
+                : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] (${fmtBON(state.cap)}).[/color][/i]`;
         }
 
-        const thresholdBonPerWinner = getScalingBonPerWinner(data);
-        const totalContribForScaling = Math.max(0, Math.floor(getTotalContribForScaling(data)));
-        const progress = totalContribForScaling % thresholdBonPerWinner;
-        const remaining = progress === 0 ? thresholdBonPerWinner : thresholdBonPerWinner - progress;
-
-        if (progress === 0) {
-            if (totalContribForScaling > 0 && effectiveWinners < cap) {
-                return options.plain
-                    ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: reached.`
-                : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Next threshold[/b]: reached.[/color][/i]`;
-            }
-            return "";
-        }
+        const detail =
+            `${fmtBONCurrency(state.remaining)} BON still needed for winner #${fmtBON(state.nextWinner)} ` +
+            `(progress: ${fmtBONCurrency(state.progress)}/${fmtBONCurrency(state.threshold)} BON).`;
 
         return options.plain
-            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.`
-        : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.[/color][/i]`;
+            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]${detail}[/b]`
+            : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]${detail}[/b][/color][/i]`;
     }
 
     function flashUIElement(el, durationMs = 950) {
