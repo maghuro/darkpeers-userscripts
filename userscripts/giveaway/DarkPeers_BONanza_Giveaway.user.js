@@ -2,7 +2,7 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.1
+// @version      1.4.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -196,6 +196,10 @@
 //     host match, UNIT3D Gift History parses both decimal and locale-grouped BON
 //     amounts safely, and the latest PT-PT wording/result presentation refinements
 //     remain in the stable release.
+//   - v1.4.2 compacts PT-PT configuration labels and donation guidance so the
+//     450 px control panel stays readable without overflowing narrow controls.
+//     The winner-scaling fields also use the available row width more efficiently;
+//     BON Pool contribution choices now run from 0% to 50% in 5% steps.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -883,7 +887,7 @@
             introOpenFor: "Aberto durante [b][color=#1DDC5D]{duration}[/color][/b]. ",
             pickNumber: "Escolhe um número [b]entre [color=#DC3D1D]{start} e {end}[/color][/b]. ",
             giftHostHint: "✨[b][color=#FB4F4F]Envia uma oferta ao organizador para aumentar o prémio! [color={hintColor}]/gift {host} VALOR MENSAGEM[/color][/color][/b]✨",
-            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] do prémio final (incluindo as ofertas dos patrocinadores) será contribuído diretamente para a [b]{poolName}[/b]. Os vencedores recebem os restantes {remaining}%.",
+            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] do prémio final (onde se incluem as ofertas dos patrocinadores) será contribuído diretamente para a [b]{poolName}[/b]. Os vencedores recebem os restantes {remaining}%.",
             introTaxAllocation: "\n[b][color=#FF4F9A]{percent}% de imposto do Modo Viciado[/color][/b] será retirado do prémio final (incluindo as ofertas dos patrocinadores) e enviado diretamente para a [b]{poolName}[/b]. Os vencedores ficam com os restantes {remaining}%. Contabilidade totalmente legítima. 😈",
             riggedModeIntro: "\n[color=#FF4F9A][b]MODO VICIADO ATIVADO![/b][/color] [i][color=#FF9AE6]É só espetáculo — as contas continuam certas... provavelmente.[/color][/i] 😈",
             silentModeIntro: "\n[color=#ff3333][b]MODO SILENCIOSO ATIVADO![/b][/color] [i][color=#B0B0B0]As respostas aos comandos serão enviadas em privado por /msg.[/color][/i] 🤫",
@@ -997,7 +1001,7 @@
             rigNotEnabled: "[color=#32cd53][b]O Modo Viciado não está ativo.[/b][/color]",
             rigDenyRig: [
                 "🛑 Boa tentativa, {user}. A Alavanca do Modo Viciado™ está reservada ao organizador.",
-                "🚨 Tentativa de viciar o passatempo por {user}. A chamar a Polícia da Justiça…",
+                "🚨 Tentativa de viciar o passatempo por {user}. A chamar a Polícia Judiciária…",
                 "{user} tentou viciar o passatempo. O universo respondeu: “lol, não.”",
                 "Desculpa {user} — só o organizador tem licença para operar o Vicia-O-Matic™."
             ],
@@ -1099,22 +1103,22 @@
             uiLoadPresetTitle: "Carregar a predefinição selecionada",
             uiSavePresetTitle: "Guardar o formulário atual como predefinição",
             uiDeletePresetTitle: "Eliminar a predefinição selecionada",
-            uiGiveawayAmount: "Valor do passatempo",
+            uiGiveawayAmount: "Prémio",
             uiStartNumber: "N.º inicial",
             uiEndNumber: "N.º final",
             uiTimeMin: "Tempo (min)",
-            uiReminders: "N.º de lembretes",
+            uiReminders: "Lembretes",
             uiEveryMin: "Intervalo (min)",
-            uiWinners: "N.º de vencedores",
-            uiMaxWinners: "Limite de vencedores",
+            uiWinners: "Vencedores",
+            uiMaxWinners: "Máx. vencedores",
             uiMaxWinnersTitle: "Limite absoluto: {max}. O número de vencedores nunca pode ultrapassá-lo.",
             uiScaleBonTitle: "BON adicionais necessários para desbloquear cada vencedor extra. Deixa vazio para calcular automaticamente a partir do prémio inicial.",
             uiScaleBonShortTitle: "BON adicionais necessários para desbloquear cada vencedor extra.",
-            uiBonPerWinner: "BON por vencedor extra",
+            uiBonPerWinner: "BON/vencedor extra",
             uiAuto: "automático",
             uiMaxChars: "Máx. 100 caracteres",
             uiCustomMessage: "Mensagem personalizada",
-            uiPoolDonation: "Contribuição para a {poolName}",
+            uiPoolDonation: "{poolName} (%)",
             uiPoolDonationTitle: "Percentagem do prémio final (organizador + patrocínios) contribuída para a {poolName}. Com 0%, não há contribuição.",
             uiStart: "Iniciar",
             uiStop: "Terminar",
@@ -1144,7 +1148,7 @@
             uiToggleScalingRules: "Ativar/desativar todas as opções de vencedores e regras.",
             uiRandom: "Aleatório",
             uiRandomTip: "Ativar !random (entrar com um número livre aleatório).",
-            uiLucky: "Número da sorte",
+            uiLucky: "N.º da sorte",
             uiLuckyTip: "Ativar !lucky (mostrar o número da sorte) e !luckye (entrar com esse número).",
             uiFree: "Livres",
             uiFreeTip: "Ativar !free (mostrar alguns números disponíveis).",
@@ -1193,9 +1197,9 @@
 
             uiDonationZeroRigged: "O Modo Viciado está ativo, mas o imposto é <b>0%</b>. Suspeitosamente generoso. Sem contribuição para a {poolName}.",
             uiDonationZeroStandard: "Passatempo normal. Sem contribuição para a {poolName}.",
-            uiDonationEstimate: " Cerca de <b>{estimate} BON</b> num prémio de {pot} BON (mais se houver patrocínios).",
-            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% de imposto do Modo Viciado</b> será retirado do prémio final (organizador + patrocínios) e enviado <b>diretamente</b> para a {poolName}. O teu custo total não aumenta.{estimate}",
-            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> do prémio final (organizador + patrocínios) será contribuído <b>diretamente</b> para a {poolName}. Esse valor sai dos prémios; o teu custo total não aumenta.{estimate}",
+            uiDonationEstimate: " ≈ <b>{estimate} BON</b> num prémio de {pot} BON (mais com patrocínios).",
+            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% de imposto</b> do prémio final (organizador + patrocínios) vai para a {poolName}. O teu custo não muda.{estimate}",
+            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> do prémio final (organizador + patrocínios) vai para a {poolName}. Sai dos prémios; o teu custo não muda.{estimate}",
 
             cmdTime: "Tempo",
             cmdTimeDesc: "Mostrar o tempo restante do passatempo.",
@@ -1463,8 +1467,8 @@
         FUND_NAME: "BON Pool",
         POOL_PATH: SITE.pool.path,
         POOL_STORE_PATH: SITE.pool.storePath,
-        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
-        MAX_PERCENT: 30,
+        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]),
+        MAX_PERCENT: 50,
         ACCENT_COLOR: "#4FAFFF",
         GIVEAWAY_COLOR: "#4FAFFF",
         VERIFY_ATTEMPTS: 6,
@@ -3068,9 +3072,10 @@ body.host-panel-dragging * {
 }
 
 #bonanzaGiveawayFrame .giveaway-number-col {
-  width: 28%;
-  min-width: 70px;
-  max-width: 120px;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: 135px;
 }
 
 #bonanzaGiveawayFrame .giveaway-winners-row {
@@ -10132,7 +10137,7 @@ body.host-panel-dragging * {
      * never allowed to reduce a positive gross prize below 1 BON.
      *
      * @param {number[]} allocated gross prizes
-     * @param {number} percent 0..30 in steps of 5
+     * @param {number} percent 0..50 in steps of 5
      * @returns {{percent:number, net:number[], donations:number[], total:number}}
      */
     function computeDonationSplit(allocated, percent) {
