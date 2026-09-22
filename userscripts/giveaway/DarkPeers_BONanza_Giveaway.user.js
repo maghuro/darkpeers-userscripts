@@ -170,6 +170,9 @@
 //     Follow-up: scaling status now distinguishes auto vs custom thresholds correctly,
 //     uses one canonical next-winner progress calculation, and reports explicit
 //     "progress" / "still needed" values at zero and exact-threshold boundaries.
+//     Live-result polish: final sponsor-message recaps use a 900-visible-character
+//     website-first limit, exact guesses say "spot on!", and the MESSAGES sentinel
+//     uses canonical IRC 05 + bold instead of extended colour 16 for bridge reliability.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -262,6 +265,7 @@
         show_top_n: Infinity,
         show_min_per_user: 0,
         max_visible_chars: 300,
+        final_recap_max_visible_chars: 900,
         max_note_chars: 72,
         max_notes_per_sponsor: 2
     };
@@ -379,10 +383,12 @@
     //   1) a fixed bold+italic+underline prefix sentinel;
     //   2) an italic+underline sentinel whose colour identifies the marker kind.
     //
-    // The type colours use The Lounge's IRC palette: the canonical 0..15 set plus
-    // extended colour 16 for sponsor-message recaps. They are invisible on DarkPeers
-    // because U+2063 has zero visual width, while the bridge preserves their formatting
-    // as IRC style spans that TLCC can select.
+    // The type markers stay inside the canonical IRC 0..15 palette. Most kinds are
+    // identified by colour alone; sponsor-message recaps intentionally reuse IRC 05
+    // but add bold to the typed sentinel so they remain distinct without relying on an
+    // extended colour that some bridge/client paths do not preserve reliably. They are
+    // invisible on DarkPeers because U+2063 has zero visual width, while the bridge
+    // preserves their formatting as IRC style spans that TLCC can select.
     const BRIDGE_SENTINEL = "\u2063";
     const BRIDGE_MARKERS = Object.freeze({
         START: "start",
@@ -410,7 +416,7 @@
         "gift":        "#2ECC40", // IRC 03
         "pot":         "#FF4136", // IRC 04
         "sponsors":         "#85144B", // IRC 05
-        "sponsor-messages": "#470000", // IRC 16
+        "sponsor-messages": "#85144B", // IRC 05 + bold typed sentinel
         "entries":          "#B10DC9", // IRC 06
         "stats":       "#FF851B", // IRC 07
         "time":        "#FFDC00", // IRC 08
@@ -448,7 +454,9 @@
         if (!markerColor) return safeVisible;
 
         const prefix = `[b][i][u]${BRIDGE_SENTINEL}[/u][/i][/b]`;
-        const typed = `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
+        const typed = safeKind === BRIDGE_MARKERS.SPONSOR_MESSAGES
+            ? `[b][i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i][/b]`
+            : `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
 
         // Carry the active giveaway family independently of the message type. The
         // optional override is intentionally narrow: exceptional settlement messages
@@ -7514,10 +7522,14 @@ body.host-panel-dragging * {
                         : `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · ${BONANZA.FUND_NAME}: ${fmtBONCurrency(split.donations[0])} BON)[/color]`)
                     : "";
 
+                const accuracyText = diff === 0
+                    ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                    : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
+
                 const winnerLine =
                       `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
                       `Guess [color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ` +
-                      `[color=#FB4F4F](off by ${fmtBON(diff)})[/color] ` +
+                      `${accuracyText} ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
 
                 if (!(await sendSettlementMessage(
@@ -7531,8 +7543,11 @@ body.host-panel-dragging * {
                     const diff = Math.abs(w.guess - winNum);
                     const prize = fmtBONCurrency(net[i]);
                     const medal = medals[i] || `${i + 1}.`;
+                    const accuracyText = diff === 0
+                        ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                        : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
                     return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
-                        `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ([color=#FB4F4F]${fmtBON(diff)}[/color]) ` +
+                        `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ${accuracyText} ` +
                         `[color=#FFC00A][b]${prize} BON[/b][/color]`;
                 });
                 const multiDonatedNote = donationActive ? `\n[color=#aaaaaa]Amounts shown are after the ${split.percent}% ${BONANZA.FUND_NAME} donation.[/color]` : "";
@@ -11095,7 +11110,10 @@ body.host-panel-dragging * {
 
         if (!sponsors.length) return [];
 
-        const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
+        const maxVisible = Math.max(
+            300,
+            Math.floor(Number(SPONSOR_ANNOUNCE.final_recap_max_visible_chars) || 900)
+        );
         const marker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
         const heading = `${marker} [b]Messages from our sponsors:[/b]`;
         const messages = [];
