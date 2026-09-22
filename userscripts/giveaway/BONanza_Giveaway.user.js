@@ -2,7 +2,7 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.1
+// @version      1.4.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -196,6 +196,9 @@
 //     host match, UNIT3D Gift History parses both decimal and locale-grouped BON
 //     amounts safely, and the latest PT-PT wording/result presentation refinements
 //     remain in the stable release.
+//   - v1.4.2 compacts PT-PT configuration labels and donation guidance so the
+//     450 px control panel stays readable without overflowing narrow controls.
+//     The winner-scaling fields also use the available row width more efficiently.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -1099,22 +1102,22 @@
             uiLoadPresetTitle: "Carregar a predefinição selecionada",
             uiSavePresetTitle: "Guardar o formulário atual como predefinição",
             uiDeletePresetTitle: "Eliminar a predefinição selecionada",
-            uiGiveawayAmount: "Valor do passatempo",
+            uiGiveawayAmount: "Prémio",
             uiStartNumber: "N.º inicial",
             uiEndNumber: "N.º final",
             uiTimeMin: "Tempo (min)",
-            uiReminders: "N.º de lembretes",
+            uiReminders: "Lembretes",
             uiEveryMin: "Intervalo (min)",
-            uiWinners: "N.º de vencedores",
-            uiMaxWinners: "Limite de vencedores",
+            uiWinners: "Vencedores",
+            uiMaxWinners: "Máx. vencedores",
             uiMaxWinnersTitle: "Limite absoluto: {max}. O número de vencedores nunca pode ultrapassá-lo.",
             uiScaleBonTitle: "BON adicionais necessários para desbloquear cada vencedor extra. Deixa vazio para calcular automaticamente a partir do prémio inicial.",
             uiScaleBonShortTitle: "BON adicionais necessários para desbloquear cada vencedor extra.",
-            uiBonPerWinner: "BON por vencedor extra",
+            uiBonPerWinner: "BON/+vencedor",
             uiAuto: "automático",
             uiMaxChars: "Máx. 100 caracteres",
-            uiCustomMessage: "Mensagem personalizada",
-            uiPoolDonation: "Contribuição para a {poolName}",
+            uiCustomMessage: "Mensagem",
+            uiPoolDonation: "{poolName} (%)",
             uiPoolDonationTitle: "Percentagem do prémio final (organizador + patrocínios) contribuída para a {poolName}. Com 0%, não há contribuição.",
             uiStart: "Iniciar",
             uiStop: "Terminar",
@@ -1135,26 +1138,26 @@
             uiCopy: "Copiar",
             uiCopyStatementTitle: "Copiar o relatório selecionado para a área de transferência",
 
-            uiEntryModes: "Formas de participar",
+            uiEntryModes: "Participação",
             uiChatReplies: "Chat e respostas",
             uiScalingRules: "Vencedores e regras",
-            uiToggleAll: "Ativar/desativar todos",
+            uiToggleAll: "Alternar",
             uiToggleEntryModes: "Ativar/desativar todas as opções de participação.",
             uiToggleChatReplies: "Ativar/desativar todas as opções de chat e respostas.",
             uiToggleScalingRules: "Ativar/desativar todas as opções de vencedores e regras.",
             uiRandom: "Aleatório",
             uiRandomTip: "Ativar !random (entrar com um número livre aleatório).",
-            uiLucky: "Número da sorte",
+            uiLucky: "Sorte",
             uiLuckyTip: "Ativar !lucky (mostrar o número da sorte) e !luckye (entrar com esse número).",
             uiFree: "Livres",
             uiFreeTip: "Ativar !free (mostrar alguns números disponíveis).",
-            uiEntryReplies: "Respostas às entradas",
+            uiEntryReplies: "Respostas",
             uiEntryRepliesTip: "Quando ativo, o bot responde quando uma entrada é registada. Desativa para reduzir spam no chat.",
             uiSilentMode: "Modo silencioso",
             uiSilentModeTip: "Quando ativo, as respostas aos comandos são enviadas em privado por /msg em vez do chat público.",
-            uiScaleWinners: "Vencedores adicionais",
+            uiScaleWinners: "Vencedores extra",
             uiScaleWinnersTip: "Quando ativo, os patrocínios podem aumentar o número de vencedores, até ao limite definido no formulário.",
-            uiRiggedMode: "Modo Viciado (apenas visual)",
+            uiRiggedMode: "Modo Viciado",
             uiRiggedModeTip: "O Modo Viciado é apenas visual… alegadamente.",
             uiShowLog: "Mostrar registo",
             uiShowLogTip: "Controla apenas a visibilidade do painel de registo. O registo continua em segundo plano.",
@@ -1193,9 +1196,9 @@
 
             uiDonationZeroRigged: "O Modo Viciado está ativo, mas o imposto é <b>0%</b>. Suspeitosamente generoso. Sem contribuição para a {poolName}.",
             uiDonationZeroStandard: "Passatempo normal. Sem contribuição para a {poolName}.",
-            uiDonationEstimate: " Cerca de <b>{estimate} BON</b> num prémio de {pot} BON (mais se houver patrocínios).",
-            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% de imposto do Modo Viciado</b> será retirado do prémio final (organizador + patrocínios) e enviado <b>diretamente</b> para a {poolName}. O teu custo total não aumenta.{estimate}",
-            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> do prémio final (organizador + patrocínios) será contribuído <b>diretamente</b> para a {poolName}. Esse valor sai dos prémios; o teu custo total não aumenta.{estimate}",
+            uiDonationEstimate: " ≈ <b>{estimate} BON</b> num prémio de {pot} BON (mais com patrocínios).",
+            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% de imposto</b> do prémio final (organizador + patrocínios) vai para a {poolName}. O teu custo não muda.{estimate}",
+            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> do prémio final (organizador + patrocínios) vai para a {poolName}. Sai dos prémios; o teu custo não muda.{estimate}",
 
             cmdTime: "Tempo",
             cmdTimeDesc: "Mostrar o tempo restante do passatempo.",
@@ -3068,9 +3071,10 @@ body.host-panel-dragging * {
 }
 
 #bonanzaGiveawayFrame .giveaway-number-col {
-  width: 28%;
-  min-width: 70px;
-  max-width: 120px;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: 135px;
 }
 
 #bonanzaGiveawayFrame .giveaway-winners-row {
