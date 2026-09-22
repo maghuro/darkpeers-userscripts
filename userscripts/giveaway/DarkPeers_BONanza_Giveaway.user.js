@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/darkpeers-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.3.25
+// @version      1.3.26
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/darkpeers-userscripts
 // @supportURL   https://github.com/maghuro/darkpeers-userscripts/issues
@@ -167,6 +167,16 @@
 //     History opening bounds honor the source timestamp precision (including fractions).
 //   - v1.3.25 promotes the completed v1.3.24 full-audit hardening to the stable
 //     post-audit release. No new settlement logic is introduced in this bump.
+//   - v1.3.26 fixes sponsor-scaling status semantics, keeps auto thresholds auto
+//     unless explicitly edited, centralizes next-winner progress math, raises the
+//     final sponsor-note recap limit to 900 visible characters, improves the bridge
+//     marker used by sponsor-message recaps, and uses "spot on!" for exact guesses.
+//     Follow-up: scaling status now distinguishes auto vs custom thresholds correctly,
+//     uses one canonical next-winner progress calculation, and reports explicit
+//     "progress" / "still needed" values at zero and exact-threshold boundaries.
+//     Live-result polish: final sponsor-message recaps use a 900-visible-character
+//     website-first limit, exact guesses say "spot on!", and the MESSAGES sentinel
+//     uses canonical IRC 05 + bold instead of extended colour 16 for bridge reliability.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -259,6 +269,7 @@
         show_top_n: Infinity,
         show_min_per_user: 0,
         max_visible_chars: 300,
+        final_recap_max_visible_chars: 900,
         max_note_chars: 72,
         max_notes_per_sponsor: 2
     };
@@ -376,10 +387,12 @@
     //   1) a fixed bold+italic+underline prefix sentinel;
     //   2) an italic+underline sentinel whose colour identifies the marker kind.
     //
-    // The type colours use The Lounge's IRC palette: the canonical 0..15 set plus
-    // extended colour 16 for sponsor-message recaps. They are invisible on DarkPeers
-    // because U+2063 has zero visual width, while the bridge preserves their formatting
-    // as IRC style spans that TLCC can select.
+    // The type markers stay inside the canonical IRC 0..15 palette. Most kinds are
+    // identified by colour alone; sponsor-message recaps intentionally reuse IRC 05
+    // but add bold to the typed sentinel so they remain distinct without relying on an
+    // extended colour that some bridge/client paths do not preserve reliably. They are
+    // invisible on DarkPeers because U+2063 has zero visual width, while the bridge
+    // preserves their formatting as IRC style spans that TLCC can select.
     const BRIDGE_SENTINEL = "\u2063";
     const BRIDGE_MARKERS = Object.freeze({
         START: "start",
@@ -407,7 +420,7 @@
         "gift":        "#2ECC40", // IRC 03
         "pot":         "#FF4136", // IRC 04
         "sponsors":         "#85144B", // IRC 05
-        "sponsor-messages": "#470000", // IRC 16
+        "sponsor-messages": "#85144B", // IRC 05 + bold typed sentinel
         "entries":          "#B10DC9", // IRC 06
         "stats":       "#FF851B", // IRC 07
         "time":        "#FFDC00", // IRC 08
@@ -445,7 +458,9 @@
         if (!markerColor) return safeVisible;
 
         const prefix = `[b][i][u]${BRIDGE_SENTINEL}[/u][/i][/b]`;
-        const typed = `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
+        const typed = safeKind === BRIDGE_MARKERS.SPONSOR_MESSAGES
+            ? `[b][i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i][/b]`
+            : `[i][u][color=${markerColor}]${BRIDGE_SENTINEL}[/color][/u][/i]`;
 
         // Carry the active giveaway family independently of the message type. The
         // optional override is intentionally narrow: exceptional settlement messages
@@ -1039,13 +1054,13 @@
             class="form__text"
             type="number"
             id="scaleBonPerWinnerNum"
-            title="BON sponsored per extra winner. Leave empty to auto-calculate from pot size."
+            title="Additional BON required to unlock each extra winner. Leave empty to auto-calculate from the starting pot."
             min="1"
             step="1"
             placeholder="auto"
             disabled
           >
-          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="BON per additional winner via sponsorship.">BON/Winner</label>
+          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="Additional BON required to unlock each extra winner.">BON/+Winner</label>
         </p>
       </div>
 
@@ -3376,9 +3391,16 @@ body.host-panel-dragging * {
         ? Math.floor(Number(maxScaledWinnersRawValue || maxScaledWinnersInput.value) || winnersNum)
         : getClampedMaxScaledWinnersValue(winnersNum);
 
-        // Custom scaling threshold (null = auto-calculate from pot / base winners)
+        // Custom scaling threshold (null = auto-calculate from starting pot / base winners).
+        // The UI is auto-populated for convenience, so the numeric field having a value
+        // does NOT by itself mean the host chose a custom threshold.
         const customBonPerWinner = scaleBonPerWinnerInput ? parseInt(scaleBonPerWinnerInput.value, 10) : NaN;
-        const scaleBonPerWinner = (scaleWinnersWithSponsors && Number.isFinite(customBonPerWinner) && customBonPerWinner > 0)
+        const scaleBonPerWinner = (
+            scaleWinnersWithSponsors &&
+            bonPerWinnerManuallyEdited &&
+            Number.isFinite(customBonPerWinner) &&
+            customBonPerWinner > 0
+        )
             ? customBonPerWinner
             : null;
 
@@ -6352,27 +6374,29 @@ body.host-panel-dragging * {
                 return;
             }
 
-            const baseWinners = Math.max(1, Math.floor(Number(giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1));
-            const effective = Math.max(1, Math.floor(Number(giveawayData.effectiveWinnersNum) || baseWinners));
-            const cap = Math.max(baseWinners, Math.min(Math.floor(Number(giveawayData.hostMaxScaledWinners) || baseWinners), MAX_WINNERS));
-            const threshold = getScalingBonPerWinner(giveawayData);
-            const totalContrib = Math.max(0, Math.floor(getTotalContribForScaling(giveawayData)));
-            const progress = totalContrib % threshold;
-            const remaining = progress === 0 ? threshold : threshold - progress;
-            const extraWinners = effective - baseWinners;
-            const isCustomThreshold = !!(giveawayData.scaleBonPerWinner && giveawayData.scaleBonPerWinner > 0);
+            const state = getScalingProgressState(giveawayData);
+            if (!state) {
+                reply("Winner scaling is not available for this giveaway.");
+                return;
+            }
 
+            const extraWinners = state.effectiveWinners - state.baseWinners;
             let msg = `[b][color=${SCALING_ACCENT_COLOR}]Scaling Status:[/color][/b] ` +
-                `Winners: [b][color=#5DE2E7]${effective}[/color][/b] (base ${baseWinners}` +
-                (extraWinners > 0 ? ` + ${extraWinners} from sponsorships` : ``) + `). ` +
-                `Threshold: [b]${fmtBONCurrency(threshold)} BON[/b]/winner` +
-                (isCustomThreshold ? ` (custom)` : ``) + `. ` +
-                `Total contributions: [b][color=#ffc00a]${fmtBONCurrency(totalContrib)} BON[/color][/b]. `;
+                `Winners: [b][color=#5DE2E7]${state.effectiveWinners}[/color][/b] ` +
+                `(base ${state.baseWinners}` +
+                (extraWinners > 0 ? ` + ${extraWinners} from scaling` : ``) +
+                `, max ${state.cap}). ` +
+                `Extra-winner threshold: [b]${fmtBONCurrency(state.threshold)} BON[/b] ` +
+                `(${state.isCustomThreshold ? "custom" : "auto"}). ` +
+                `Scaling contributions: [b][color=#ffc00a]${fmtBONCurrency(state.totalContrib)} BON[/color][/b]. `;
 
-            if (effective >= cap) {
-                msg += `[b]Max winners reached[/b] (${cap}).`;
+            if (state.effectiveWinners >= state.cap) {
+                msg += `[b]Max winners reached[/b].`;
             } else {
-                msg += `[b]${fmtBONCurrency(remaining)} BON[/b] needed for next winner (${fmtBONCurrency(progress)}/${fmtBONCurrency(threshold)}). Max: [b]${cap}[/b].`;
+                msg +=
+                    `Progress to winner #${state.nextWinner}: ` +
+                    `[b]${fmtBONCurrency(state.progress)} / ${fmtBONCurrency(state.threshold)} BON[/b]. ` +
+                    `Still needed: [b][color=#FFDE59]${fmtBONCurrency(state.remaining)} BON[/color][/b].`;
             }
 
             reply(msg);
@@ -7502,10 +7526,14 @@ body.host-panel-dragging * {
                         : `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · ${BONANZA.FUND_NAME}: ${fmtBONCurrency(split.donations[0])} BON)[/color]`)
                     : "";
 
+                const accuracyText = diff === 0
+                    ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                    : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
+
                 const winnerLine =
                       `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
                       `Guess [color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ` +
-                      `[color=#FB4F4F](off by ${fmtBON(diff)})[/color] ` +
+                      `${accuracyText} ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
 
                 if (!(await sendSettlementMessage(
@@ -7519,8 +7547,11 @@ body.host-panel-dragging * {
                     const diff = Math.abs(w.guess - winNum);
                     const prize = fmtBONCurrency(net[i]);
                     const medal = medals[i] || `${i + 1}.`;
+                    const accuracyText = diff === 0
+                        ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                        : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
                     return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
-                        `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ([color=#FB4F4F]${fmtBON(diff)}[/color]) ` +
+                        `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ${accuracyText} ` +
                         `[color=#FFC00A][b]${prize} BON[/b][/color]`;
                 });
                 const multiDonatedNote = donationActive ? `\n[color=#aaaaaa]Amounts shown are after the ${split.percent}% ${BONANZA.FUND_NAME} donation.[/color]` : "";
@@ -10792,7 +10823,7 @@ body.host-panel-dragging * {
         fitSettingsMenuHeight();
     }
 
-    /** Auto-populate the BON/Winner field with the calculated threshold (unless manually edited). */
+    /** Auto-populate the BON/+Winner field with the calculated threshold (unless manually edited). */
     function syncBonPerWinnerValue() {
         if (!scaleBonPerWinnerInput || !coinInput || !winnersInput) return;
         if (bonPerWinnerManuallyEdited) return;
@@ -10877,6 +10908,77 @@ body.host-panel-dragging * {
         return Math.max(1, Math.floor(initialPotVerified / baseWinners));
     }
 
+    function getScalingProgressState(data) {
+        if (!data || !data.scaleWinnersWithSponsors) return null;
+
+        const baseWinners = Math.max(
+            1,
+            Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1))
+        );
+        const cap = Math.max(
+            baseWinners,
+            Math.min(Math.floor(Number(data.hostMaxScaledWinners) || baseWinners), MAX_WINNERS)
+        );
+        const effectiveWinners = recomputeEffectiveWinners(data);
+        const threshold = getScalingBonPerWinner(data);
+        const totalContrib = Math.max(0, Math.floor(getTotalContribForScaling(data)));
+        const isCustomThreshold = Number.isFinite(Number(data.scaleBonPerWinner)) &&
+            Number(data.scaleBonPerWinner) > 0;
+
+        if (effectiveWinners >= cap) {
+            return {
+                baseWinners,
+                effectiveWinners,
+                cap,
+                threshold,
+                totalContrib,
+                isCustomThreshold,
+                nextWinner: null,
+                progress: threshold,
+                thresholdRemaining: 0,
+                fundingRemaining: 0,
+                remaining: 0
+            };
+        }
+
+        const nextWinner = effectiveWinners + 1;
+
+        // Progress is relative to the CURRENT winner tier, not simply total % threshold.
+        // Example: base=1, threshold=350k, contributions=350k => winner #2 is unlocked,
+        // so progress toward winner #3 must restart at 0/350k rather than "threshold reached".
+        const currentTierStart = Math.max(0, (effectiveWinners - baseWinners) * threshold);
+        const progress = Math.max(
+            0,
+            Math.min(threshold, totalContrib - currentTierStart)
+        );
+        const thresholdRemaining = Math.max(0, threshold - progress);
+
+        // A very small custom threshold can reach the scaling gate before the weighted
+        // prize scheme has enough BON to give every announced winner at least 1 BON.
+        // Any new sponsor/host contribution also grows the pot, so the true requirement
+        // is whichever is larger: the scaling threshold remainder or the funding floor.
+        const potTotal = Math.max(0, Math.floor(Number(data.amount) || 0));
+        const fundingRemaining = Math.max(
+            0,
+            minimumPotForWeightedWinners(nextWinner) - potTotal
+        );
+        const remaining = Math.max(thresholdRemaining, fundingRemaining);
+
+        return {
+            baseWinners,
+            effectiveWinners,
+            cap,
+            threshold,
+            totalContrib,
+            isCustomThreshold,
+            nextWinner,
+            progress,
+            thresholdRemaining,
+            fundingRemaining,
+            remaining
+        };
+    }
+
     function initializeScaledWinnersAnnouncementState(data) {
         if (!data) return;
         const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
@@ -10919,38 +11021,22 @@ body.host-panel-dragging * {
     }
 
     function getSponsorshipNextWinnerLine(data, options = {}) {
-        if (!data || !data.scaleWinnersWithSponsors) return "";
+        const state = getScalingProgressState(data);
+        if (!state) return "";
 
-        const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
-        const effectiveWinners = Math.max(1, Math.floor(Number(data.effectiveWinnersNum || recomputeEffectiveWinners(data)) || baseWinners));
-        const cap = Math.min(
-            Math.max(baseWinners, Math.min(Math.floor(Number(data.hostMaxScaledWinners) || baseWinners), MAX_WINNERS)),
-            MAX_WINNERS
-        );
-
-        if (effectiveWinners >= cap) {
+        if (state.effectiveWinners >= state.cap) {
             return options.plain
-                ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Max winners reached[/b] (${fmtBON(cap)}).`
-            : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] (${fmtBON(cap)}).[/color][/i]`;
+                ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Max winners reached[/b] (${fmtBON(state.cap)}).`
+                : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] (${fmtBON(state.cap)}).[/color][/i]`;
         }
 
-        const thresholdBonPerWinner = getScalingBonPerWinner(data);
-        const totalContribForScaling = Math.max(0, Math.floor(getTotalContribForScaling(data)));
-        const progress = totalContribForScaling % thresholdBonPerWinner;
-        const remaining = progress === 0 ? thresholdBonPerWinner : thresholdBonPerWinner - progress;
-
-        if (progress === 0) {
-            if (totalContribForScaling > 0 && effectiveWinners < cap) {
-                return options.plain
-                    ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: reached.`
-                : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Next threshold[/b]: reached.[/color][/i]`;
-            }
-            return "";
-        }
+        const detail =
+            `${fmtBONCurrency(state.remaining)} BON still needed for winner #${fmtBON(state.nextWinner)} ` +
+            `(progress: ${fmtBONCurrency(state.progress)}/${fmtBONCurrency(state.threshold)} BON).`;
 
         return options.plain
-            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.`
-        : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]BON needed to increase # of winners[/b]: ${fmtBONCurrency(remaining)} BON.[/color][/i]`;
+            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]${detail}[/b]`
+            : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]${detail}[/b][/color][/i]`;
     }
 
     function flashUIElement(el, durationMs = 950) {
@@ -11028,7 +11114,10 @@ body.host-panel-dragging * {
 
         if (!sponsors.length) return [];
 
-        const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
+        const maxVisible = Math.max(
+            300,
+            Math.floor(Number(SPONSOR_ANNOUNCE.final_recap_max_visible_chars) || 900)
+        );
         const marker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
         const heading = `${marker} [b]Messages from our sponsors:[/b]`;
         const messages = [];
