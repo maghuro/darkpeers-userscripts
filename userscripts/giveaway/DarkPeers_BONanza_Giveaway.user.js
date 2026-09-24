@@ -188,6 +188,9 @@
 //   - v1.5.1 keeps BON Pool context visible during an active giveaway: reminders,
 //     !bon, sponsor digests and host top-ups now repeat the selected pool percentage
 //     near the live pot/status information instead of relying only on the opening header.
+//     Sponsor accounting is also Gift-History-only: transient Gift History outages no
+//     longer let stale System/DPBot messages increment the pot a second time; recovery
+//     reconciles unseen persistent Gift History rows instead of replacing the baseline.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -5108,21 +5111,36 @@ body.host-panel-dragging * {
             try {
                 historyRows = await this.fetchRecentGiftHistory();
             } catch (e) {
+                // Persistent Gift History is the canonical sponsorship ledger.
+                // Do NOT mutate the pot from the rolling System/DPBot room here:
+                // its cursor can lag behind Gift History and replay gifts that were
+                // already counted during an earlier healthy history poll.
                 this.historyFallbackActive = true;
                 if (DEBUG_SETTINGS.log_chat_messages) {
-                    console.warn("Gift History unavailable; using Chat API/SystemBot fallback:", e);
+                    console.warn("Gift History unavailable; sponsor accounting paused until recovery:", e);
                 }
-                const ok = await this.pollChatFallback(options);
+                logEvent(
+                    "Sponsor accounting paused (Gift History unavailable)",
+                    "Keeping the current pot unchanged until persistent Gift History recovers; System/DPBot is diagnostic evidence only."
+                );
                 if (PERF) perfMeasure('sponsor_poll', perfStart);
-                return ok;
+                return false;
             }
 
             if (this.historyFallbackActive) {
-                const chatOk = await this.pollChatFallback(options);
-                if (!chatOk) {
+                // Reconcile against the existing persistent boundary. Never replace
+                // it with a fresh baseline after an outage: doing so can either hide
+                // gifts missed during the outage or, when chat fallback was involved,
+                // make stale System-room messages look new.
+                if (this.giftHistoryInitialized) {
+                    const ok = await this.processGiftHistoryRows(historyRows, options);
                     if (PERF) perfMeasure('sponsor_poll', perfStart);
-                    return false;
+                    return ok;
                 }
+
+                // Legacy snapshots may pre-date Gift History cursor persistence. For
+                // those only, establish a baseline without applying historical rows;
+                // this deliberately favors manual under-count recovery over duplicates.
                 this.setGiftHistoryBaseline(historyRows);
                 this.historyFallbackActive = false;
                 snapshotGiveaway();
@@ -5131,11 +5149,8 @@ body.host-panel-dragging * {
             }
 
             if (!this.giftHistoryInitialized) {
-                const chatOk = await this.pollChatFallback(options);
-                if (!chatOk) {
-                    if (PERF) perfMeasure('sponsor_poll', perfStart);
-                    return false;
-                }
+                // Same conservative legacy-bootstrap rule as above. New giveaways
+                // always initialize Gift History before their opening announcement.
                 this.setGiftHistoryBaseline(historyRows);
                 snapshotGiveaway();
                 if (PERF) perfMeasure('sponsor_poll', perfStart);
