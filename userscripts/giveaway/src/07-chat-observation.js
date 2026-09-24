@@ -64,6 +64,41 @@
         startObserver();
     }
 
+    function beginChatReplayBoundaryCapture() {
+        chatReplayBoundaryPending = true;
+        chatReplayPendingNodes = [];
+        chatReplayPendingNodeSet = new WeakSet();
+        parsedChatMessageNodes = new WeakSet();
+    }
+
+    function finishChatReplayBoundaryCapture() {
+        chatReplayBoundaryPending = false;
+
+        const pending = [];
+        const seen = new Set();
+        const collect = (node) => {
+            if (!node || seen.has(node)) return;
+            seen.add(node);
+            pending.push(node);
+        };
+
+        if (!chatMessagesListEl || !chatMessagesListEl.isConnected) {
+            chatMessagesListEl = document.querySelector(CHATROOM_MESSAGES_SELECTOR);
+        }
+
+        if (chatMessagesListEl) {
+            for (const node of chatMessagesListEl.querySelectorAll(CHAT_MESSAGE_SELECTOR)) {
+                collect(node);
+            }
+        }
+
+        for (const node of chatReplayPendingNodes) collect(node);
+        chatReplayPendingNodes = [];
+        chatReplayPendingNodeSet = new WeakSet();
+
+        for (const node of pending) parseMessage(node);
+    }
+
     function startObserver() {
         if (!chatMessagesListEl || !chatMessagesListEl.isConnected) {
             chatMessagesListEl = document.querySelector(CHATROOM_MESSAGES_SELECTOR);
@@ -164,15 +199,13 @@
     function parseMessage(messageNode) {
         const perfStart = PERF ? performance.now() : 0;
 
-        const createdAtTs = getChatMessageCreatedAtTs(messageNode);
-        // If UNIT3D ever inserts a relevant node without a parseable datetime,
-        // deliberately fail open. A possible duplicate reply is safer than silently
-        // discarding a real entry.
-        if (
-            Number.isFinite(chatReplayIgnoreBeforeTs) &&
-            Number.isFinite(createdAtTs) &&
-            createdAtTs <= chatReplayIgnoreBeforeTs
-        ) {
+        if (!messageNode || parsedChatMessageNodes.has(messageNode)) return;
+
+        if (chatReplayBoundaryPending) {
+            if (!chatReplayPendingNodeSet.has(messageNode)) {
+                chatReplayPendingNodeSet.add(messageNode);
+                chatReplayPendingNodes.push(messageNode);
+            }
             return;
         }
 
@@ -193,8 +226,27 @@
         const isCommand = messageContent.startsWith("!");
         if (!isEntry && !isCommand) return;
 
+        const createdAtTs = getChatMessageCreatedAtTs(messageNode);
+        const replayCutoff = isCommand
+            ? chatReplayCommandIgnoreBeforeTs
+            : chatReplayIgnoreBeforeTs;
+
+        // Entries keep a small fail-open tolerance. Commands use the strict server
+        // cutoff because replaying a privileged mutation is worse than asking for a
+        // fresh command. A relevant node with no parseable datetime still fails open.
+        if (
+            Number.isFinite(replayCutoff) &&
+            Number.isFinite(createdAtTs) &&
+            createdAtTs <= replayCutoff
+        ) {
+            parsedChatMessageNodes.add(messageNode);
+            return;
+        }
+
         const author = getAuthor(messageNode);
         if (!author) return; // could not resolve username from DOM. Skip silently
+
+        parsedChatMessageNodes.add(messageNode);
 
         // Pull fancyName only for relevant messages (entries/commands). We capture a stable tag that
         // always includes the username text (some sites hydrate it after insertion).
