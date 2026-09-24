@@ -6446,9 +6446,15 @@ body.host-panel-dragging * {
         // submits are ignored.
         const activeHostKey = normalizeUserKey(giveawayData?.host);
         const fancyName = (opts && typeof opts === "object") ? opts.fancyName : "";
+        const command = (opts && typeof opts === "object" && opts.command != null)
+            ? String(opts.command).trim().toLowerCase()
+            : "";
+        const staffEmergencyCommands = new Set([
+            "rig", "unrig", "time", "addtime", "removetime", "naughty", "end"
+        ]);
         const isEmergencyOperator =
             (activeHostKey && authorKey === activeHostKey) ||
-            isAdmin(fancyName);
+            (isAdmin(fancyName) && staffEmergencyCommands.has(command));
         if (isEmergencyOperator) {
             const lastAny = userLastActionAt.get(authorKey) || 0;
             const tooFast = (now - lastAny) < MIN_ACTION_GAP_MS;
@@ -6475,14 +6481,11 @@ body.host-panel-dragging * {
 
         // Per-command cooldown (prevents identical output spam)
         let repeatBlocked = false;
-        const cmd = (opts && typeof opts === "object" && opts.command != null)
-        ? String(opts.command).trim().toLowerCase()
-        : "";
 
-        if (cmd) {
-            const cd = Number(REPEAT_COMMAND_COOLDOWNS_MS[cmd]) || 0;
+        if (command) {
+            const cd = Number(REPEAT_COMMAND_COOLDOWNS_MS[command]) || 0;
             if (cd > 0) {
-                const k = `${authorKey}::${cmd}`;
+                const k = `${authorKey}::${command}`;
                 const lastCmd = userLastCommandAt.get(k) || 0;
                 repeatBlocked = (now - lastCmd) < cd;
                 userLastCommandAt.set(k, now);
