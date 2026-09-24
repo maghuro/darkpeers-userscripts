@@ -2873,8 +2873,8 @@ body.host-panel-dragging * {
      * Serialize the active giveaway state to localStorage.
      * Called at key mutation points (new entry, start, addbon, sponsor, time adjust).
      */
-    function snapshotGiveaway({ force = false } = {}) {
-        if (!giveawayData || !canMutateActiveGiveaway() || (giveawayData.__ending && !force)) return;
+    function snapshotGiveaway({ force = false, verifyWrite = false } = {}) {
+        if (!giveawayData || !canMutateActiveGiveaway() || (giveawayData.__ending && !force)) return false;
         try {
             const snapshot = {
                 giveawayData: {
@@ -2905,6 +2905,7 @@ body.host-panel-dragging * {
                     sponsorGiftMessages: Array.isArray(giveawayData.sponsorGiftMessages)
                         ? giveawayData.sponsorGiftMessages
                         : [],
+                    closingIntent: giveawayData.__closingIntent === true,
                     closingNoticeSent: giveawayData.__closingNoticeSent === true,
                     lastAnnouncedWinners: giveawayData.lastAnnouncedWinners,
                     settlement: giveawayData.settlement && typeof giveawayData.settlement === "object"
@@ -2934,7 +2935,15 @@ body.host-panel-dragging * {
             };
             const storageKey = getActiveGiveawayStorageKey(giveawayData.host);
             if (!storageKey) throw new Error("Cannot persist giveaway without an authenticated host namespace.");
-            localStorage.setItem(storageKey, JSON.stringify(snapshot));
+            const serializedSnapshot = JSON.stringify(snapshot);
+            localStorage.setItem(storageKey, serializedSnapshot);
+
+            if (verifyWrite) {
+                const persistedSnapshot = localStorage.getItem(storageKey);
+                if (persistedSnapshot !== serializedSnapshot) {
+                    throw new Error("Active giveaway snapshot read-back verification failed.");
+                }
+            }
 
             // Remove only a matching legacy snapshot after the namespaced write
             // succeeds. Never delete another account's retained recovery state.
@@ -2947,8 +2956,10 @@ body.host-panel-dragging * {
                     }
                 }
             } catch {}
+            return true;
         } catch (e) {
             console.warn("Giveaway snapshot failed:", e);
+            return false;
         }
     }
 
@@ -3002,6 +3013,7 @@ body.host-panel-dragging * {
             const overdueMs = Date.now() - endTs;
             const committedSettlement = snap.giveawayData?.settlement?.committed === true;
             const closingSettlementLatched =
+                snap.giveawayData?.closingIntent === true ||
                 snap.giveawayData?.closingNoticeSent === true ||
                 snap.giveawayData?.settlement?.phase === "settling";
 
@@ -3084,6 +3096,11 @@ body.host-panel-dragging * {
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+            giveawayData.__closingIntent =
+                giveawayData.closingIntent === true ||
+                giveawayData.closingNoticeSent === true ||
+                giveawayData?.settlement?.committed === true ||
+                giveawayData?.settlement?.phase === "settling";
             giveawayData.__closingNoticeSent = giveawayData.closingNoticeSent === true;
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
@@ -3110,6 +3127,7 @@ body.host-panel-dragging * {
             // Never reopen entries/timers after a crash in that state.
             const expiredOnRestore =
                 committedSettlement ||
+                giveawayData.__closingIntent === true ||
                 giveawayData.__closingNoticeSent === true ||
                 giveawayData.timeLeft <= 0 ||
                 snap.__expiredAtLoad === true;
@@ -7029,6 +7047,32 @@ body.host-panel-dragging * {
             return;
         }
 
+        // Persist the intent to close BEFORE the first asynchronous side effect.
+        // A crash/BFCache handoff while the closing announcement POST is pending
+        // must restore directly into settlement, never reopen entries/countdown.
+        giveawayData.__closingIntent = true;
+        if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+            logEvent(
+                "Settlement paused (closing intent not durable)",
+                "Could not persist and read back the closing intent. No closing announcement or BON transfer was attempted."
+            );
+            giveawayData.__ending = false;
+            try {
+                if (startButton) {
+                    startButton.disabled = false;
+                    startButton.textContent = "Retry settlement";
+                    startButton.title = "Retry after local recovery storage becomes writable";
+                    startButton.onclick = () => endGiveaway();
+                }
+                window.alert(
+                    "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                    "The closing state could not be stored safely. No settlement action was attempted. " +
+                    "Free some browser storage/reload and retry."
+                );
+            } catch {}
+            return;
+        }
+
         const reconcileSettlementOutput = async (checkpoint, preparedMessage) => {
             const rawAfterMessageId = checkpoint?.afterMessageId;
             const afterId =
@@ -8133,7 +8177,18 @@ body.host-panel-dragging * {
                     settlement.payoutGiftHistoryBaseline = baseline;
                     settlement.payoutGiftHistoryBaselineState = "ready";
                     settlement.payoutGiftHistoryBaselineCapturedAt = Date.now();
-                    snapshotGiveaway({ force: true });
+
+                    if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                        settlement.payoutGiftHistoryBaselineState = "persist-failed";
+                        pauseSettlementForRetry(
+                            "Settlement paused (payout baseline not durable)",
+                            "The pre-transfer Gift History baseline was fetched but could not be persisted and read back. No winner transfer was attempted.",
+                            "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                            "The authoritative pre-transfer Gift History baseline could not be stored safely. " +
+                            "No winner gift or BON Pool contribution has been attempted by this payout step."
+                        );
+                        return;
+                    }
                 } catch (e) {
                     settlement.payoutGiftHistoryBaselineState = "unavailable";
                     logEvent(
@@ -11309,6 +11364,7 @@ body.host-panel-dragging * {
             data &&
             (
                 data.__ending ||
+                data.__closingIntent === true ||
                 data.__closingNoticeSent === true ||
                 data?.settlement?.phase === "settling"
             )
@@ -11320,6 +11376,7 @@ body.host-panel-dragging * {
         if (data?.settlement?.phase === "complete") return false;
         return !!(
             data.__ending ||
+            data.__closingIntent === true ||
             data.__closingNoticeSent === true ||
             data?.settlement?.committed === true ||
             data?.settlement?.phase === "settling"
