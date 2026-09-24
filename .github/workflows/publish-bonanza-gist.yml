@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+      - userscripts/giveaway/src/**
+      - scripts/build-bonanza.mjs
   workflow_dispatch:
 
 permissions:
@@ -18,6 +20,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Build and verify userscript
+        run: |
+          node scripts/build-bonanza.mjs
+          git diff --exit-code -- userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+          node --check userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
 
       - name: Publish userscript to Gist
         env:
