@@ -5080,18 +5080,26 @@ body.host-panel-dragging * {
             if (!senderSlug) return [];
 
             const notificationsPath = `/users/${encodeURIComponent(decodeURIComponent(senderSlug))}/notifications`;
-            const notificationsUrl = new URL(notificationsPath, location.origin);
-            notificationsUrl.searchParams.set("_dpgw", String(Date.now()));
-            const res = await fetchWithTimeout(
-                notificationsUrl,
-                {
-                    credentials: "same-origin",
-                    cache: "no-store"
-                },
-                7000
-            );
-            if (!res.ok) throw new Error(`Gift notifications HTTP ${res.status}`);
-            return parseGiftNotificationsPage(await res.text(), this.data?.host || "");
+            const rows = [];
+
+            for (const page of [1, 2]) {
+                const notificationsUrl = new URL(notificationsPath, location.origin);
+                if (page > 1) notificationsUrl.searchParams.set("page", String(page));
+                notificationsUrl.searchParams.set("_dpgw", String(Date.now()));
+
+                const res = await fetchWithTimeout(
+                    notificationsUrl,
+                    {
+                        credentials: "same-origin",
+                        cache: "no-store"
+                    },
+                    7000
+                );
+                if (!res.ok) throw new Error(`Gift notifications page ${page} HTTP ${res.status}`);
+                rows.push(...parseGiftNotificationsPage(await res.text(), this.data?.host || ""));
+            }
+
+            return rows;
         }
 
         async fetchRecentGiftHistory() {
@@ -5099,18 +5107,26 @@ body.host-panel-dragging * {
             const endpointPath = getGiftEndpointPath(senderSlug);
             if (!endpointPath) return [];
 
-            const historyUrl = new URL(endpointPath, location.origin);
-            historyUrl.searchParams.set("_dpgw", String(Date.now()));
-            const res = await fetchWithTimeout(
-                historyUrl,
-                {
-                    credentials: "same-origin",
-                    cache: "no-store"
-                },
-                7000
-            );
-            if (!res.ok) throw new Error(`Gift history HTTP ${res.status}`);
-            return parseGiftHistoryPage(await res.text());
+            const rows = [];
+
+            for (const page of [1, 2]) {
+                const historyUrl = new URL(endpointPath, location.origin);
+                if (page > 1) historyUrl.searchParams.set("page", String(page));
+                historyUrl.searchParams.set("_dpgw", String(Date.now()));
+
+                const res = await fetchWithTimeout(
+                    historyUrl,
+                    {
+                        credentials: "same-origin",
+                        cache: "no-store"
+                    },
+                    7000
+                );
+                if (!res.ok) throw new Error(`Gift history page ${page} HTTP ${res.status}`);
+                rows.push(...parseGiftHistoryPage(await res.text()));
+            }
+
+            return rows;
         }
 
         notificationRowsToClockEvents(rows) {
@@ -5915,10 +5931,26 @@ body.host-panel-dragging * {
             // timeLeft field (which can be stale if a timer is throttled/stopped).
             if (args.length === 0) {
                 const remainingMs = syncGiveawayTimeLeft(giveawayData);
-                if (isGiveawaySettling(giveawayData) || remainingMs <= 0) {
+                const settling = isGiveawaySettling(giveawayData);
+                if (settling || remainingMs <= 0) {
                     reply(
                         `${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")} [b][color=#FFDE59]Entries are closed.[/color][/b] Settlement is in progress.`
                     );
+
+                    // A background-tab timer may be throttled. A status request
+                    // after the absolute deadline must actively kick settlement
+                    // instead of merely reporting that it should already be running.
+                    if (!settling && remainingMs <= 0) {
+                        setTimeout(() => {
+                            if (
+                                giveawayData &&
+                                !giveawayData.__ending &&
+                                getGiveawayRemainingMs(giveawayData) <= 0
+                            ) {
+                                endGiveaway();
+                            }
+                        }, 0);
+                    }
                 } else {
                     reply(
                         `Time left: [b][color=#1DDC5D]${parseTime(remainingMs)}[/color][/b] ${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")}`
@@ -7043,16 +7075,24 @@ body.host-panel-dragging * {
         // Tell chat immediately that the entry window is closed. This deliberately
         // happens BEFORE sponsor reconciliation or any money-moving operation.
         if (!giveawayData.__closingNoticeSent) {
-            giveawayData.__closingNoticeSent = true;
-            snapshotGiveaway({ force: true });
             const closedByTimer = Number.isFinite(Number(scheduledEndTs)) && nowAtSettlement >= scheduledEndTs;
             try {
-                await sendMessage(
+                const closingNoticeSent = await sendMessage(
                     closedByTimer
                         ? "⏱️ [b][color=#FFDE59]Time is up — entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
                         : "⏱️ [b][color=#FFDE59]Entries are now closed by the host.[/color][/b] Finalising sponsor accounting and settlement…",
                     { requireExclusiveGiveawayOwnership: true }
                 );
+
+                if (closingNoticeSent !== false) {
+                    giveawayData.__closingNoticeSent = true;
+                    snapshotGiveaway({ force: true });
+                } else {
+                    logEvent(
+                        "Closing notice deferred",
+                        "Entries are closed locally, but the closing chat notice was not accepted for sending. It remains retryable."
+                    );
+                }
             } catch (e) {
                 logEvent("Closing notice warning", String(e?.message || e));
             }
