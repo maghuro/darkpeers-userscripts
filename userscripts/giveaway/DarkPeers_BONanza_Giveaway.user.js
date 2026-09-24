@@ -205,7 +205,8 @@
 //     settlement message checkpoints use the Main Chat cursor while gift diagnostics
 //     use the System cursor, restore can remain entry-live while sponsor accounting is
 //     unavailable, and rehearsal mode suppresses every script chat message and
-//     BON-moving operation.
+//     BON-moving operation while isolating snapshots, ledgers, stats, statements and
+//     naughty-list state from live giveaways.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -261,12 +262,6 @@
     // Persistent stats (saved in localStorage on this site)
     // GM store is per-script anyway; the v2 suffix retires the pre-1.2.0 copy so it can
     // never out-date the shared record and overwrite it (see migrateLegacyForkStats).
-    const STATS_KEY_GM = `BONANZA_GIVEAWAY_STATS_v2::${location.hostname}`;
-    const STATS_KEY_LS_LEGACY_FORK = `BONANZA_GIVEAWAY_STATS::${location.hostname}`;
-    // Shared with the original "Blutopia BON Giveaway" script on purpose: stats are
-    // additive counters with no payout logic, and the loader below picks whichever
-    // copy is newer, so months of history carry across when a host switches scripts.
-    const STATS_KEY_LS = `BON_GIVEAWAY_STATS::${location.hostname}`;
     const STATS_VERSION = 1;
     const STATS_DEFAULT_TOP_N = 3;
     const STATS_MAX_TOP_N = 10;
@@ -354,6 +349,16 @@
         localStorage.getItem(REHEARSAL_FLAG) === "true" ||
         REHEARSAL_QUERY_RE.test(String(window.location.search || ""))
     );
+    const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE ? "::rehearsal" : "";
+
+    // Rehearsals use separate persistent state. The shared production stats
+    // remain untouched even when the whole start/reload/end flow is exercised.
+    const STATS_KEY_GM =
+        `BONANZA_GIVEAWAY_STATS_v2::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const STATS_KEY_LS_LEGACY_FORK =
+        `BONANZA_GIVEAWAY_STATS::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const STATS_KEY_LS =
+        `BON_GIVEAWAY_STATS::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
 
     function selfCheck(condition, message, details) {
         if (!SELF_CHECKS_ENABLED || condition) return;
@@ -530,7 +535,8 @@
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
-    const LS_STATEMENTS = `bonanza-giveaway-statements::${location.hostname}`;
+    const LS_STATEMENTS =
+        `bonanza-giveaway-statements::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
     const STATEMENTS_KEEP = 2;
 
     // Mutual exclusion with the original "Blutopia BON Giveaway" script (see injectMenu)
@@ -684,8 +690,10 @@
     const LS_TAB_LOCK = `bonanza-giveaway-tabLock::${location.hostname}`;
     // Per-giveaway ledger of completed gift attempts. Survives reload + visible to other tabs,
     // so even if endGiveaway runs in two tabs the second one won't re-pay.
-    const LS_PAID_GIFTS = `bonanza-giveaway-paidGifts::${location.hostname}`;
-    const LS_POOL_CONTRIBUTIONS = `bonanza-giveaway-poolContributions::${location.hostname}`;
+    const LS_PAID_GIFTS =
+        `bonanza-giveaway-paidGifts::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const LS_POOL_CONTRIBUTIONS =
+        `bonanza-giveaway-poolContributions::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
     // Cap retained giveaway-id entries in the ledger so it can't grow unbounded over time.
     const PAID_GIFTS_MAX_GIVEAWAYS = 50;
     const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -885,7 +893,8 @@
     const regNum = /^-?\d+$/; // matches integers (including negative) for entry detection
 
     /* --- Naughty (exclusion) list ------------------------------------- */
-    const NAUGHTY_KEY = "bonanza-giveaway-naughty-list";
+    const NAUGHTY_KEY =
+        `bonanza-giveaway-naughty-list${REHEARSAL_STORAGE_SUFFIX}`;
     const naughtySet = new Set(
         JSON.parse(localStorage.getItem(NAUGHTY_KEY) || "[]")
         .map(normalizeLower) // store lowercase for case-insensitive match
@@ -2724,7 +2733,7 @@ body.host-panel-dragging * {
     function getActiveGiveawayStorageKey(hostName = "") {
         const hostKey = normalizeUserKey(hostName || getLoggedInUsername());
         return hostKey
-            ? `${LS_ACTIVE_GIVEAWAY_LEGACY}::${encodeURIComponent(hostKey)}`
+            ? `${LS_ACTIVE_GIVEAWAY_LEGACY}${REHEARSAL_STORAGE_SUFFIX}::${encodeURIComponent(hostKey)}`
             : null;
     }
 
@@ -2740,7 +2749,11 @@ body.host-panel-dragging * {
             // Backwards-compatible migration from pre-v1.3.24 hostname-wide storage.
             // A legacy snapshot belonging to another account is deliberately left
             // untouched; the current account now has its own namespace and cannot
-            // overwrite that foreign recovery state.
+            // overwrite that foreign recovery state. Rehearsal storage never
+            // imports a live legacy snapshot.
+            if (REHEARSAL_MODE) {
+                return { storageKey, raw: null, migratedLegacy: false };
+            }
             const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
             if (!legacyRaw) return { storageKey, raw: null, migratedLegacy: false };
 
@@ -2984,6 +2997,7 @@ body.host-panel-dragging * {
         try {
             const snapshot = {
                 giveawayData: {
+                    rehearsalMode: giveawayData.rehearsalMode === true,
                     host: giveawayData.host,
                     amount: giveawayData.amount,
                     startNum: giveawayData.startNum,
@@ -3059,7 +3073,9 @@ body.host-panel-dragging * {
             // Remove only a matching legacy snapshot after the namespaced write
             // succeeds. Never delete another account's retained recovery state.
             try {
-                const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+                const legacyRaw = REHEARSAL_MODE
+                    ? null
+                    : localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
                 if (legacyRaw) {
                     const legacy = JSON.parse(legacyRaw);
                     if (normalizeUserKey(legacy?.giveawayData?.host) === normalizeUserKey(giveawayData.host)) {
@@ -3085,8 +3101,11 @@ body.host-panel-dragging * {
 
             // Backwards-compatible cleanup: remove the old hostname-wide key only
             // when it belongs to the same host. A foreign account's recovery state
-            // must survive logout/login switches.
-            const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+            // must survive logout/login switches. Rehearsal cleanup never touches
+            // the production legacy recovery key.
+            const legacyRaw = REHEARSAL_MODE
+                ? null
+                : localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
             if (legacyRaw) {
                 const legacy = JSON.parse(legacyRaw);
                 if (hostKey && normalizeUserKey(legacy?.giveawayData?.host) === hostKey) {
@@ -3106,6 +3125,12 @@ body.host-panel-dragging * {
             if (!stored.raw) return null;
             const snap = JSON.parse(stored.raw);
             if (!snap || !snap.giveawayData) return null;
+
+            const savedRehearsalMode = snap.giveawayData.rehearsalMode === true;
+            if (savedRehearsalMode !== REHEARSAL_MODE) {
+                console.warn("[BON Giveaway] Refusing restore across live/rehearsal modes.");
+                return null;
+            }
 
             const savedHostKey = normalizeUserKey(snap.giveawayData.host);
             if (!savedHostKey || savedHostKey !== loggedInHostKey) {
@@ -3795,6 +3820,7 @@ body.host-panel-dragging * {
             : null;
 
         giveawayData = {
+            rehearsalMode: REHEARSAL_MODE,
             host: authenticatedHost,
             amount: amountInt,
             startNum: parseInt(startInput.value, 10),
