@@ -7104,11 +7104,33 @@ body.host-panel-dragging * {
                 } else {
                     logEvent(
                         "Closing notice deferred",
-                        "Entries are closed locally, but the closing chat notice was not accepted for sending. It remains retryable."
+                        "Entries are closed locally, but the closing chat notice was not accepted for sending. Settlement will not move BON until the closing state can be announced."
                     );
+                    snapshotGiveaway({ force: true });
+                    giveawayData.__ending = false;
+                    try {
+                        if (startButton) {
+                            startButton.disabled = false;
+                            startButton.textContent = "Retry settlement";
+                            startButton.title = "Retry the closing announcement and settlement";
+                            startButton.onclick = () => endGiveaway();
+                        }
+                    } catch {}
+                    return;
                 }
             } catch (e) {
                 logEvent("Closing notice warning", String(e?.message || e));
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                try {
+                    if (startButton) {
+                        startButton.disabled = false;
+                        startButton.textContent = "Retry settlement";
+                        startButton.title = "Retry the closing announcement and settlement";
+                        startButton.onclick = () => endGiveaway();
+                    }
+                } catch {}
+                return;
             }
         }
 
