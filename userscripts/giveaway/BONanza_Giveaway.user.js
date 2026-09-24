@@ -341,6 +341,10 @@
     }
 
     // ── DarkPeers site constants (this fork runs on darkpeers.org only) ──
+    // DarkPeers room contract verified live on 2026-09-24:
+    //   1 = Main Chat (entries, commands and userscript output)
+    //   2 = System (DPBot gift events / secondary verification)
+    const DARKPEERS_MAIN_CHATROOM_ID = '1';
     const DARKPEERS_CHATROOM_ID = '2';
 
     function getMessageContentElement(messageNode) {
@@ -2212,6 +2216,14 @@ body.host-panel-dragging * {
 
         resetButton = document.getElementById("resetButton");
         resetButton.onclick = function () {
+            if (hasIncompleteSettlement(giveawayData)) {
+                window.alert(
+                    "Reset is disabled while a giveaway settlement is incomplete. " +
+                    "Use Retry settlement after resolving the warning; the recovery snapshot must be preserved."
+                );
+                return;
+            }
+
             if (giveawayData && isGiveawayCurrentlyActive(giveawayData)) {
                 if (window.confirm("Are you sure you want to reset the giveaway? This will clear all entries and cannot be undone.")) {
                     resetGiveaway();
@@ -3380,6 +3392,35 @@ body.host-panel-dragging * {
 
         cacheChatContext();
 
+        // DarkPeers is the sole production target. Fail closed before creating any
+        // giveaway state unless the authenticated identity + Main Chat API context
+        // match the live DarkPeers contract that was verified during the incident
+        // audit. Starting without this context would make commands/output unreliable.
+        const authenticatedHost = getLoggedInUsername();
+        const authenticatedUserId = Math.floor(Number(OT_USER_ID));
+        const publicChatroomId = Math.floor(Number(OT_CHATROOM_ID));
+        const expectedMainChatroomId = Math.floor(Number(DARKPEERS_MAIN_CHATROOM_ID));
+        const startContextOk =
+            !!authenticatedHost &&
+            Number.isFinite(authenticatedUserId) &&
+            authenticatedUserId > 0 &&
+            Number.isFinite(publicChatroomId) &&
+            publicChatroomId === expectedMainChatroomId &&
+            !!OT_CSRF_TOKEN;
+
+        if (!startContextOk) {
+            logEvent(
+                "Start aborted (DarkPeers chat context)",
+                `host=${authenticatedHost || "missing"} | userId=${Number.isFinite(authenticatedUserId) ? authenticatedUserId : "missing"} | mainRoom=${Number.isFinite(publicChatroomId) ? publicChatroomId : "missing"} | expectedRoom=${expectedMainChatroomId} | csrf=${OT_CSRF_TOKEN ? "present" : "missing"}`
+            );
+            releaseTabLock();
+            window.alert(
+                "GIVEAWAY ERROR: DarkPeers authentication/Main Chat context could not be verified. " +
+                "Nothing was started or posted. Reload DarkPeers and try again."
+            );
+            return;
+        }
+
         startButton.disabled = true;
         coinInput.disabled = true;
         startInput.disabled = true;
@@ -3423,7 +3464,7 @@ body.host-panel-dragging * {
             : null;
 
         giveawayData = {
-            host: getLoggedInUsername(),
+            host: authenticatedHost,
             amount: amountInt,
             startNum: parseInt(startInput.value, 10),
             endNum: parseInt(endInput.value, 10),
@@ -3535,9 +3576,35 @@ body.host-panel-dragging * {
                 giveawayStartTime: new Date(),
                 giveawayData
             });
-            await tracker.bootstrapGiftHistory();
+            const sponsorBaselineReady = await tracker.bootstrapGiftHistory();
+            if (!sponsorBaselineReady) {
+                logEvent(
+                    "Start aborted (Gift History baseline)",
+                    "Persistent DarkPeers Gift History could not be read/calibrated before opening. Refusing to start with volatile System-room fallback only."
+                );
+                window.alert(
+                    "GIVEAWAY ERROR: DarkPeers Gift History could not be prepared reliably. " +
+                    "No giveaway has been opened. Try again when DarkPeers is responding normally."
+                );
+                resetGiveaway();
+                return;
+            }
 
-            await sendMessage(introMessage);
+            const introSent = await sendMessage(introMessage, {
+                requireExclusiveGiveawayOwnership: true
+            });
+            if (introSent === false) {
+                logEvent(
+                    "Start aborted (opening announcement)",
+                    "The public opening message could not be accepted for sending. Timers, entries and sponsor tracking were not started."
+                );
+                window.alert(
+                    "GIVEAWAY ERROR: The opening message could not be sent safely to DarkPeers Main Chat. " +
+                    "The giveaway was not started."
+                );
+                resetGiveaway();
+                return;
+            }
 
             // Public opening is the temporal boundary. The pre-opening Gift History
             // snapshot means every subsequently appearing received gift is new.
@@ -3588,6 +3655,20 @@ body.host-panel-dragging * {
     }
 
     function resetGiveaway() {
+        if (hasIncompleteSettlement(giveawayData)) {
+            logEvent(
+                "Reset blocked (settlement incomplete)",
+                "Refusing to clear active recovery state while settlement is incomplete."
+            );
+            try {
+                window.alert(
+                    "Reset blocked: this giveaway still has an incomplete settlement. " +
+                    "The recovery state has been preserved."
+                );
+            } catch {}
+            return false;
+        }
+
         entriesWrapper.hidden = true;
         clearWinnersStatusUI();
 
@@ -3640,9 +3721,18 @@ body.host-panel-dragging * {
         startButton.disabled = false;
 
         updateHostPanelUI();
+        return true;
     }
 
     function stopGiveaway() {
+        if (hasIncompleteSettlement(giveawayData)) {
+            logEvent(
+                "Stop cleanup blocked (settlement incomplete)",
+                "Refusing to clear snapshot/ledgers before the settlement reaches phase=complete."
+            );
+            return false;
+        }
+
         startButton.disabled = true; //prevents stop button from being clicked once giveaway has ended
         // Flush any pending stats writes before tearing down
         try { flushStatsNow(); } catch {}
@@ -3699,6 +3789,7 @@ body.host-panel-dragging * {
 
         updateRigToggleUI();
         updateHostPanelUI();
+        return true;
     }
 
     // ───────────────────────────────────────────────────────────
@@ -11064,6 +11155,17 @@ body.host-panel-dragging * {
                 data.__closingNoticeSent === true ||
                 data?.settlement?.phase === "settling"
             )
+        );
+    }
+
+    function hasIncompleteSettlement(data = giveawayData) {
+        if (!data) return false;
+        if (data?.settlement?.phase === "complete") return false;
+        return !!(
+            data.__ending ||
+            data.__closingNoticeSent === true ||
+            data?.settlement?.committed === true ||
+            data?.settlement?.phase === "settling"
         );
     }
 
