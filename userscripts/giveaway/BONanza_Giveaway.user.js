@@ -1734,7 +1734,7 @@ body.host-panel-dragging * {
         let conflictWarnedDuringGiveaway = false;
         conflictWatchTimer = setInterval(() => {
             if (!originalGiveawayScriptPresent()) return;
-            if (giveawayData && giveawayData.timeLeft > 0) {
+            if (giveawayData && isGiveawayCurrentlyActive(giveawayData)) {
                 if (!conflictWarnedDuringGiveaway) {
                     conflictWarnedDuringGiveaway = true;
                     logEvent("Conflict", "The original BON Giveaway script appeared while a giveaway is running. Do not reload this page until it has ended, then remove one of the scripts.");
@@ -2209,7 +2209,7 @@ body.host-panel-dragging * {
 
         resetButton = document.getElementById("resetButton");
         resetButton.onclick = function () {
-            if (giveawayData && giveawayData.timeLeft > 0) {
+            if (giveawayData && isGiveawayCurrentlyActive(giveawayData)) {
                 if (window.confirm("Are you sure you want to reset the giveaway? This will clear all entries and cannot be undone.")) {
                     resetGiveaway();
                 }
@@ -2221,7 +2221,7 @@ body.host-panel-dragging * {
         closeButton = document.getElementById("closeButton");
         closeButton.onclick = function () {
             // Check if a giveaway is active
-            if (giveawayData && giveawayData.timeLeft > 0) {
+            if (giveawayData && isGiveawayCurrentlyActive(giveawayData)) {
                 if (window.confirm("A giveaway is currently running. Are you sure you want to close the menu? This will NOT end the giveaway, but you may lose track of its progress.")) {
                     toggleMenu();
                 }
@@ -3234,7 +3234,7 @@ body.host-panel-dragging * {
 
             logEvent(
                 expiredOnRestore ? "Expired giveaway restored for settlement" : "Giveaway restored",
-                `Recovered ${numberEntries.size} entries after page reload. Time left: ${parseTime(giveawayData.timeLeft * 1000) || "expired"}`
+                `Recovered ${numberEntries.size} entries after page reload. Time left: ${parseTime(getGiveawayRemainingMs(giveawayData)) || "expired"}`
             );
             updateHostPanelUI();
 
@@ -3940,8 +3940,10 @@ body.host-panel-dragging * {
     }
 
     function handleEntryMessage(number, author, fancyName, giveawayData) {
-        // Safety: no active giveaway
+        // Safety: no active giveaway. During settlement we intentionally keep the
+        // chat observer alive for status commands, but entries are frozen.
         if (!giveawayData) return;
+        if (isGiveawaySettling(giveawayData) || getGiveawayRemainingMs(giveawayData) <= 0) return;
 
         // Silently ignore ultra-fast entries right after the giveaway starts.
         // This filters out auto-join scripts without punishing or warning anyone.
@@ -3997,7 +3999,7 @@ body.host-panel-dragging * {
         }
 
         if (!GENERAL_SETTINGS.suppress_entry_replies) {
-            const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
+            const timeLeftStr = parseTime(getGiveawayRemainingMs(giveawayData));
             const rigHint = rigNote("(entry logged under [b]highly suspicious[/b] conditions) 😈");
 
             const msg =
@@ -5638,6 +5640,11 @@ body.host-panel-dragging * {
 
         if (!validCommands.has(command)) return; // Unsupported
 
+        if (isGiveawaySettling(giveawayData)) {
+            const settlementSafeCommands = new Set(["time", "entries", "bon", "number", "help", "commands"]);
+            if (!settlementSafeCommands.has(command)) return;
+        }
+
         if (applyCooldown(author, { command })) return; // Spammer – ignored
 
         executeCommand({
@@ -5827,13 +5834,19 @@ body.host-panel-dragging * {
             const addMinutes = hostAdjustTime(+1);
             const removeMinutes = hostAdjustTime(-1);
 
-            // no args  → show countdown
+            // no args → derive from the absolute deadline, never from the cached
+            // timeLeft field (which can be stale if a timer is throttled/stopped).
             if (args.length === 0) {
-                reply(
-                    `Time left: [b][color=#1DDC5D]${parseTime(
-                        giveawayData.timeLeft * 1000
-                    )}[/color][/b] ${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")}`
-                );
+                const remainingMs = syncGiveawayTimeLeft(giveawayData);
+                if (isGiveawaySettling(giveawayData) || remainingMs <= 0) {
+                    reply(
+                        `${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")} [b][color=#FFDE59]Entries are closed.[/color][/b] Settlement is in progress.`
+                    );
+                } else {
+                    reply(
+                        `Time left: [b][color=#1DDC5D]${parseTime(remainingMs)}[/color][/b] ${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")}`
+                    );
+                }
                 return;
             }
 
@@ -6125,7 +6138,7 @@ body.host-panel-dragging * {
 
             addNewEntry(author, fancyName, luckyNum);
 
-            const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
+            const timeLeftStr = parseTime(getGiveawayRemainingMs(giveawayData));
             const rigHint = rigNote("(approved by the Official Rigging Committee™) ✅");
 
             reply(
@@ -6233,7 +6246,7 @@ body.host-panel-dragging * {
             }
 
             addNewEntry(author, fancyName, randomNum);
-            const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
+            const timeLeftStr = parseTime(getGiveawayRemainingMs(giveawayData));
             const rigHint = rigNote("(chosen by our [b]totally unbiased[/b] chaos engine)");
             reply(
                 `[color=#d85e27]${safeAuthor}[/color] has entered with the number ` +
@@ -6704,6 +6717,15 @@ body.host-panel-dragging * {
         if (!giveawayData) return;
         if (giveawayData.__ending) return;
         giveawayData.__ending = true;
+        giveawayData.timeLeft = 0;
+        try {
+            if (countdownHeader) countdownHeader.textContent = "00:00";
+            if (startButton) {
+                startButton.disabled = true;
+                startButton.textContent = "Settling…";
+                startButton.title = "Entries are closed; final settlement is in progress";
+            }
+        } catch {}
         const nowAtSettlement = Date.now();
         const scheduledEndTs = Number(giveawayData.endTs);
         const committedCutoffTs = Number(giveawayData?.settlement?.cutoffTs);
@@ -6932,11 +6954,26 @@ body.host-panel-dragging * {
             sponsorsInterval = null;
         }
 
-        // Freeze participant input before any payout computation. A queued/late
-        // entry must never alter stats or UI after the winner set is committed.
-        if (observer) {
-            observer.disconnect();
-            observer = null;
+        // Participant input is frozen by handleEntryMessage()/command gating above.
+        // Keep the observer alive during settlement so !time and other read-only
+        // status commands remain responsive instead of making the bot appear hung.
+
+        // Tell chat immediately that the entry window is closed. This deliberately
+        // happens BEFORE sponsor reconciliation or any money-moving operation.
+        if (!giveawayData.__closingNoticeSent) {
+            giveawayData.__closingNoticeSent = true;
+            snapshotGiveaway({ force: true });
+            const closedByTimer = Number.isFinite(Number(scheduledEndTs)) && nowAtSettlement >= scheduledEndTs;
+            try {
+                await sendMessage(
+                    closedByTimer
+                        ? "⏱️ [b][color=#FFDE59]Time is up — entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
+                        : "⏱️ [b][color=#FFDE59]Entries are now closed by the host.[/color][/b] Finalising sponsor accounting and settlement…",
+                    { requireExclusiveGiveawayOwnership: true }
+                );
+            } catch (e) {
+                logEvent("Closing notice warning", String(e?.message || e));
+            }
         }
 
         const buildSettlementFinancialPlan = () => {
@@ -8948,7 +8985,7 @@ body.host-panel-dragging * {
         const msg = reminderPrefix +
               `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
-              `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
+              `Time left: [b][color=#1DDC5D]${parseTime(getGiveawayRemainingMs(giveawayData))}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
               `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
               `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨` +
@@ -9743,9 +9780,7 @@ body.host-panel-dragging * {
         display.hidden = false;
 
         const timerID = setInterval(() => {
-            const now = Date.now();
-            const msLeft = giveawayData.endTs - now;
-            giveawayData.timeLeft = Math.max(Math.ceil(msLeft / 1000), 0);
+            const msLeft = syncGiveawayTimeLeft(giveawayData);
 
             // update MM:SS
             const m = Math.floor(giveawayData.timeLeft / 60);
@@ -10536,6 +10571,23 @@ body.host-panel-dragging * {
         return Number.isInteger(n) ? n : Math.round(n * 100) / 100;
     }
 
+    function getGiveawayRemainingMs(data = giveawayData) {
+        if (!data) return 0;
+        const endTs = Number(data.endTs);
+        if (Number.isFinite(endTs)) return Math.max(0, endTs - Date.now());
+        return Math.max(0, Number(data.timeLeft) || 0) * 1000;
+    }
+
+    function syncGiveawayTimeLeft(data = giveawayData) {
+        const ms = getGiveawayRemainingMs(data);
+        if (data) data.timeLeft = Math.max(0, Math.ceil(ms / 1000));
+        return ms;
+    }
+
+    function isGiveawaySettling(data = giveawayData) {
+        return !!(data && (data.__ending || data?.settlement?.phase === "settling"));
+    }
+
     function parseTime(ms) {
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
@@ -11093,9 +11145,8 @@ body.host-panel-dragging * {
     }
 
     function isGiveawayCurrentlyActive(data) {
-        if (!data) return false;
-        const secondsLeft = Math.floor(Number(data.timeLeft) || 0);
-        return secondsLeft > 0;
+        if (!data || isGiveawaySettling(data)) return false;
+        return getGiveawayRemainingMs(data) > 0;
     }
 
     function getSponsorshipNextWinnerLine(data, options = {}) {
