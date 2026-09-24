@@ -2,7 +2,7 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.3
+// @version      1.4.4
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -204,6 +204,11 @@
 //     DarkPeers now supports both class-on-link and legacy wrapper markup, while
 //     host identity consumers share the same resolver instead of depending on one
 //     tracker-specific .top-nav__username DOM shape.
+//   - v1.4.4 is a DarkPeers-first production hardening release after a failed live
+//     settlement: restore the proven DarkPeers gift POST contract, restore exact
+//     DarkPeers Gift History BON parsing (including the "Points" suffix), verify
+//     available BON before any settlement transfer, and require winner payout
+//     confirmation before an irreversible BON Pool contribution.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -1867,9 +1872,19 @@
         const senderSlug = getAuthenticatedUserSlug();
         if (!senderSlug) return { ok: false, reason: t("preflightUser") };
 
-        const giftContract = await fetchGiftFormContract(senderSlug);
-        if (!giftContract?.action || !giftContract?.formData) {
-            return { ok: false, reason: t("preflightGift") };
+        let giftContract = null;
+        if (SITE.id === "darkpeers") {
+            // DarkPeers v1.3.26 used the sender-scoped POST endpoint directly and
+            // was live-proven. Do not make a generic parsed-form contract a start
+            // requirement on the primary tracker.
+            if (!getGiftEndpointPath(senderSlug)) {
+                return { ok: false, reason: t("preflightGift") };
+            }
+        } else {
+            giftContract = await fetchGiftFormContract(senderSlug);
+            if (!giftContract?.action || !giftContract?.formData) {
+                return { ok: false, reason: t("preflightGift") };
+            }
         }
 
         if (normalizeDonationPercent(donationPercent) > 0) {
@@ -1886,8 +1901,10 @@
             roomId,
             userId: Number(OT_USER_ID),
             giftAction: (() => {
-                try { return new URL(giftContract.action, location.origin).pathname; }
-                catch { return ""; }
+                try {
+                    if (SITE.id === "darkpeers") return getGiftEndpointPath(senderSlug) || "";
+                    return new URL(giftContract.action, location.origin).pathname;
+                } catch { return ""; }
             })(),
             poolChecked: normalizeDonationPercent(donationPercent) > 0,
             poolMode: SITE.pool.mode
@@ -5759,6 +5776,14 @@ body.host-panel-dragging * {
         return String(cell.textContent || "").trim();
     }
 
+    function parseDarkPeersBonAmount(value) {
+        const amountText = String(value || "")
+            .replace(/[\s\u00A0\u202F]+/g, "")
+            .replace(/,/g, "");
+        const amountMatch = amountText.match(/[0-9]+(?:\.[0-9]+)?/);
+        return amountMatch ? Number(amountMatch[0]) : NaN;
+    }
+
     function parseUnit3dBonAmount(value) {
         const raw = String(value || "")
             .replace(/\u00a0/g, " ")
@@ -5832,7 +5857,9 @@ body.host-panel-dragging * {
                 const cells = row.querySelectorAll("td");
                 if (cells.length < 5) return null;
 
-                const amount = parseUnit3dBonAmount(cells[2].textContent);
+                const amount = SITE.id === "darkpeers"
+                    ? parseDarkPeersBonAmount(cells[2].textContent)
+                    : parseUnit3dBonAmount(cells[2].textContent);
 
                 const timeEl = cells[4].querySelector("time");
                 const rawTimestamp = timeEl?.getAttribute("datetime") || "";
@@ -9053,6 +9080,40 @@ body.host-panel-dragging * {
             const hostFundedTotal = Math.max(0, Math.floor(Number(plan.hostFundedTotal) || 0));
             const entrantsTotal = Math.max(0, Math.floor(Number(plan.entrantsTotal) || 0));
             const scaleIncrease = Math.max(0, Math.floor(Number(plan.scaleIncrease) || 0));
+            const settlementSelfKeys = resolveSelfKeys(giveawayData.host);
+            const requiredWinnerOutflow = winners.reduce((sum, winner, index) => {
+                const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
+                if (!amount) return sum;
+                if (settlementSelfKeys.has(normalizeUserKey(winner?.author))) return sum;
+                return sum + amount;
+            }, 0);
+            const requiredSettlementOutflow = requiredWinnerOutflow + Math.max(0, Math.floor(Number(split.total) || 0));
+            const verifiedSettlementBalance = await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
+
+            if (
+                !Number.isFinite(verifiedSettlementBalance) ||
+                verifiedSettlementBalance == null ||
+                verifiedSettlementBalance < requiredSettlementOutflow
+            ) {
+                const availableText = Number.isFinite(verifiedSettlementBalance)
+                    ? fmtBONCurrency(verifiedSettlementBalance)
+                    : "unavailable";
+                logEvent(
+                    "Settlement paused (insufficient verified BON)",
+                    `Required external outflow=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No winner gift or BON Pool contribution was attempted.`
+                );
+                try {
+                    window.alert(
+                        `GIVEAWAY SETTLEMENT PAUSED: this account cannot currently cover the full remaining settlement.\n\n` +
+                        `Required: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
+                        `Verified balance: ${availableText} BON\n\n` +
+                        `No further automatic transfer has been made. Resolve the balance/accounting difference and resume from the saved settlement.`
+                    );
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
+            }
 
             const podium = ["🥇", "🥈", "🥉"];
 
@@ -9166,7 +9227,7 @@ body.host-panel-dragging * {
 
             // 6) Send gifts sequentially. Capture a chat cursor immediately before
             // payout so verification cannot accidentally match an older identical gift.
-            const selfKeys = resolveSelfKeys(giveawayData.host);
+            const selfKeys = settlementSelfKeys;
             const expectedGifts = [];
             const deferredWinnerGifts = [];
             const settlement = giveawayData.settlement;
@@ -9247,7 +9308,41 @@ body.host-panel-dragging * {
                 }
             }
 
-            // 6a) Direct BON Pool contribution. Success is announced publicly only
+            // 6a) Winner payouts must be confirmed before any BON Pool transfer.
+            // This prevents a pool contribution from consuming funds while a winner
+            // gift is rejected/unconfirmed, which previously left a live settlement
+            // stranded after an irreversible partial payment.
+            const winnersVerifiedBeforePool = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
+                giftHistoryBaseline: payoutGiftHistoryBaseline,
+                afterId: payoutAfterMessageId,
+                notBeforeTs: payoutNotBeforeTs,
+                statementId: null
+            });
+
+            if (!winnersVerifiedBeforePool) {
+                logEvent(
+                    "Settlement paused (winner payout not confirmed)",
+                    "At least one winner gift could not be confirmed. BON Pool contribution was NOT attempted; the active settlement was preserved for manual verification/resume."
+                );
+                try {
+                    currentStatement = createStatementRecord({
+                        winners, gross: allocated, net, donations: split.donations, split,
+                        poolStatus: donationActive
+                            ? "NOT ATTEMPTED: winner payout not confirmed"
+                            : "none",
+                        entrants: entrantsTotal
+                    });
+                    if (currentStatement) {
+                        currentStatement.verification = "winner payout not confirmed; settlement paused before BON Pool";
+                        persistCurrentStatement();
+                    }
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
+            }
+
+            // 6b) Direct BON Pool contribution. Success is announced publicly only
             //     after both the host's own contribution counter and the global pool
             //     total confirm the expected increase.
             let poolResult = { confirmed: false, attempted: false, reason: "not-active" };
@@ -9302,15 +9397,8 @@ body.host-panel-dragging * {
                 persistCurrentStatement();
             } catch (e) { /* statements are best-effort */ }
 
-            // 6b) Verify payouts against authenticated Gift History first.
-            // SystemBot/chat is retained only as a final fallback for rows that
-            // could not be confirmed through the persistent history page.
-            const winnersVerified = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
-                giftHistoryBaseline: payoutGiftHistoryBaseline,
-                afterId: payoutAfterMessageId,
-                notBeforeTs: payoutNotBeforeTs,
-                statementId: currentStatement?.id ?? null
-            });
+            // Winner payouts were already verified before the BON Pool transfer.
+            const winnersVerified = winnersVerifiedBeforePool;
 
             if (
                 !winnersVerified &&
@@ -11432,31 +11520,58 @@ body.host-panel-dragging * {
             return true;
         }
 
-        // Page-first contract: GET the site's real Send Gift page and submit the
-        // exact POST form it exposes. Hidden tracker/version-specific fields are
-        // preserved automatically. /gift remains emergency fallback only.
         const senderSlug = getAuthenticatedUserSlug();
-        const giftContract = senderSlug ? await fetchGiftFormContract(senderSlug) : null;
-
-        if (!giftContract?.action || !giftContract?.formData) {
-            logEvent(
-                "Gift page contract unavailable",
-                `Could not obtain the site's real Send Gift form for ${sanitizeNick(safeRecipient)}; chat fallback is the last resort.`
-            );
-            if (!SITE.gifts.allowChatFallback || !(await fallbackToChat())) {
-                return { attempted: false, reason: "gift-form-unavailable" };
-            }
-            return { attempted: true, transport: "chat-last-resort" };
-        }
-
-        const giftUrl = giftContract.action;
-        const formData = giftContract.formData;
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         const csrfToken = csrfMeta && csrfMeta.content ? csrfMeta.content : null;
-        if (!formData.has("_token") && csrfToken) formData.set("_token", csrfToken);
-        formData.set("recipient_username", safeRecipient);
-        formData.set("bon", String(safeAmount));
-        formData.set("message", safeMessage);
+
+        let giftUrl = null;
+        let formData = null;
+
+        if (SITE.id === "darkpeers") {
+            // DarkPeers is the primary tracker. Restore the exact v1.3.26 contract
+            // that was live-tested there instead of routing it through the generic
+            // parsed-form adapter introduced for multi-tracker support.
+            const endpointPath = senderSlug ? getGiftEndpointPath(senderSlug) : null;
+            giftUrl = endpointPath ? (location.origin + endpointPath) : null;
+
+            if (!csrfToken || !giftUrl) {
+                logEvent(
+                    "DarkPeers gift endpoint unavailable",
+                    `Could not resolve the proven sender-scoped gift POST for ${sanitizeNick(safeRecipient)}; using chat fallback.`
+                );
+                if (!(await fallbackToChat())) {
+                    return { attempted: false, reason: "ownership-lost" };
+                }
+                return { attempted: true, transport: "chat" };
+            }
+
+            formData = new FormData();
+            formData.append("_token", csrfToken);
+            formData.append("recipient_username", safeRecipient);
+            formData.append("type", "bon");
+            formData.append("bon", String(safeAmount));
+            formData.append("message", safeMessage);
+        } else {
+            // Secondary UNIT3D trackers use their own live form contract.
+            const giftContract = senderSlug ? await fetchGiftFormContract(senderSlug) : null;
+            if (!giftContract?.action || !giftContract?.formData) {
+                logEvent(
+                    "Gift page contract unavailable",
+                    `Could not obtain the site's real Send Gift form for ${sanitizeNick(safeRecipient)}; chat fallback is the last resort.`
+                );
+                if (!SITE.gifts.allowChatFallback || !(await fallbackToChat())) {
+                    return { attempted: false, reason: "gift-form-unavailable" };
+                }
+                return { attempted: true, transport: "chat-last-resort" };
+            }
+
+            giftUrl = giftContract.action;
+            formData = giftContract.formData;
+            if (!formData.has("_token") && csrfToken) formData.set("_token", csrfToken);
+            formData.set("recipient_username", safeRecipient);
+            formData.set("bon", String(safeAmount));
+            formData.set("message", safeMessage);
+        }
 
         // Codes that mean "server definitely did not process this gift":
         //   400 bad request, 401 unauthorized, 403 forbidden, 404 not found,
