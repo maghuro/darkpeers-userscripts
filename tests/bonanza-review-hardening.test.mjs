@@ -17,6 +17,14 @@ test("review hardening invariants stay present", () => {
   assert.match(source, /const REHEARSAL_MODE = !!\(/);
   assert.match(source, /Rehearsal gift suppressed/);
   assert.match(source, /Rehearsal BON Pool contribution suppressed/);
+  assert.equal(
+    (source.match(/getLatestChatMessageId\(DARKPEERS_MAIN_CHATROOM_ID\)/g) || []).length,
+    4
+  );
+  assert.equal(
+    (source.match(/getLatestChatMessageId\(DARKPEERS_CHATROOM_ID\)/g) || []).length,
+    2
+  );
 });
 
 test("winner-count commands are host-only", () => {
