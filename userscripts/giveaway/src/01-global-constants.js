@@ -119,10 +119,12 @@
 
     const REHEARSAL_FLAG = "BONANZA_GIVEAWAY_REHEARSAL";
     const REHEARSAL_QUERY_RE = /(?:^|[?&])bg_rehearsal=1(?:&|$)/i;
+    const REHEARSAL_FORCED_BY_DEBUG = DEBUG_SETTINGS.dry_run === true;
+    const REHEARSAL_FORCED_BY_QUERY = REHEARSAL_QUERY_RE.test(String(window.location.search || ""));
     const REHEARSAL_MODE = !!(
-        DEBUG_SETTINGS.dry_run ||
+        REHEARSAL_FORCED_BY_DEBUG ||
         localStorage.getItem(REHEARSAL_FLAG) === "true" ||
-        REHEARSAL_QUERY_RE.test(String(window.location.search || ""))
+        REHEARSAL_FORCED_BY_QUERY
     );
     const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE ? "::rehearsal" : "";
 
