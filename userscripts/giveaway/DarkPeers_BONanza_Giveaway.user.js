@@ -204,8 +204,8 @@
 //     public winner names use the same anti-ping sanitization as other chat output,
 //     settlement message checkpoints use the Main Chat cursor while gift diagnostics
 //     use the System cursor, restore can remain entry-live while sponsor accounting is
-//     unavailable, and a
-//     rehearsal mode suppresses every script chat message and BON-moving operation.
+//     unavailable, and rehearsal mode suppresses every script chat message and
+//     BON-moving operation.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -6484,7 +6484,7 @@ body.host-panel-dragging * {
     }
 
     const _adminCache = new Map(); // fancyName HTML → boolean (cleared per giveaway in stopGiveaway)
-    const DARKPEERS_STAFF_ROLE_TOKENS = new Set([
+    const DARKPEERS_STAFF_ROLE_NAMES = new Set([
         "leader", "administrator", "admin", "moderator", "mod", "developer", "operator"
     ]);
 
@@ -6499,9 +6499,11 @@ body.host-panel-dragging * {
             div.innerHTML = fancyName;
             const a = div.querySelector('a.user-tag__link');
             if (a) {
-                const title = a.getAttribute('title')?.toLowerCase() || '';
-                const roleTokens = title.split(/[^a-z0-9]+/).filter(Boolean);
-                result = roleTokens.some(token => DARKPEERS_STAFF_ROLE_TOKENS.has(token));
+                const title = String(a.getAttribute('title') || "")
+                    .trim()
+                    .toLowerCase()
+                    .replace(/\s+/g, " ");
+                result = DARKPEERS_STAFF_ROLE_NAMES.has(title);
             }
         } catch {
             result = false;
@@ -7000,7 +7002,7 @@ body.host-panel-dragging * {
         },
 
 
-        /* Host + Admin commands */
+        /* Privileged commands. Each handler applies its own host/staff policy. */
         addbon: hostAddBon,
 
         reminder(ctx) {
