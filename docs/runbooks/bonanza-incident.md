@@ -40,14 +40,21 @@ The host and recognized staff are exempt from the escalating command spam lockou
 
 Rehearsal mode runs the userscript logic without sending userscript chat output and without moving BON.
 
-Enable it in the browser console on DarkPeers:
+Enable it from the host panel:
+
+1. Open Settings.
+2. Under **Safety & Testing**, enable **Rehearsal / Debug mode**.
+3. The page reloads automatically.
+4. Confirm that the red REHEARSAL MODE banner appears in the host panel.
+
+The toggle is deliberately blocked while a giveaway is active or recoverable.
+
+For diagnostic fallback only, the same mode can still be enabled from the browser console:
 
 ```js
 localStorage.setItem("BONANZA_GIVEAWAY_REHEARSAL", "true");
 location.reload();
 ```
-
-A red REHEARSAL MODE banner must appear in the host panel.
 
 While rehearsal mode is active:
 
@@ -72,7 +79,9 @@ Suggested pre-release rehearsal:
 8. Inspect the host log and statement.
 9. Confirm that no script output appeared in chat and no BON moved.
 
-Disable rehearsal mode:
+Disable rehearsal mode from **Settings > Safety & Testing** by turning off **Rehearsal / Debug mode**. The page reloads automatically.
+
+Console fallback:
 
 ```js
 localStorage.removeItem("BONANZA_GIVEAWAY_REHEARSAL");

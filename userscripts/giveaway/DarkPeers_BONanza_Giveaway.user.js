@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.6
+// @version      1.5.7
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -211,6 +211,10 @@
 //     rig/unrig, time adjustments, naughty-list operations and !end <host> are
 //     identified publicly by staff username. Staff also shares the host's emergency
 //     spam-lockout exemption, while !winners and !maxwinners remain host-only.
+//   - v1.5.7 closes the remaining review races: restored sponsor accounting starts
+//     fail-closed, Main Chat is observed while its server replay boundary is fetched,
+//     historical commands use a strict cutoff, staff attribution stays public even in
+//     Silent Mode, and Rehearsal / Debug mode is toggleable from the settings UI.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -892,6 +896,11 @@
     let entriesTbodyEl = null;
     let chatMessagesListEl = null;
     let chatReplayIgnoreBeforeTs = null;
+    let chatReplayCommandIgnoreBeforeTs = null;
+    let chatReplayBoundaryPending = false;
+    let chatReplayPendingNodes = [];
+    let chatReplayPendingNodeSet = new WeakSet();
+    let parsedChatMessageNodes = new WeakSet();
     const entryRowByKey = new Map();
 
     const regNum = /^-?\d+$/; // matches integers (including negative) for entry detection
@@ -1350,6 +1359,21 @@
             >
           </label>`).join('')}
       </div>
+
+      <div class="settings-group" aria-label="Safety and Testing" data-settings-group="safety-testing">
+        <div class="settings-group__header">
+          <p class="settings-group__title">Safety & Testing</p>
+        </div>
+        <label class="settings-row" title="Rehearsal/debug mode suppresses userscript chat output and all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
+          <span class="settings-row__label">Rehearsal / Debug mode</span>
+          <input
+            type="checkbox"
+            id="rehearsalModeToggle"
+            title="No userscript chat output or BON transfers. Changing this setting reloads the page."
+            class="settings-row__toggle"
+          >
+        </label>
+      </div>
     </div>
   </div>
 
@@ -1367,7 +1391,6 @@
       <li><code>!bon&nbsp;</code>         <span class="desc">Show pot amount</span></li>
       <li><code>!range&nbsp;</code>       <span class="desc">Show valid range</span></li>
       <li><code>!scale&nbsp;</code>      <span class="desc">Show scaling progress</span></li>
-      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">Toggle rigging (fun)</span></li>
       <li><code>!help&nbsp;</code>        <span class="desc">Show this list in chat</span></li>
       <li><code>!stats&nbsp;[user]</code>   <span class="desc">Show saved stats</span></li>
       <li><code>!top&nbsp;[N]</code>       <span class="desc">Top winners (by wins)</span></li>
@@ -1375,21 +1398,23 @@
       <li><code>!sponsors&nbsp;[N]</code>  <span class="desc">Top sponsors</span></li>
       <li><code>!unlucky&nbsp;[N]</code>   <span class="desc">Most losses</span></li>
 
-      <li class="section-label">Host-Only&nbsp;Commands</li>
+      <li class="section-label">Host or Staff Emergency Commands</li>
       <li class="full-span">
           <code>!time add&nbsp;N&nbsp;/&nbsp;remove&nbsp;N&nbsp;</code>
           <span class="desc">Adjust remaining minutes</span>
       </li>
+      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">Toggle rigging (visual only)</span></li>
+      <li><code>!end&nbsp;[host]</code>   <span class="desc">Host: !end. Staff: !end &lt;host&gt;</span></li>
+      <li><code>!naughty&nbsp;</code>       <span class="desc">list/add/remove a user</span></li>
+      <li class="naughty-alert">
+        ⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************
+      </li>
+
+      <li class="section-label">Host-Only&nbsp;Commands</li>
       <li><code>!reminder&nbsp;</code>    <span class="desc">Send reminder msg</span></li>
       <li><code>!addbon&nbsp;</code>      <span class="desc">Add BON to pot</span></li>
       <li><code>!winners&nbsp;N</code>    <span class="desc">Set number of winners</span></li>
       <li><code>!maxwinners&nbsp;N</code> <span class="desc">Set max scaled winners</span></li>
-      <li><code>!end&nbsp;</code>         <span class="desc">End the giveaway</span></li>
-
-      <li><code>!naughty&nbsp;</code>     <span class="desc">list/add/remove a user</span></li>
-      <li class="naughty-alert">
-        ⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************
-      </li>
     </ul>
   </div>
 
@@ -2420,6 +2445,35 @@ body.host-panel-dragging * {
         }
 
 
+        const rehearsalModeToggle = document.getElementById("rehearsalModeToggle");
+        if (rehearsalModeToggle) {
+            rehearsalModeToggle.checked = REHEARSAL_MODE;
+            rehearsalModeToggle.addEventListener("change", () => {
+                const requested = !!rehearsalModeToggle.checked;
+                const activeHere = !!giveawayData;
+                const activeElsewhere = isLockedByAnotherTab();
+
+                if (activeHere || activeElsewhere) {
+                    rehearsalModeToggle.checked = REHEARSAL_MODE;
+                    window.alert(
+                        "Rehearsal / Debug mode cannot be changed while a giveaway is active or recoverable. " +
+                        "Finish or settle the giveaway first."
+                    );
+                    return;
+                }
+
+                try {
+                    localStorage.setItem(REHEARSAL_FLAG, String(requested));
+                } catch {
+                    rehearsalModeToggle.checked = REHEARSAL_MODE;
+                    window.alert("Unable to save the Rehearsal / Debug mode setting.");
+                    return;
+                }
+
+                window.location.reload();
+            });
+        }
+
         bindSettingsSectionToggleButtons();
 
         updateHostPanelUI();
@@ -3322,6 +3376,12 @@ body.host-panel-dragging * {
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+
+            // Restore starts fail-closed for sponsor accounting. Entries and time
+            // may resume, but BON mutation and settlement stay blocked until the
+            // canonical Gift History reconciliation succeeds and is persisted.
+            giveawayData.__sponsorAccountingVerified = false;
+
             giveawayData.__closingIntent =
                 giveawayData.closingIntent === true ||
                 giveawayData.closingNoticeSent === true ||
@@ -3465,27 +3525,39 @@ body.host-panel-dragging * {
             cacheChatContext();
 
             // 8) Keep the Main Chat observer alive even after entries close.
-            // Entry/mutating-command gates remain closed during settlement, while
-            // read-only status commands such as !time continue to answer.
-            //
-            // UNIT3D hydrates the current rolling chat window after reload. Those DOM
-            // nodes are historical messages, not new user actions. Ignore every
-            // timestamp at or before this restore boundary so old entries/commands
-            // cannot be replayed and trigger duplicate replies or spam lockouts.
+            // Attach it before asking the API for a replay boundary. Messages that
+            // arrive while that request is in flight are queued, then classified
+            // once the server boundary is known.
+            if (observer) { observer.disconnect(); observer = null; }
+            beginChatReplayBoundaryCapture();
+            addObserver(giveawayData);
+            const localReplayCaptureStartedAt = Date.now();
+
             const replayBoundary = await getLatestMainChatReplayBoundary();
             if (replayBoundary && Number.isFinite(replayBoundary.ts)) {
-                // Keep one source-timestamp resolution window fail-open. Replaying
-                // one borderline historical message is preferable to silently
-                // dropping a genuine entry posted immediately after the reload.
-                chatReplayIgnoreBeforeTs =
-                    replayBoundary.ts - Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+                const resolutionMs = Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+
+                // Entries keep one source timestamp bucket fail-open. Replaying an
+                // entry is recoverable; silently losing a fresh entry is worse.
+                chatReplayIgnoreBeforeTs = replayBoundary.ts - resolutionMs;
+
+                // Commands use the strict server boundary. A fresh command in the
+                // same timestamp bucket may need to be re-sent, but a historical
+                // !end / !addbon / time mutation must never be replayed.
+                chatReplayCommandIgnoreBeforeTs = replayBoundary.ts;
             } else {
-                // API unavailable: prefer a small replay risk over losing new entries
-                // because the host PC clock is slightly fast.
-                chatReplayIgnoreBeforeTs = Date.now() - 2000;
+                // Preserve every entry that arrived while the API request was in
+                // flight. Privileged commands still fail closed through the end of
+                // the failed lookup and can simply be re-sent by host/staff.
+                chatReplayIgnoreBeforeTs = localReplayCaptureStartedAt - 2000;
+                chatReplayCommandIgnoreBeforeTs = Date.now();
             }
-            if (observer) { observer.disconnect(); observer = null; }
-            addObserver(giveawayData);
+            finishChatReplayBoundaryCapture();
+
+            setSponsorAccountingVerificationState(
+                false,
+                "Restored giveaway sponsor accounting is pending canonical Gift History reconciliation."
+            );
 
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
@@ -4223,6 +4295,41 @@ body.host-panel-dragging * {
         startObserver();
     }
 
+    function beginChatReplayBoundaryCapture() {
+        chatReplayBoundaryPending = true;
+        chatReplayPendingNodes = [];
+        chatReplayPendingNodeSet = new WeakSet();
+        parsedChatMessageNodes = new WeakSet();
+    }
+
+    function finishChatReplayBoundaryCapture() {
+        chatReplayBoundaryPending = false;
+
+        const pending = [];
+        const seen = new Set();
+        const collect = (node) => {
+            if (!node || seen.has(node)) return;
+            seen.add(node);
+            pending.push(node);
+        };
+
+        if (!chatMessagesListEl || !chatMessagesListEl.isConnected) {
+            chatMessagesListEl = document.querySelector(CHATROOM_MESSAGES_SELECTOR);
+        }
+
+        if (chatMessagesListEl) {
+            for (const node of chatMessagesListEl.querySelectorAll(CHAT_MESSAGE_SELECTOR)) {
+                collect(node);
+            }
+        }
+
+        for (const node of chatReplayPendingNodes) collect(node);
+        chatReplayPendingNodes = [];
+        chatReplayPendingNodeSet = new WeakSet();
+
+        for (const node of pending) parseMessage(node);
+    }
+
     function startObserver() {
         if (!chatMessagesListEl || !chatMessagesListEl.isConnected) {
             chatMessagesListEl = document.querySelector(CHATROOM_MESSAGES_SELECTOR);
@@ -4323,15 +4430,13 @@ body.host-panel-dragging * {
     function parseMessage(messageNode) {
         const perfStart = PERF ? performance.now() : 0;
 
-        const createdAtTs = getChatMessageCreatedAtTs(messageNode);
-        // If UNIT3D ever inserts a relevant node without a parseable datetime,
-        // deliberately fail open. A possible duplicate reply is safer than silently
-        // discarding a real entry.
-        if (
-            Number.isFinite(chatReplayIgnoreBeforeTs) &&
-            Number.isFinite(createdAtTs) &&
-            createdAtTs <= chatReplayIgnoreBeforeTs
-        ) {
+        if (!messageNode || parsedChatMessageNodes.has(messageNode)) return;
+
+        if (chatReplayBoundaryPending) {
+            if (!chatReplayPendingNodeSet.has(messageNode)) {
+                chatReplayPendingNodeSet.add(messageNode);
+                chatReplayPendingNodes.push(messageNode);
+            }
             return;
         }
 
@@ -4352,8 +4457,27 @@ body.host-panel-dragging * {
         const isCommand = messageContent.startsWith("!");
         if (!isEntry && !isCommand) return;
 
+        const createdAtTs = getChatMessageCreatedAtTs(messageNode);
+        const replayCutoff = isCommand
+            ? chatReplayCommandIgnoreBeforeTs
+            : chatReplayIgnoreBeforeTs;
+
+        // Entries keep a small fail-open tolerance. Commands use the strict server
+        // cutoff because replaying a privileged mutation is worse than asking for a
+        // fresh command. A relevant node with no parseable datetime still fails open.
+        if (
+            Number.isFinite(replayCutoff) &&
+            Number.isFinite(createdAtTs) &&
+            createdAtTs <= replayCutoff
+        ) {
+            parsedChatMessageNodes.add(messageNode);
+            return;
+        }
+
         const author = getAuthor(messageNode);
         if (!author) return; // could not resolve username from DOM. Skip silently
+
+        parsedChatMessageNodes.add(messageNode);
 
         // Pull fancyName only for relevant messages (entries/commands). We capture a stable tag that
         // always includes the username text (some sites hydrate it after insertion).
@@ -6564,7 +6688,11 @@ body.host-panel-dragging * {
 
         const prefix =
             `👮 [b][color=#5DE2E7]Staff action by ${sanitizeNick(ctx.author)}:[/color][/b] `;
-        return (message) => reply(prefix + message);
+
+        // Staff intervention is operationally significant and must stay public
+        // even when the host enabled Silent Mode. Rehearsal Mode still suppresses
+        // sendMessage itself, so testing cannot leak messages into live chat.
+        return (message) => sendMessage(prefix + message);
     }
 
     /** Factory for leaderboard commands. Eliminates boilerplate across top/most/sponsors/unlucky. */
@@ -6628,13 +6756,15 @@ body.host-panel-dragging * {
 
             if (!isPriv) return; // silently ignore non-host/non-admin
 
+            const actionReply = makeStaffAttributedReply(ctx);
+
             if (action !== "add" && action !== "remove") {
-                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
+                actionReply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 
             if (isNaN(minutes) || minutes <= 0) {
-                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
+                actionReply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 

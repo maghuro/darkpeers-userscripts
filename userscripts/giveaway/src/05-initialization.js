@@ -699,6 +699,35 @@
         }
 
 
+        const rehearsalModeToggle = document.getElementById("rehearsalModeToggle");
+        if (rehearsalModeToggle) {
+            rehearsalModeToggle.checked = REHEARSAL_MODE;
+            rehearsalModeToggle.addEventListener("change", () => {
+                const requested = !!rehearsalModeToggle.checked;
+                const activeHere = !!giveawayData;
+                const activeElsewhere = isLockedByAnotherTab();
+
+                if (activeHere || activeElsewhere) {
+                    rehearsalModeToggle.checked = REHEARSAL_MODE;
+                    window.alert(
+                        "Rehearsal / Debug mode cannot be changed while a giveaway is active or recoverable. " +
+                        "Finish or settle the giveaway first."
+                    );
+                    return;
+                }
+
+                try {
+                    localStorage.setItem(REHEARSAL_FLAG, String(requested));
+                } catch {
+                    rehearsalModeToggle.checked = REHEARSAL_MODE;
+                    window.alert("Unable to save the Rehearsal / Debug mode setting.");
+                    return;
+                }
+
+                window.location.reload();
+            });
+        }
+
         bindSettingsSectionToggleButtons();
 
         updateHostPanelUI();
@@ -1601,6 +1630,12 @@
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+
+            // Restore starts fail-closed for sponsor accounting. Entries and time
+            // may resume, but BON mutation and settlement stay blocked until the
+            // canonical Gift History reconciliation succeeds and is persisted.
+            giveawayData.__sponsorAccountingVerified = false;
+
             giveawayData.__closingIntent =
                 giveawayData.closingIntent === true ||
                 giveawayData.closingNoticeSent === true ||
@@ -1744,27 +1779,39 @@
             cacheChatContext();
 
             // 8) Keep the Main Chat observer alive even after entries close.
-            // Entry/mutating-command gates remain closed during settlement, while
-            // read-only status commands such as !time continue to answer.
-            //
-            // UNIT3D hydrates the current rolling chat window after reload. Those DOM
-            // nodes are historical messages, not new user actions. Ignore every
-            // timestamp at or before this restore boundary so old entries/commands
-            // cannot be replayed and trigger duplicate replies or spam lockouts.
+            // Attach it before asking the API for a replay boundary. Messages that
+            // arrive while that request is in flight are queued, then classified
+            // once the server boundary is known.
+            if (observer) { observer.disconnect(); observer = null; }
+            beginChatReplayBoundaryCapture();
+            addObserver(giveawayData);
+            const localReplayCaptureStartedAt = Date.now();
+
             const replayBoundary = await getLatestMainChatReplayBoundary();
             if (replayBoundary && Number.isFinite(replayBoundary.ts)) {
-                // Keep one source-timestamp resolution window fail-open. Replaying
-                // one borderline historical message is preferable to silently
-                // dropping a genuine entry posted immediately after the reload.
-                chatReplayIgnoreBeforeTs =
-                    replayBoundary.ts - Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+                const resolutionMs = Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+
+                // Entries keep one source timestamp bucket fail-open. Replaying an
+                // entry is recoverable; silently losing a fresh entry is worse.
+                chatReplayIgnoreBeforeTs = replayBoundary.ts - resolutionMs;
+
+                // Commands use the strict server boundary. A fresh command in the
+                // same timestamp bucket may need to be re-sent, but a historical
+                // !end / !addbon / time mutation must never be replayed.
+                chatReplayCommandIgnoreBeforeTs = replayBoundary.ts;
             } else {
-                // API unavailable: prefer a small replay risk over losing new entries
-                // because the host PC clock is slightly fast.
-                chatReplayIgnoreBeforeTs = Date.now() - 2000;
+                // Preserve every entry that arrived while the API request was in
+                // flight. Privileged commands still fail closed through the end of
+                // the failed lookup and can simply be re-sent by host/staff.
+                chatReplayIgnoreBeforeTs = localReplayCaptureStartedAt - 2000;
+                chatReplayCommandIgnoreBeforeTs = Date.now();
             }
-            if (observer) { observer.disconnect(); observer = null; }
-            addObserver(giveawayData);
+            finishChatReplayBoundaryCapture();
+
+            setSponsorAccountingVerificationState(
+                false,
+                "Restored giveaway sponsor accounting is pending canonical Gift History reconciliation."
+            );
 
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }

@@ -237,7 +237,11 @@
 
         const prefix =
             `👮 [b][color=#5DE2E7]Staff action by ${sanitizeNick(ctx.author)}:[/color][/b] `;
-        return (message) => reply(prefix + message);
+
+        // Staff intervention is operationally significant and must stay public
+        // even when the host enabled Silent Mode. Rehearsal Mode still suppresses
+        // sendMessage itself, so testing cannot leak messages into live chat.
+        return (message) => sendMessage(prefix + message);
     }
 
     /** Factory for leaderboard commands. Eliminates boilerplate across top/most/sponsors/unlucky. */
@@ -301,13 +305,15 @@
 
             if (!isPriv) return; // silently ignore non-host/non-admin
 
+            const actionReply = makeStaffAttributedReply(ctx);
+
             if (action !== "add" && action !== "remove") {
-                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
+                actionReply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 
             if (isNaN(minutes) || minutes <= 0) {
-                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
+                actionReply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 
