@@ -61,3 +61,29 @@ test("degraded restore keeps a settlement gate", () => {
   assert.match(source, /ACCOUNTING NOT VERIFIED/);
   assert.match(source, /repairStats: false/);
 });
+
+
+test("rehearsal guards precede every money/chat POST path", () => {
+  const poolStart = source.indexOf("async function contributeBonPool");
+  const poolDryRun = source.indexOf("if (REHEARSAL_MODE)", poolStart);
+  const poolPost = source.indexOf('method: "POST"', poolStart);
+  assert.ok(poolStart >= 0 && poolDryRun > poolStart && poolPost > poolDryRun);
+
+  const giftStart = source.indexOf("async function giftBon");
+  const giftDryRun = source.indexOf("if (REHEARSAL_MODE)", giftStart);
+  const giftPost = source.indexOf('method: "POST"', giftStart);
+  assert.ok(giftStart >= 0 && giftDryRun > giftStart && giftPost > giftDryRun);
+
+  const sendStart = source.indexOf("async function sendMessage");
+  const sendDryRun = source.indexOf("if (REHEARSAL_MODE)", sendStart);
+  const sendApiCall = source.indexOf("trySendViaApi(messageStr)", sendStart);
+  assert.ok(sendStart >= 0 && sendDryRun > sendStart && sendApiCall > sendDryRun);
+
+  assert.equal((source.match(/trySendViaApi\(/g) || []).length, 2);
+});
+
+test("staff detection uses exact role-title allow-list matching", () => {
+  assert.match(source, /DARKPEERS_STAFF_ROLE_NAMES\.has\(title\)/);
+  assert.doesNotMatch(source, /roleTokens\.some/);
+  assert.doesNotMatch(source, /includes\(['"]onlyguardians['"]\)/i);
+});
