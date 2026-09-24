@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         DarkPeers BONanza Giveaway — Maghuro Fork
+// @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.1
+// @version      1.5.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -55,7 +55,7 @@
 //   - v1.2.11 makes the selected BON Pool percentage exact at pot level:
 //     floor(total pot * pct / 100), while preserving at least 1 BON per winner.
 //   - v1.2.12 gives the userscript an unambiguous Tampermonkey display name:
-//     "DarkPeers BONanza Giveaway — Maghuro Fork".
+//     "DarkPeers BONanza Giveaway | Maghuro Fork".
 //   - v1.2.13 makes bridge markers machine-only: the semantic emoji stays plain,
 //     marker anchors self-label with their URL for clean IRC conversion, and giveaway
 //     starts distinguish standard, BON Pool and Rigged Taxes structurally.
@@ -191,6 +191,9 @@
 //     Sponsor accounting is also Gift-History-only: transient Gift History outages no
 //     longer let stale System/DPBot messages increment the pot a second time; recovery
 //     reconciles unseen persistent Gift History rows instead of replacing the baseline.
+//   - v1.5.2 polishes winner gift notes. A single winner receives
+//     "🥇 YOU WON!! Congratulations!". Multi-winner giveaways use podium medals for
+//     1st, 2nd and 3rd place, then 🎉 for every later ordinal place.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -523,7 +526,7 @@
 
 /* ── Toolbar button: "Neon Edge" (fx-94), sized for the chat header ── */
 #chatbox_header .bonanza-btn {
-  /* Theme tokens — override these to recolour the button */
+  /* Theme tokens: override these to recolour the button */
   --primary: #60FDFC;         /* neon glow */
   --secondary: #0F191E;
   --surface: #E2F1F2;
@@ -973,7 +976,7 @@
     <!-- Presets -->
     <div class="giveaway-presets-row" style="display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; margin:0;">
       <select id="presetSelect" class="form__text" style="width:auto; min-width:120px; max-width:180px; padding:3px 6px; font-size:12px;">
-        <option value="">— Presets —</option>
+        <option value="">Presets</option>
       </select>
       <button type="button" id="presetLoadBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#2a7acc; font-size:11px; padding:3px 8px;" title="Load selected preset">
         <i class="fa-solid fa-folder-open"></i> Load
@@ -2453,7 +2456,7 @@ body.host-panel-dragging * {
         const savedSnap = loadGiveawaySnapshot();
         if (savedSnap) {
             if (isLockedByAnotherTab()) {
-                // Another tab is actively running this giveaway — don't duplicate it
+                // Another tab is actively running this giveaway. Do not duplicate it
                 console.info("[BON Giveaway] Active giveaway detected in another tab, skipping restore.");
             } else {
                 const restored = await restoreGiveawayFromSnapshot(savedSnap);
@@ -2510,7 +2513,7 @@ body.host-panel-dragging * {
     }
 
     // ───────────────────────────────────────────────────────────
-    // Presets — save / load / delete form configurations
+    // Presets: save / load / delete form configurations
     // ───────────────────────────────────────────────────────────
     function loadPresetList() {
         try {
@@ -2582,7 +2585,7 @@ body.host-panel-dragging * {
 
         // Preserve current selection if possible
         const prevVal = select.value;
-        select.innerHTML = '<option value="">— Presets —</option>';
+        select.innerHTML = '<option value="">Presets</option>';
         presets.forEach((p, i) => {
             const opt = document.createElement("option");
             opt.value = String(i);
@@ -2633,7 +2636,7 @@ body.host-panel-dragging * {
     }
 
     // ───────────────────────────────────────────────────────────
-    // Giveaway persistence — survive page reloads mid-giveaway
+    // Giveaway persistence: survive page reloads mid-giveaway
     // ───────────────────────────────────────────────────────────
 
     function getActiveGiveawayStorageKey(hostName = "") {
@@ -3685,7 +3688,7 @@ body.host-panel-dragging * {
 
             if (riggedMode) {
                 introMessage += `\n[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
-                    `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i] 😈`;
+                    `[i][color=#FF9AE6]Visual flair only. The math is still fair... probably.[/color][/i] 😈`;
             }
 
             if (GENERAL_SETTINGS.silent_mode) {
@@ -3828,7 +3831,7 @@ body.host-panel-dragging * {
 
         updateEntries();
 
-        // ——— restore host’s balance display ———
+        // Restore host balance display
         const hostBalance = readHostBalance();
 
         // update the header
@@ -4033,7 +4036,7 @@ body.host-panel-dragging * {
 
             let backgroundStyle = "";
             if (bgImage && bgImage !== "none") {
-                // bgImage looks like: url("...") — pull out the URL safely
+                // bgImage looks like: url("..."); pull out the URL safely
                 const m = /url\(["']?(.*?)["']?\)/.exec(bgImage);
                 const url = m ? m[1] : "";
                 if (url) {
@@ -4071,7 +4074,7 @@ body.host-panel-dragging * {
     function parseMessage(messageNode) {
         const perfStart = PERF ? performance.now() : 0;
         const messageContentElement = getMessageContentElement(messageNode);
-        if (!messageContentElement) return; // system/bot messages — skip
+        if (!messageContentElement) return; // system/bot messages. Skip
 
         let messageContent = "";
         try {
@@ -4088,7 +4091,7 @@ body.host-panel-dragging * {
         if (!isEntry && !isCommand) return;
 
         const author = getAuthor(messageNode);
-        if (!author) return; // could not resolve username from DOM — skip silently
+        if (!author) return; // could not resolve username from DOM. Skip silently
 
         // Pull fancyName only for relevant messages (entries/commands). We capture a stable tag that
         // always includes the username text (some sites hydrate it after insertion).
@@ -5468,7 +5471,7 @@ body.host-panel-dragging * {
 
             this.cursorInitialized = true;
 
-            /* — filter new, unprocessed gift messages — */
+            /* Filter new, unprocessed gift messages */
             const gifts = [];
             const cursorAtPollStart = this.lastMsgId;
             for (const m of messages) {
@@ -6390,7 +6393,7 @@ body.host-panel-dragging * {
         return result;
     }
 
-    /** Factory for leaderboard commands — eliminates boilerplate across top/most/sponsors/unlucky. */
+    /** Factory for leaderboard commands. Eliminates boilerplate across top/most/sponsors/unlucky. */
     function makeLeaderboardCommand({ emoji, label, emptyMsg, sort, filter, format }) {
         return function leaderboardHandler(ctx) {
             const { reply } = ctx;
@@ -6548,7 +6551,7 @@ body.host-panel-dragging * {
             reply(`[b]${bridgeMarker(BRIDGE_MARKERS.STATS, "📊")} Stats: [color=#d85e27]${safeNameForChat(rec.name || target)}[/color] - ${parts.join(" • ")}[/b]`);
         },
 
-        // Leaderboards — table-driven to reduce repetition
+        // Leaderboards: table-driven to reduce repetition
         top:      makeLeaderboardCommand({
             emoji: "🏆", label: "Top winners", emptyMsg: "[b]No winner stats saved yet.[/b]",
             sort:   (a, b) => (b.wins - a.wins) || (b.totalWon - a.totalWon) || (b.entered - a.entered),
@@ -6689,7 +6692,7 @@ body.host-panel-dragging * {
 
             const luckyNum = getLuckyNumber(giveawayData);
             if (luckyNum === null || luckyNum === undefined) {
-                reply("All numbers are taken — no free numbers left!");
+                reply("All numbers are taken. No free numbers left!");
                 return;
             }
             const rigHint = rigNote("(approved by the Official Rigging Committee™) ✅");
@@ -6729,7 +6732,7 @@ body.host-panel-dragging * {
 
             const luckyNum = getLuckyNumber(giveawayData);
             if (luckyNum === null || luckyNum === undefined) {
-                reply("All numbers are taken — no free numbers left!");
+                reply("All numbers are taken. No free numbers left!");
                 return;
             }
 
@@ -6774,7 +6777,7 @@ body.host-panel-dragging * {
                 if (hasActiveGiveaway) {
                     reply(
                         `${bridgeMarker(BRIDGE_MARKERS.RIGGED, "😈")} [color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
-                        `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i]`
+                        `[i][color=#FF9AE6]Visual flair only. The math is still fair... probably.[/color][/i]`
                     );
                 }
             } else {
@@ -6838,7 +6841,7 @@ body.host-panel-dragging * {
 
             const randomNum = pickRandomFreeNumber(giveawayData);
             if (randomNum === null) {
-                reply("All numbers are taken — no free numbers left!");
+                reply("All numbers are taken. No free numbers left!");
                 return;
             }
 
@@ -6958,7 +6961,7 @@ body.host-panel-dragging * {
             }
 
             const capNote = capWasReset
-                ? ` [i][color=#9aa0a6]Scaling cap also reset to ${newCount} — use !maxwinners to raise.[/color][/i]`
+                ? ` [i][color=#9aa0a6]Scaling cap also reset to ${newCount}. Use !maxwinners to raise.[/color][/i]`
                 : "";
             reply(`Number of winners set to [color=#1DDC5D][b]${newCount}[/b][/color].${capNote}`);
             snapshotGiveaway();
@@ -7359,7 +7362,7 @@ body.host-panel-dragging * {
                 "End aborted (this tab does not own the giveaway)",
                 "Refusing to send gifts because this tab cannot prove exclusive ownership. Reload the owning tab to resume safely."
             );
-            // Don't tear down state here — the verified owning tab is the source of truth.
+            // Do not tear down state here. The verified owning tab is the source of truth.
             // Just back off and let it run.
             giveawayData.__ending = false;
             return;
@@ -7650,7 +7653,7 @@ body.host-panel-dragging * {
                 Number.isFinite(Number(scheduledEndTs)) &&
                 nowAtSettlement >= scheduledEndTs;
             const closingMessage = closedByTimer
-                ? "⏱️ [b][color=#FFDE59]Time is up — entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
+                ? "⏱️ [b][color=#FFDE59]Time is up! Entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
                 : "⏱️ [b][color=#FFDE59]Entries are now closed by the host.[/color][/b] Finalising sponsor accounting and settlement…";
             const preparedClosingMessage = prepareOutgoingMessage(closingMessage);
 
@@ -8171,7 +8174,7 @@ body.host-panel-dragging * {
                             `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
                             `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
-                            `No entrants — 100% of the pot was contributed. ✨`,
+                            `No entrants. 100% of the pot was contributed. ✨`,
                             "zero-entry BON Pool confirmation",
                             "zero-entry-pool-confirmation"
                         ))) return;
@@ -8761,14 +8764,16 @@ body.host-panel-dragging * {
                     continue;
                 }
                 if (selfKeys.size && selfKeys.has(normalizeUserKey(w.author))) {
-                    // Host winner — cannot gift to self
+                    // Host winner. Cannot gift to self
                     markWinnerGiftSelf(w.author);
                     continue;
                 }
 
+                const place = i + 1;
+                const placeIcon = ["🥇", "🥈", "🥉"][i] || "🎉";
                 const msg = (winners.length === 1)
-                    ? `🎉 You won! Enjoy your ${amt} BON!`
-                    : `🎉 Congratulations on placing ${ordinal(i + 1)}!`;
+                    ? "🥇 YOU WON!! Congratulations!"
+                    : `${placeIcon} ${ordinal(place)} place! Congratulations!`;
 
                 const giftResult = await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
                 const expectedGift = {
@@ -9032,7 +9037,7 @@ body.host-panel-dragging * {
                 row.dataset.winnerKey = encodeURIComponent(key);
 
                 if (selfKeys.size && selfKeys.has(key)) {
-                    // Host winner — can't gift to self, so skip gifting/verification UI
+                    // Host winner. Cannot gift to self, so skip gifting/verification UI
                     winnerGiftStatus.set(key, "self");
                     giftCell.textContent = "Self";
                     giftCell.title = "Host winner (no self-gift)";
@@ -10296,7 +10301,7 @@ body.host-panel-dragging * {
             reminderRetryTimeout = null;
         }
 
-        const silentLine = silentNote("(Silent mode is enabled — command replies are sent via /msg.) 🤫");
+        const silentLine = silentNote("(Silent mode is enabled. Command replies are sent via /msg.) 🤫");
         const rigLine = rigNote("(Rigged mode is currently enabled, but the math is [b]definitely[/b] still legit) 😉");
         const reminderPct = normalizeDonationPercent(giveawayData.donationPercent);
         const reminderPrefix = reminderPct > 0
@@ -10815,7 +10820,7 @@ body.host-panel-dragging * {
      * that mean "input/auth was bad"). We do NOT fall back on:
      *   - network errors / aborted requests (server may have processed it)
      *   - 5xx server errors (server may have processed it then failed to respond)
-     *   - 408 / 429 (timeout / rate-limit — request may or may not have landed)
+     *   - 408 / 429 (timeout / rate-limit; request may or may not have landed)
      * In those cases we leave it to verifyWinnerGifts to confirm; if verification
      * fails the host gets a warning and can resend manually. Better to under-pay
      * and warn than to over-pay silently.
@@ -10883,7 +10888,7 @@ body.host-panel-dragging * {
             );
             return { attempted: false, reason: "duplicate" };
         }
-        // Record BEFORE sending — if the send half-completes we still want
+        // Record BEFORE sending. If the send half-completes we still want
         // future calls (this tab, another tab, post-restore) to skip. Current
         // entries carry a unique token so a proven-rejected request can make only
         // its own attempt retryable without clearing a newer owner's attempt.
@@ -10986,7 +10991,7 @@ body.host-panel-dragging * {
         //   400 bad request, 401 unauthorized, 403 forbidden, 404 not found,
         //   422 unprocessable entity. Safe to fall back to /gift.
         // Notably NOT in this list: 408 (timeout), 429 (rate limit), 5xx,
-        // and network errors — for those we trust verifyWinnerGifts to flag
+        // and network errors. For those we trust verifyWinnerGifts to flag
         // any actually-missing gifts.
         const SAFE_FALLBACK_STATUSES = new Set([400, 401, 403, 404, 422]);
 
@@ -11009,7 +11014,7 @@ body.host-panel-dragging * {
             }
 
             if (!resp || resp.status >= 400) {
-                // Ambiguous failure — server may or may not have processed it.
+                // Ambiguous failure. Server may or may not have processed it.
                 // Do NOT fall back. The request is now terminal/ambiguous rather
                 // than pending; verification decides whether it actually landed.
                 markGiftAttemptTerminal(
@@ -11815,7 +11820,7 @@ body.host-panel-dragging * {
             `🛑 Nice try ${who}. The Rigging Lever™ is behind host-only glass.`,
             `🚨 Unauthorized rig attempt by ${who}. Deploying the Fairness Police…`,
             `${who} tried to rig the giveaway. The universe said: “lol, no.”`,
-            `Sorry ${who} — only the host has a license to operate the Rig-O-Matic™.`
+            `Sorry ${who}! Only the host has a license to operate the Rig-O-Matic™.`
         ];
 
         const linesUnrig = [
@@ -12185,7 +12190,7 @@ body.host-panel-dragging * {
                     try {
                         // The x-data attribute contains JavaScript-escaped strings (\x7B, \x22, \\, \/, etc.)
                         // that JSON.parse can't handle directly. Decode JS escapes in a single pass so that
-                        // \\ is consumed before \uNNNN — matching how JS string literal parsing works.
+                        // \\ is consumed before \uNNNN. This matches how JS string literal parsing works.
                         jsonContent = jsonContent.replace(
                             /\\(u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|\\|'|\/|n|r|t|b|f)/g,
                             (_, esc) => {
@@ -12264,8 +12269,8 @@ body.host-panel-dragging * {
         const lettersRegex = /[A-Za-z]/;
 
         if (lettersRegex.test(startVal) || lettersRegex.test(endVal)) {
-            startInput.setCustomValidity("Letters are not allowed—please enter valid integers.");
-            endInput.setCustomValidity("Letters are not allowed—please enter valid integers.");
+            startInput.setCustomValidity("Letters are not allowed. Please enter valid integers.");
+            endInput.setCustomValidity("Letters are not allowed. Please enter valid integers.");
             return false;
         }
 
@@ -12590,7 +12595,7 @@ body.host-panel-dragging * {
 
     function buildWinnersAnnouncementLine(data, options = {}) {
         const winnersBase = Math.max(1, Math.floor(Number(data?.baseWinnersAtStart || data?.winnersNum) || 1));
-        // Show the effective winner count (accounts for scaling) — never capped by current entrants
+        // Show the effective winner count (accounts for scaling). Never capped by current entrants
         const winnersNow = Math.max(1, Math.floor(Number(data?.effectiveWinnersNum) || winnersBase));
         let line = `[b][color=#5DE2E7]${winnersNow} possible ${winnersNow === 1 ? 'winner' : 'winners'}[/color][/b]`;
 
