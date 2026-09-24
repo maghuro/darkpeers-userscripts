@@ -8384,13 +8384,20 @@ body.host-panel-dragging * {
                     settlement.payoutGiftHistoryBaselineCapturedAt = Date.now();
 
                     if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                        // The fetched baseline exists only in volatile memory. Keeping
+                        // the array would let a same-page Retry skip this persistence
+                        // gate and begin winner transfers without a durable recovery
+                        // boundary. Discard it completely so every retry must capture
+                        // and verify-write a fresh pre-transfer baseline before any POST.
+                        delete settlement.payoutGiftHistoryBaseline;
+                        delete settlement.payoutGiftHistoryBaselineCapturedAt;
                         settlement.payoutGiftHistoryBaselineState = "persist-failed";
                         pauseSettlementForRetry(
                             "Settlement paused (payout baseline not durable)",
-                            "The pre-transfer Gift History baseline was fetched but could not be persisted and read back. No winner transfer was attempted.",
+                            "The pre-transfer Gift History baseline was fetched but could not be persisted and read back. The volatile baseline was discarded; no winner transfer was attempted.",
                             "GIVEAWAY SETTLEMENT PAUSED\n\n" +
                             "The authoritative pre-transfer Gift History baseline could not be stored safely. " +
-                            "No winner gift or BON Pool contribution has been attempted by this payout step."
+                            "No winner gift or BON Pool contribution has been attempted by this payout step. Retry after storage is healthy."
                         );
                         return;
                     }
