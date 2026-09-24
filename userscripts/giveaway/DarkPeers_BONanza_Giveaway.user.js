@@ -8645,6 +8645,7 @@ body.host-panel-dragging * {
             }
             return false;
         }
+    }
 
     // ───────────────────────────────────────────────────────────
     // SECTION 12: Utility Functions
