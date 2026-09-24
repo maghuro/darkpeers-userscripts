@@ -60,6 +60,11 @@
     let entriesTbodyEl = null;
     let chatMessagesListEl = null;
     let chatReplayIgnoreBeforeTs = null;
+    let chatReplayCommandIgnoreBeforeTs = null;
+    let chatReplayBoundaryPending = false;
+    let chatReplayPendingNodes = [];
+    let chatReplayPendingNodeSet = new WeakSet();
+    let parsedChatMessageNodes = new WeakSet();
     const entryRowByKey = new Map();
 
     const regNum = /^-?\d+$/; // matches integers (including negative) for entry detection
