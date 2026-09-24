@@ -2907,6 +2907,11 @@ body.host-panel-dragging * {
                         : [],
                     closingIntent: giveawayData.__closingIntent === true,
                     closingNoticeSent: giveawayData.__closingNoticeSent === true,
+                    closingNoticeProgress:
+                        giveawayData.__closingNoticeProgress &&
+                        typeof giveawayData.__closingNoticeProgress === "object"
+                            ? { ...giveawayData.__closingNoticeProgress }
+                            : null,
                     lastAnnouncedWinners: giveawayData.lastAnnouncedWinners,
                     settlement: giveawayData.settlement && typeof giveawayData.settlement === "object"
                         ? { ...giveawayData.settlement }
@@ -3102,6 +3107,11 @@ body.host-panel-dragging * {
                 giveawayData?.settlement?.committed === true ||
                 giveawayData?.settlement?.phase === "settling";
             giveawayData.__closingNoticeSent = giveawayData.closingNoticeSent === true;
+            giveawayData.__closingNoticeProgress =
+                giveawayData.closingNoticeProgress &&
+                typeof giveawayData.closingNoticeProgress === "object"
+                    ? { ...giveawayData.closingNoticeProgress }
+                    : null;
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
                 : [];
@@ -7233,7 +7243,14 @@ body.host-panel-dragging * {
                     startedAt: Date.now()
                 };
                 settlement.outputProgress[outputKey] = checkpoint;
-                snapshotGiveaway({ force: true });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    logEvent(
+                        "Settlement output paused (checkpoint not durable)",
+                        `Could not persist/read back the pre-send checkpoint for ${label}. The message was not sent.`
+                    );
+                    giveawayData.__ending = false;
+                    return false;
+                }
             }
 
             if (!(await ensureExclusiveTabOwnership())) {
