@@ -8155,12 +8155,31 @@ body.host-panel-dragging * {
                 }
             }
 
+            // Create/recover the statement BEFORE verification so every individual
+            // winner status is updated by the authoritative verifier. The record id
+            // is the giveaway id, so a retry/reload resumes the same statement.
+            try {
+                const statementId = getActiveGiveawayId();
+                currentStatement = getStatementRecordById(statementId) || createStatementRecord({
+                    winners, gross: allocated, net, donations: split.donations, split,
+                    poolStatus: donationActive
+                        ? "NOT ATTEMPTED: winner payout verification pending"
+                        : "none",
+                    entrants: entrantsTotal
+                });
+                if (currentStatement) {
+                    persistCurrentStatement();
+                }
+            } catch (e) {
+                logEvent("Statement preflight warning", String(e?.message || e));
+            }
+
             // 6a) Verify winner payouts BEFORE any irreversible BON Pool transfer.
             const winnersVerifiedBeforePool = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
                 giftHistoryBaseline: payoutGiftHistoryBaseline,
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
-                statementId: null
+                statementId: currentStatement?.id ?? null
             });
 
             if (!winnersVerifiedBeforePool) {
@@ -8168,23 +8187,23 @@ body.host-panel-dragging * {
                     "Settlement paused (winner payout not confirmed)",
                     "At least one winner gift could not be confirmed. BON Pool contribution was not attempted."
                 );
-                try {
-                    currentStatement = createStatementRecord({
-                        winners, gross: allocated, net, donations: split.donations, split,
-                        poolStatus: donationActive
-                            ? "NOT ATTEMPTED: winner payout not confirmed"
-                            : "none",
-                        entrants: entrantsTotal
-                    });
-                    if (currentStatement) {
-                        currentStatement.verification =
-                            "winner payout not confirmed; settlement paused before BON Pool";
-                        persistCurrentStatement();
-                    }
-                } catch {}
+                if (currentStatement) {
+                    currentStatement.donationStatus = donationActive
+                        ? "NOT ATTEMPTED: winner payout not confirmed"
+                        : "none";
+                    currentStatement.verification =
+                        "winner payout not confirmed; settlement paused before BON Pool";
+                    currentStatement.endedAt = Date.now();
+                    persistCurrentStatement();
+                }
                 snapshotGiveaway({ force: true });
                 giveawayData.__ending = false;
                 return;
+            }
+
+            if (currentStatement && !expectedGifts.length) {
+                currentStatement.verification = "nothing to verify";
+                persistCurrentStatement();
             }
 
             // 6b) Direct BON Pool contribution. Success is announced publicly only
@@ -8196,6 +8215,11 @@ body.host-panel-dragging * {
                 donationInfo.confirmed = !!poolResult.confirmed;
                 if (poolResult.confirmed) {
                     markFundGiftStatus("confirmed");
+                    if (currentStatement) {
+                        currentStatement.donationStatus = "confirmed directly in BON Pool";
+                        currentStatement.endedAt = Date.now();
+                        persistCurrentStatement();
+                    }
                     const paidMessage = riggedMode
                         ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
                         : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
@@ -8206,18 +8230,14 @@ body.host-panel-dragging * {
                     ))) return;
                 } else {
                     markFundGiftStatus("failed");
-                    try {
-                        currentStatement = createStatementRecord({
-                            winners, gross: allocated, net, donations: split.donations, split,
-                            poolStatus: "NOT CONFIRMED; settlement preserved for verification",
-                            entrants: entrantsTotal
-                        });
-                        if (currentStatement) {
-                            currentStatement.verification =
-                                "winner payouts confirmed; BON Pool contribution not confirmed";
-                            persistCurrentStatement();
-                        }
-                    } catch {}
+                    if (currentStatement) {
+                        currentStatement.donationStatus =
+                            "NOT CONFIRMED; settlement preserved for verification";
+                        currentStatement.verification =
+                            "winner payouts confirmed; BON Pool contribution not confirmed";
+                        currentStatement.endedAt = Date.now();
+                        persistCurrentStatement();
+                    }
 
                     pauseSettlementForRetry(
                         "Settlement paused (BON Pool not confirmed)",
@@ -8236,15 +8256,23 @@ body.host-panel-dragging * {
                 }
             } catch (e) { /* ignore stats errors */ }
             try {
-                currentStatement = createStatementRecord({
-                    winners, gross: allocated, net, donations: split.donations, split,
-                    poolStatus: donationActive
+                if (!currentStatement) {
+                    currentStatement = createStatementRecord({
+                        winners, gross: allocated, net, donations: split.donations, split,
+                        poolStatus: donationActive
+                            ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
+                            : "none",
+                        entrants: entrantsTotal
+                    });
+                }
+                if (currentStatement) {
+                    currentStatement.donationStatus = donationActive
                         ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                        : "none",
-                    entrants: entrantsTotal
-                });
-                if (currentStatement && !expectedGifts.length) currentStatement.verification = "nothing to verify";
-                persistCurrentStatement();
+                        : "none";
+                    if (!expectedGifts.length) currentStatement.verification = "nothing to verify";
+                    currentStatement.endedAt = Date.now();
+                    persistCurrentStatement();
+                }
             } catch (e) { /* statements are best-effort */ }
 
             // Winner payouts were already verified before the BON Pool transfer.
@@ -9352,8 +9380,9 @@ body.host-panel-dragging * {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
         const label = ({
-            confirmed: "confirmed in chat",
+            confirmed: "confirmed",
             "confirmed-history": "confirmed in Gift History",
+            "confirmed-system": "confirmed in System room",
             failed: "NOT CONFIRMED, check manually",
             self: "self (host, no gift sent)"
         })[status] || status;
@@ -9375,7 +9404,7 @@ body.host-panel-dragging * {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
         targetStatement.verification = ok
-            ? "all gifts confirmed in chat"
+            ? "all gifts confirmed in DarkPeers"
             : `${missingCount} gift(s) could not be confirmed`;
         persistStatementRecord(targetStatement);
     }
