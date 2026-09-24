@@ -7726,7 +7726,7 @@ body.host-panel-dragging * {
                 amount,
                 purpose
             ).state;
-            return state === "none" || state === "retryable";
+            return state === "none" || state === "retryable" || state === "indeterminate";
         };
 
         const poolNeedsNewTransfer = amount => {
