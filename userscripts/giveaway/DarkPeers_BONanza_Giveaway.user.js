@@ -7084,6 +7084,10 @@ body.host-panel-dragging * {
         }
 
         const reconcileSettlementOutput = async (checkpoint, preparedMessage) => {
+            const expectedPreparedMessage =
+                typeof checkpoint?.preparedMessage === "string"
+                    ? checkpoint.preparedMessage
+                    : String(preparedMessage || "");
             const rawAfterMessageId = checkpoint?.afterMessageId;
             const afterId =
                 rawAfterMessageId !== null &&
@@ -7151,7 +7155,7 @@ body.host-panel-dragging * {
                                 senderId !== ownUserId
                             ) return false;
 
-                            return String(m?.message ?? "") === preparedMessage;
+                            return String(m?.message ?? "") === expectedPreparedMessage;
                         });
                         if (match) {
                             return {
@@ -7208,6 +7212,7 @@ body.host-panel-dragging * {
             let checkpoint = settlement.outputProgress[outputKey];
             if (checkpoint?.status === "sent") return true;
 
+            let replayingPendingCheckpoint = false;
             if (checkpoint?.status === "pending") {
                 const reconciled = await reconcileSettlementOutput(checkpoint, preparedMessage);
                 if (!reconciled.owned) {
@@ -7229,6 +7234,25 @@ body.host-panel-dragging * {
                     giveawayData.__ending = false;
                     return false;
                 }
+
+                // The previous attempt is authoritatively absent. Any replay is a
+                // new side-effect window, so give it a fresh cursor/timestamp and
+                // durably persist that boundary before sending again.
+                checkpoint.afterMessageId = await getLatestChatMessageId();
+                checkpoint.startedAt = Date.now();
+                checkpoint.preparedMessage =
+                    typeof checkpoint.preparedMessage === "string"
+                        ? checkpoint.preparedMessage
+                        : preparedMessage;
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    logEvent(
+                        "Settlement output paused (replay checkpoint not durable)",
+                        `Could not persist/read back the refreshed replay checkpoint for ${label}. The message was not resent.`
+                    );
+                    giveawayData.__ending = false;
+                    return false;
+                }
+                replayingPendingCheckpoint = true;
             } else {
                 const afterMessageId = await getLatestChatMessageId();
                 if (!(await ensureExclusiveTabOwnership())) {
@@ -7258,8 +7282,12 @@ body.host-panel-dragging * {
                 return false;
             }
 
-            const sent = await sendMessage(message, {
-                requireExclusiveGiveawayOwnership: true
+            const messageToSend = replayingPendingCheckpoint
+                ? checkpoint.preparedMessage
+                : preparedMessage;
+            const sent = await sendMessage(messageToSend, {
+                requireExclusiveGiveawayOwnership: true,
+                prepared: true
             });
             if (sent === false) {
                 giveawayData.__ending = false;
@@ -7331,7 +7359,7 @@ body.host-panel-dragging * {
                     if (closingCheckpoint?.status === "pending") {
                         const reconciled = await reconcileSettlementOutput(
                             closingCheckpoint,
-                            preparedClosingMessage
+                            closingCheckpoint.preparedMessage || preparedClosingMessage
                         );
 
                         if (!reconciled.owned) {
@@ -7352,6 +7380,21 @@ body.host-panel-dragging * {
                             );
                             giveawayData.__ending = false;
                             return;
+                        } else {
+                            closingCheckpoint.afterMessageId = await getLatestChatMessageId();
+                            closingCheckpoint.startedAt = Date.now();
+                            closingCheckpoint.preparedMessage =
+                                typeof closingCheckpoint.preparedMessage === "string"
+                                    ? closingCheckpoint.preparedMessage
+                                    : preparedClosingMessage;
+                            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                                logEvent(
+                                    "Closing notice paused (replay checkpoint not durable)",
+                                    "Could not persist/read back the refreshed closing-message replay checkpoint. The announcement was not resent."
+                                );
+                                giveawayData.__ending = false;
+                                return;
+                            }
                         }
                     }
 
@@ -7381,8 +7424,11 @@ body.host-panel-dragging * {
                         }
 
                         const closingNoticeSent = await sendMessage(
-                            closingMessage,
-                            { requireExclusiveGiveawayOwnership: true }
+                            closingCheckpoint.preparedMessage,
+                            {
+                                requireExclusiveGiveawayOwnership: true,
+                                prepared: true
+                            }
                         );
 
                         if (closingNoticeSent === false) {
@@ -7936,6 +7982,15 @@ body.host-panel-dragging * {
                     settlement.refundGiftHistoryBaseline = refundGiftHistoryBaseline;
                 }
 
+                if (sponsorRefunds.length && !Array.isArray(refundGiftHistoryBaseline)) {
+                    pauseSettlementForRetry(
+                        "Settlement paused (refund baseline unavailable)",
+                        "Persistent Gift History could not be captured before sponsor refunds. No refund was attempted.",
+                        "Sponsor refunds require a durable pre-transfer Gift History baseline. Retry settlement when DarkPeers Gift History is available."
+                    );
+                    return;
+                }
+
                 const refundNotBeforeTs = Number.isFinite(settlement.refundNotBeforeTs)
                     ? settlement.refundNotBeforeTs
                     : Date.now();
@@ -7950,7 +8005,14 @@ body.host-panel-dragging * {
 
                 settlement.refundNotBeforeTs = refundNotBeforeTs;
                 settlement.refundAfterMessageId = refundAfterMessageId;
-                snapshotGiveaway({ force: true });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    pauseSettlementForRetry(
+                        "Settlement paused (refund baseline not durable)",
+                        "The refund Gift History baseline/cursor could not be persisted and read back. No refund was attempted.",
+                        "No sponsor refund has been sent. Free localStorage capacity if needed and retry settlement."
+                    );
+                    return;
+                }
 
                 let refundSendFailure = false;
 
@@ -8044,7 +8106,8 @@ body.host-panel-dragging * {
                         {
                             afterId: refundAfterMessageId,
                             notBeforeTs: refundNotBeforeTs,
-                            statementId: currentStatement?.id ?? null
+                            statementId: currentStatement?.id ?? null,
+                            settlementOutputSender: sendSettlementMessage
                         }
                     );
                 }
@@ -8390,7 +8453,8 @@ body.host-panel-dragging * {
                 giftHistoryBaseline: payoutGiftHistoryBaseline,
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
-                statementId: currentStatement?.id ?? null
+                statementId: currentStatement?.id ?? null,
+                settlementOutputSender: sendSettlementMessage
             });
 
             if (!winnersVerifiedBeforePool) {
@@ -8911,11 +8975,22 @@ body.host-panel-dragging * {
             .join(", ");
         logEvent("Sponsor refund verification warning", `Gift History could not confirm: ${missingList}`);
         if (!verificationStillOwned()) return false;
-        await sendMessage(
+        const refundWarning =
             `[color=#ff4f4f][b]Warning:[/b][/color] Some sponsor refunds could not be confirmed. ` +
-            `Please verify manually: ${missingList}.`,
-            { requireExclusiveGiveawayOwnership: true }
-        );
+            `Please verify manually: ${missingList}.`;
+        const refundWarningSender = fallbackContext?.settlementOutputSender;
+        if (typeof refundWarningSender !== "function") {
+            logEvent(
+                "Sponsor refund verification warning not emitted",
+                "Checkpointed settlement-output sender is unavailable; refusing an uncheckpointed public warning."
+            );
+            return false;
+        }
+        if (!(await refundWarningSender(
+            refundWarning,
+            "sponsor refund verification warning",
+            "sponsor-refund-verification-warning"
+        ))) return false;
         if (!verificationStillOwned()) return false;
         return false;
     }
@@ -9211,12 +9286,23 @@ body.host-panel-dragging * {
                 (observedList ? ` | System room observed (diagnostic only): ${observedList}` : "")
             );
             if (!verificationStillOwned()) return false;
-            await sendMessage(
+            const payoutWarning =
                 `[color=#ff4f4f][b]Warning:[/b][/color] ` +
                 `Some giveaway gifts could not be confirmed. ` +
-                `Please manually verify BON for: ${missingList}.`,
-                { requireExclusiveGiveawayOwnership: true }
-            );
+                `Please manually verify BON for: ${missingList}.`;
+            const payoutWarningSender = verificationContext?.settlementOutputSender;
+            if (typeof payoutWarningSender !== "function") {
+                logEvent(
+                    "Payout verification warning not emitted",
+                    "Checkpointed settlement-output sender is unavailable; refusing an uncheckpointed public warning."
+                );
+                return false;
+            }
+            if (!(await payoutWarningSender(
+                payoutWarning,
+                "payout verification warning",
+                "payout-verification-warning"
+            ))) return false;
             if (!verificationStillOwned()) return false;
             return false;
         } catch (e) {
@@ -10645,7 +10731,9 @@ body.host-panel-dragging * {
     }
 
     async function sendMessage(messageStr, options = {}) {
-        messageStr = prepareOutgoingMessage(messageStr);
+        messageStr = options?.prepared === true
+            ? String(messageStr ?? "")
+            : prepareOutgoingMessage(messageStr);
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
 
