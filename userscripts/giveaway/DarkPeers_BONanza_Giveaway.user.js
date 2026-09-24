@@ -9799,7 +9799,7 @@ body.host-panel-dragging * {
         } catch { return {}; }
     }
 
-    function writePaidGiftsLedger(ledger) {
+    function writePaidGiftsLedger(ledger, { verifyWrite = false } = {}) {
         try {
             // Cap size by dropping oldest giveaway-id entries (numeric, ms timestamps)
             const ids = Object.keys(ledger).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
@@ -9807,8 +9807,16 @@ body.host-panel-dragging * {
                 const oldest = ids.shift();
                 delete ledger[oldest];
             }
-            localStorage.setItem(LS_PAID_GIFTS, JSON.stringify(ledger));
-        } catch {}
+            const serialized = JSON.stringify(ledger);
+            localStorage.setItem(LS_PAID_GIFTS, serialized);
+            if (verifyWrite && localStorage.getItem(LS_PAID_GIFTS) !== serialized) {
+                throw new Error("Winner gift ledger read-back verification failed.");
+            }
+            return true;
+        } catch (e) {
+            console.warn("Winner gift ledger write failed:", e);
+            return false;
+        }
     }
 
     function readPoolContributionLedger() {
@@ -9819,19 +9827,27 @@ body.host-panel-dragging * {
         } catch { return {}; }
     }
 
-    function writePoolContributionLedger(ledger) {
+    function writePoolContributionLedger(ledger, { verifyWrite = false } = {}) {
         try {
             const ids = Object.keys(ledger).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
             while (ids.length > PAID_GIFTS_MAX_GIVEAWAYS) delete ledger[ids.shift()];
-            localStorage.setItem(LS_POOL_CONTRIBUTIONS, JSON.stringify(ledger));
-        } catch {}
+            const serialized = JSON.stringify(ledger);
+            localStorage.setItem(LS_POOL_CONTRIBUTIONS, serialized);
+            if (verifyWrite && localStorage.getItem(LS_POOL_CONTRIBUTIONS) !== serialized) {
+                throw new Error("BON Pool contribution ledger read-back verification failed.");
+            }
+            return true;
+        } catch (e) {
+            console.warn("BON Pool contribution ledger write failed:", e);
+            return false;
+        }
     }
 
-    function savePoolContributionAttempt(giveawayId, record) {
-        if (!giveawayId) return;
+    function savePoolContributionAttempt(giveawayId, record, { verifyWrite = false } = {}) {
+        if (!giveawayId) return false;
         const ledger = readPoolContributionLedger();
         ledger[String(giveawayId)] = { ...(ledger[String(giveawayId)] || {}), ...record };
-        writePoolContributionLedger(ledger);
+        return writePoolContributionLedger(ledger, { verifyWrite });
     }
 
     function getPoolContributionAttempt(giveawayId) {
@@ -9951,7 +9967,13 @@ body.host-panel-dragging * {
             attemptedAt: Date.now(),
             status: "attempted"
         };
-        savePoolContributionAttempt(giveawayId, record);
+        if (!savePoolContributionAttempt(giveawayId, record, { verifyWrite: true })) {
+            logEvent(
+                "BON Pool contribution blocked",
+                "The contribution-attempt ledger could not be persisted safely; refusing the irreversible POST."
+            );
+            return { attempted: false, confirmed: false, reason: "pool-ledger-unavailable" };
+        }
     
         const data = urlEncodedDataFromParsedForm(before.form);
         data.set("type", "bon");
@@ -10068,7 +10090,7 @@ body.host-panel-dragging * {
         const giftKey = paidGiftKey(recipient, amount, purpose);
         const attemptToken = `${TAB_ID}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
         ledger[giveawayId][giftKey] = attemptToken;
-        writePaidGiftsLedger(ledger);
+        if (!writePaidGiftsLedger(ledger, { verifyWrite: true })) return null;
         try {
             localStorage.removeItem(paidGiftRetryableKey(giveawayId, recipient, amount, purpose));
         } catch {}
@@ -10109,7 +10131,7 @@ body.host-panel-dragging * {
         // A numeric value is the established terminal-attempt representation and
         // remains compatible with ledgers written by older stable versions.
         ledger[giveawayId][giftKey] = Date.now();
-        writePaidGiftsLedger(ledger);
+        if (!writePaidGiftsLedger(ledger, { verifyWrite: true })) return false;
         clearGiftAttemptRetryable(giveawayId, recipient, amount, purpose, attemptToken);
         return true;
     }
@@ -10227,6 +10249,13 @@ body.host-panel-dragging * {
             safeAmount,
             purpose
         );
+        if (!attemptToken) {
+            logEvent(
+                "Gift blocked (idempotency ledger unavailable)",
+                `Refusing to send ${fmtBONCurrency(safeAmount)} BON to ${sanitizeNick(safeRecipient)} because the transfer-attempt ledger could not be persisted safely.`
+            );
+            return { attempted: false, reason: "attempt-ledger-unavailable" };
+        }
 
         async function fallbackToChat() {
             // No chat fallback has been sent yet, and a safe HTTP 4xx (when this
