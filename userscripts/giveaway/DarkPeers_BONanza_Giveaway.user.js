@@ -4828,14 +4828,9 @@ body.host-panel-dragging * {
             }
 
             if (!reachedWindowStart && rows.length) {
-                // If every fetched Gift History row belongs to this giveaway, an empty
-                // next page is required to prove that no older page was skipped.
-                const endpointCheck = new URL(endpointPath, location.origin);
-                endpointCheck.searchParams.set("page", String(MAX_RECONCILE_PAGES + 1));
-                endpointCheck.searchParams.set("_dpgw_reconcile", String(Date.now()));
                 // We deliberately do not guess completeness here. The loop normally
-                // exits on an empty page; reaching this branch means coverage could not
-                // be proven safely.
+                // exits on an empty page or once an older pre-giveaway row proves the
+                // window boundary. Anything else is unsafe to auto-repair.
                 throw new Error("Gift History reconciliation could not prove complete coverage of the giveaway window.");
             }
 
