@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote, unquote, urljoin
 
@@ -44,11 +45,23 @@ def username_from_cell(cell) -> str:
 
 def parse_bon(value: str) -> int | None:
     text = clean_text(value)
-    match = re.search(r"[0-9][0-9.,\s]*", text)
+    match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", text)
     if not match:
         return None
-    digits = re.sub(r"[^0-9]", "", match.group(0))
-    return int(digits) if digits else None
+
+    token = match.group(0).replace(",", "")
+    try:
+        amount = Decimal(token)
+    except InvalidOperation:
+        return None
+
+    if not amount.is_finite() or amount <= 0:
+        return None
+
+    # DarkPeers Gift History renders whole BON with two decimal places
+    # (for example 170867.00). Keep the BON unit and drop only the
+    # fractional display part instead of stripping punctuation.
+    return int(amount)
 
 
 def make_session(cookie_path: Path) -> requests.Session:
@@ -254,7 +267,7 @@ def main() -> int:
     }
 
     gift_path = f"/users/{quote(host, safe='')}/gifts"
-    notification_path = f"/users/{requests.utils.quote(host, safe='')}/notifications"
+    notification_path = f"/users/{quote(host, safe='')}/notifications"
 
     report["gift_history"] = collect_paged_html(
         session, base, gift_path, parse_gift_history, args.pages

@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.2
+// @version      1.5.3
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -194,6 +194,10 @@
 //   - v1.5.2 polishes winner gift notes. A single winner receives
 //     "🥇 YOU WON!! Congratulations!". Multi-winner giveaways use podium medals for
 //     1st, 2nd and 3rd place, then 🎉 for every later ordinal place.
+//   - v1.5.3 follows the 2026-09-24 live post-audit: restored pages ignore pre-reload
+//     chat hydration so old entries/commands cannot be replayed, statement host top-ups
+//     are derived from cumulative host funding minus the opening host contribution,
+//     and the audit collector normalizes DarkPeers decimal BON values correctly.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -857,6 +861,7 @@
     let entriesTableEl = null;
     let entriesTbodyEl = null;
     let chatMessagesListEl = null;
+    let chatReplayIgnoreBeforeTs = null;
     const entryRowByKey = new Map();
 
     const regNum = /^-?\d+$/; // matches integers (including negative) for entry detection
@@ -3270,6 +3275,12 @@ body.host-panel-dragging * {
             // 8) Keep the Main Chat observer alive even after entries close.
             // Entry/mutating-command gates remain closed during settlement, while
             // read-only status commands such as !time continue to answer.
+            //
+            // UNIT3D hydrates the current rolling chat window after reload. Those DOM
+            // nodes are historical messages, not new user actions. Ignore every
+            // timestamp at or before this restore boundary so old entries/commands
+            // cannot be replayed and trigger duplicate replies or spam lockouts.
+            chatReplayIgnoreBeforeTs = Date.now();
             if (observer) { observer.disconnect(); observer = null; }
             addObserver(giveawayData);
 
@@ -3748,6 +3759,7 @@ body.host-panel-dragging * {
                 SPONSOR_GIFT_HISTORY_POLL_MS
             );
 
+            chatReplayIgnoreBeforeTs = null;
             if (observer) {
                 startObserver();
             } else {
@@ -4071,8 +4083,29 @@ body.host-panel-dragging * {
         }
     }
 
+    function getChatMessageCreatedAtTs(messageNode) {
+        try {
+            const timeEl = messageNode?.querySelector?.("time.chatbox-message__time, time[datetime]");
+            const raw = timeEl?.getAttribute?.("datetime") || timeEl?.getAttribute?.("title") || "";
+            const parsed = Date.parse(raw);
+            return Number.isFinite(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
+
     function parseMessage(messageNode) {
         const perfStart = PERF ? performance.now() : 0;
+
+        const createdAtTs = getChatMessageCreatedAtTs(messageNode);
+        if (
+            Number.isFinite(chatReplayIgnoreBeforeTs) &&
+            Number.isFinite(createdAtTs) &&
+            createdAtTs <= chatReplayIgnoreBeforeTs
+        ) {
+            return;
+        }
+
         const messageContentElement = getMessageContentElement(messageNode);
         if (!messageContentElement) return; // system/bot messages. Skip
 
@@ -10009,7 +10042,12 @@ body.host-panel-dragging * {
             .filter(x => x.amount > 0)
             .sort((a, b) => b.amount - a.amount);
         const sponsoredTotal = sponsors.filter(x => !x.isHost).reduce((s, x) => s + x.amount, 0);
-        const hostTopUps = sponsors.filter(x => x.isHost).reduce((s, x) => s + x.amount, 0);
+        const initialHostFunding = Math.max(0, Math.floor(Number(data.initialPotVerifiedAtStart) || 0));
+        const cumulativeHostFunding = Math.max(
+            initialHostFunding,
+            Math.floor(Number(data.hostAdded ?? initialHostFunding) || 0)
+        );
+        const hostTopUps = Math.max(0, cumulativeHostFunding - initialHostFunding);
 
         const winners = (p.winners || []).map((w, i) => ({
             place: i + 1,
