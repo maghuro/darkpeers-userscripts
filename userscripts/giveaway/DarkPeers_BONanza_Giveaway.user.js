@@ -7399,26 +7399,36 @@ body.host-panel-dragging * {
                     }
 
                     if (!giveawayData.__closingNoticeSent) {
-                        const afterMessageId = await getLatestChatMessageId();
+                        // A pending checkpoint may already represent an earlier
+                        // host-close wording. Preserve that exact payload; only
+                        // create a fresh checkpoint when no pending attempt exists.
+                        if (closingCheckpoint?.status !== "pending") {
+                            const afterMessageId = await getLatestChatMessageId();
 
-                        if (!(await ensureExclusiveTabOwnership())) {
-                            giveawayData.__ending = false;
-                            return;
+                            if (!(await ensureExclusiveTabOwnership())) {
+                                giveawayData.__ending = false;
+                                return;
+                            }
+
+                            closingCheckpoint = {
+                                status: "pending",
+                                afterMessageId,
+                                preparedMessage: preparedClosingMessage,
+                                startedAt: Date.now()
+                            };
+                            giveawayData.__closingNoticeProgress = closingCheckpoint;
+
+                            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                                logEvent(
+                                    "Closing notice paused (checkpoint not durable)",
+                                    "Could not persist/read back the pre-send closing-message checkpoint. The announcement was not sent."
+                                );
+                                giveawayData.__ending = false;
+                                return;
+                            }
                         }
 
-                        closingCheckpoint = {
-                            status: "pending",
-                            afterMessageId,
-                            preparedMessage: preparedClosingMessage,
-                            startedAt: Date.now()
-                        };
-                        giveawayData.__closingNoticeProgress = closingCheckpoint;
-
-                        if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
-                            logEvent(
-                                "Closing notice paused (checkpoint not durable)",
-                                "Could not persist/read back the pre-send closing-message checkpoint. The announcement was not sent."
-                            );
+                        if (!(await ensureExclusiveTabOwnership())) {
                             giveawayData.__ending = false;
                             return;
                         }
