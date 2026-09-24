@@ -10090,6 +10090,32 @@ body.host-panel-dragging * {
         return readPoolContributionLedger()[String(giveawayId)] || null;
     }
 
+    function poolContributionRetryableKey(giveawayId) {
+        return `${LS_POOL_CONTRIBUTIONS}::retryable::${encodeURIComponent(String(giveawayId || ""))}`;
+    }
+
+    function markPoolContributionRetryable(giveawayId, attemptToken) {
+        if (!giveawayId || !attemptToken) return false;
+        try {
+            localStorage.setItem(poolContributionRetryableKey(giveawayId), attemptToken);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function isPoolContributionRetryable(giveawayId, record) {
+        const attemptToken = typeof record?.attemptToken === "string"
+            ? record.attemptToken
+            : "";
+        if (!giveawayId || !attemptToken) return false;
+        try {
+            return localStorage.getItem(poolContributionRetryableKey(giveawayId)) === attemptToken;
+        } catch {
+            return false;
+        }
+    }
+
     function parsePoolCounter(text, label) {
         const source = String(text || "");
         const needle = String(label || "");
@@ -10168,17 +10194,29 @@ body.host-panel-dragging * {
         if (existing) {
             if (existing.amount !== safeAmount) return { attempted: false, confirmed: false, reason: "amount-conflict" };
             if (existing.status === "confirmed") return { attempted: false, confirmed: true, reason: "already-confirmed", reused: true };
-            const checked = await verifyBonPoolContribution(existing);
-            if (checked.confirmed) {
-                savePoolContributionAttempt(giveawayId, {
-                    status: "confirmed",
-                    confirmedAt: Date.now(),
-                    afterMine: checked.snapshot.mine,
-                    afterTotal: checked.snapshot.total
-                });
-                return { attempted: false, confirmed: true, reason: "verified-existing", reused: true };
+
+            // A retryable checkpoint is known to have failed before any POST was
+            // initiated (typically setItem succeeded but its read-back failed).
+            // Do not treat it as an ambiguous money-moving attempt: take a fresh
+            // remote baseline and create a new token below.
+            if (!isPoolContributionRetryable(giveawayId, existing)) {
+                const checked = await verifyBonPoolContribution(existing);
+                if (checked.confirmed) {
+                    savePoolContributionAttempt(giveawayId, {
+                        status: "confirmed",
+                        confirmedAt: Date.now(),
+                        afterMine: checked.snapshot.mine,
+                        afterTotal: checked.snapshot.total
+                    });
+                    return { attempted: false, confirmed: true, reason: "verified-existing", reused: true };
+                }
+                return { attempted: false, confirmed: false, reason: "existing-unconfirmed", reused: true };
             }
-            return { attempted: false, confirmed: false, reason: "existing-unconfirmed", reused: true };
+
+            logEvent(
+                "BON Pool retrying unsent checkpoint",
+                "A prior contribution checkpoint failed durability verification before POST; taking a fresh baseline and retrying safely."
+            );
         }
     
         let before;
@@ -10200,9 +10238,15 @@ body.host-panel-dragging * {
             beforeMine: before.mine,
             beforeTotal: before.total,
             attemptedAt: Date.now(),
+            attemptToken: `${TAB_ID}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`,
             status: "attempted"
         };
         if (!savePoolContributionAttempt(giveawayId, record, { verifyWrite: true })) {
+            // As with winner gifts, setItem() may have succeeded even though the
+            // verification read failed. No POST has happened yet, so tag this exact
+            // token as retryable. A later successful attempt uses a new token, making
+            // any stale marker harmless rather than risking a duplicate contribution.
+            markPoolContributionRetryable(giveawayId, record.attemptToken);
             logEvent(
                 "BON Pool contribution blocked",
                 "The contribution-attempt ledger could not be persisted safely; refusing the irreversible POST."
@@ -10325,7 +10369,20 @@ body.host-panel-dragging * {
         const giftKey = paidGiftKey(recipient, amount, purpose);
         const attemptToken = `${TAB_ID}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
         ledger[giveawayId][giftKey] = attemptToken;
-        if (!writePaidGiftsLedger(ledger, { verifyWrite: true })) return null;
+        if (!writePaidGiftsLedger(ledger, { verifyWrite: true })) {
+            // A failed read-back can happen after setItem() itself succeeded. No
+            // transfer has been sent yet, so make that exact token explicitly
+            // retryable. If the ledger write never landed this marker is harmless;
+            // if it did land, a later Retry will not mistake an unsent gift for an
+            // ambiguous/terminal transfer.
+            try {
+                localStorage.setItem(
+                    paidGiftRetryableKey(giveawayId, recipient, amount, purpose),
+                    attemptToken
+                );
+            } catch {}
+            return null;
+        }
         try {
             localStorage.removeItem(paidGiftRetryableKey(giveawayId, recipient, amount, purpose));
         } catch {}
