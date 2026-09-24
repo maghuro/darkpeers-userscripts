@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.7
+// @version      1.5.8
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -215,6 +215,9 @@
 //     fail-closed, Main Chat is observed while its server replay boundary is fetched,
 //     historical commands use a strict cutoff, staff attribution stays public even in
 //     Silent Mode, and Rehearsal / Debug mode is toggleable from the settings UI.
+//   - v1.5.8 makes the Rehearsal / Debug UI toggle honest under forced overrides:
+//     URL-forced rehearsal can be switched off from the UI, while a source-level
+//     DEBUG_SETTINGS.dry_run override is shown as forced instead of pretending to disable.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -352,10 +355,12 @@
 
     const REHEARSAL_FLAG = "BONANZA_GIVEAWAY_REHEARSAL";
     const REHEARSAL_QUERY_RE = /(?:^|[?&])bg_rehearsal=1(?:&|$)/i;
+    const REHEARSAL_FORCED_BY_DEBUG = DEBUG_SETTINGS.dry_run === true;
+    const REHEARSAL_FORCED_BY_QUERY = REHEARSAL_QUERY_RE.test(String(window.location.search || ""));
     const REHEARSAL_MODE = !!(
-        DEBUG_SETTINGS.dry_run ||
+        REHEARSAL_FORCED_BY_DEBUG ||
         localStorage.getItem(REHEARSAL_FLAG) === "true" ||
-        REHEARSAL_QUERY_RE.test(String(window.location.search || ""))
+        REHEARSAL_FORCED_BY_QUERY
     );
     const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE ? "::rehearsal" : "";
 
@@ -2448,6 +2453,13 @@ body.host-panel-dragging * {
         const rehearsalModeToggle = document.getElementById("rehearsalModeToggle");
         if (rehearsalModeToggle) {
             rehearsalModeToggle.checked = REHEARSAL_MODE;
+            rehearsalModeToggle.disabled = REHEARSAL_FORCED_BY_DEBUG;
+
+            if (REHEARSAL_FORCED_BY_DEBUG) {
+                rehearsalModeToggle.title =
+                    "Rehearsal / Debug mode is forced by DEBUG_SETTINGS.dry_run in the userscript source.";
+            }
+
             rehearsalModeToggle.addEventListener("change", () => {
                 const requested = !!rehearsalModeToggle.checked;
                 const activeHere = !!giveawayData;
@@ -2468,6 +2480,16 @@ body.host-panel-dragging * {
                     rehearsalModeToggle.checked = REHEARSAL_MODE;
                     window.alert("Unable to save the Rehearsal / Debug mode setting.");
                     return;
+                }
+
+                if (!requested && REHEARSAL_FORCED_BY_QUERY) {
+                    const cleanUrl = new URL(window.location.href);
+                    for (const key of Array.from(cleanUrl.searchParams.keys())) {
+                        if (key.toLowerCase() === "bg_rehearsal") {
+                            cleanUrl.searchParams.delete(key);
+                        }
+                    }
+                    window.history.replaceState(window.history.state, "", cleanUrl.toString());
                 }
 
                 window.location.reload();
