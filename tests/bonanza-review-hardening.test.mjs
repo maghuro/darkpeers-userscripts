@@ -87,3 +87,18 @@ test("staff detection uses exact role-title allow-list matching", () => {
   assert.doesNotMatch(source, /roleTokens\.some/);
   assert.doesNotMatch(source, /includes\(['"]onlyguardians['"]\)/i);
 });
+
+
+test("rehearsal persistent state is isolated from live giveaway state", () => {
+  assert.match(source, /const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE \? "::rehearsal" : ""/);
+  assert.match(source, /BONANZA_GIVEAWAY_STATS_v2::\$\{location\.hostname\}\$\{REHEARSAL_STORAGE_SUFFIX\}/);
+  assert.match(source, /bonanza-giveaway-statements::\$\{location\.hostname\}\$\{REHEARSAL_STORAGE_SUFFIX\}/);
+  assert.match(source, /LS_ACTIVE_GIVEAWAY_LEGACY\}\$\{REHEARSAL_STORAGE_SUFFIX\}::/);
+  assert.match(source, /savedRehearsalMode !== REHEARSAL_MODE/);
+  assert.match(source, /rehearsalMode: REHEARSAL_MODE/);
+
+  // Ownership stays shared deliberately so a live giveaway and rehearsal cannot
+  // operate concurrently in separate tabs.
+  assert.match(source, /const LS_TAB_LOCK = `bonanza-giveaway-tabLock::\$\{location\.hostname\}`/);
+  assert.match(source, /const TAB_WEB_LOCK_NAME = `bonanza-giveaway-owner::\$\{location\.hostname\}`/);
+});
