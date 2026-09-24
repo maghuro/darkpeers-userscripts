@@ -55,7 +55,8 @@ test("staff emergency actions are publicly attributed and cooldown-exempt", () =
   assert.match(source, /Staff action by \$\{sanitizeNick\(ctx\.author\)\}/);
   assert.match(source, /const actionReply = makeStaffAttributedReply\(ctx\)/);
   assert.match(source, /Requested by staff \$\{sanitizeNick\(author\)\} via !end/);
-  assert.match(source, /isEmergencyOperator[\s\S]*?isAdmin\(fancyName\)/);
+  assert.match(source, /staffEmergencyCommands = new Set\(\[[\s\S]*?"end"[\s\S]*?\]\)/);
+  assert.match(source, /isAdmin\(fancyName\) && staffEmergencyCommands\.has\(command\)/);
 });
 
 test("public winner names use anti-ping sanitization", () => {
