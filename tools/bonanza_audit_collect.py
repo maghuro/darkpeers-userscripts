@@ -9,7 +9,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -38,7 +38,7 @@ def username_from_cell(cell) -> str:
         href = link.get("href") or ""
         match = re.search(r"/users/([^/?#]+)", href)
         if match:
-            return requests.utils.unquote(match.group(1))
+            return unquote(match.group(1))
     return clean_text(cell.get_text(" ", strip=True) if cell else "")
 
 
@@ -253,7 +253,7 @@ def main() -> int:
         "chat": {},
     }
 
-    gift_path = f"/users/{requests.utils.quote(host, safe='')}/gifts"
+    gift_path = f"/users/{quote(host, safe='')}/gifts"
     notification_path = f"/users/{requests.utils.quote(host, safe='')}/notifications"
 
     report["gift_history"] = collect_paged_html(
