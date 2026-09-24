@@ -9,7 +9,7 @@ const sourcePath = new URL(
 const source = readFileSync(sourcePath, "utf8");
 
 test("review hardening invariants stay present", () => {
-  assert.match(source, /^\/\/ @version\s+1\.5\.7$/m);
+  assert.match(source, /^\/\/ @version\s+1\.5\.8$/m);
   assert.doesNotMatch(source, /pollChatFallback/);
   assert.doesNotMatch(source, /onlyguardians/i);
   assert.match(source, /async function getLatestMainChatReplayBoundary\(\)/);
@@ -157,6 +157,16 @@ test("rehearsal debug mode is exposed as a safe reload toggle", () => {
   assert.match(source, /localStorage\.setItem\(REHEARSAL_FLAG, String\(requested\)\)/);
   assert.match(source, /window\.location\.reload\(\)/);
   assert.match(source, /cannot be changed while a giveaway is active or recoverable/);
+});
+
+test("rehearsal toggle handles forced overrides honestly", () => {
+  assert.match(source, /const REHEARSAL_FORCED_BY_DEBUG = DEBUG_SETTINGS\.dry_run === true/);
+  assert.match(source, /const REHEARSAL_FORCED_BY_QUERY = REHEARSAL_QUERY_RE\.test/);
+  assert.match(source, /rehearsalModeToggle\.disabled = REHEARSAL_FORCED_BY_DEBUG/);
+  assert.match(source, /if \(!requested && REHEARSAL_FORCED_BY_QUERY\)/);
+  assert.match(source, /key\.toLowerCase\(\) === "bg_rehearsal"/);
+  assert.match(source, /cleanUrl\.searchParams\.delete\(key\)/);
+  assert.match(source, /window\.history\.replaceState\(window\.history\.state, "", cleanUrl\.toString\(\)\)/);
 });
 
 

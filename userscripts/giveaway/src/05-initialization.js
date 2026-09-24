@@ -702,6 +702,13 @@
         const rehearsalModeToggle = document.getElementById("rehearsalModeToggle");
         if (rehearsalModeToggle) {
             rehearsalModeToggle.checked = REHEARSAL_MODE;
+            rehearsalModeToggle.disabled = REHEARSAL_FORCED_BY_DEBUG;
+
+            if (REHEARSAL_FORCED_BY_DEBUG) {
+                rehearsalModeToggle.title =
+                    "Rehearsal / Debug mode is forced by DEBUG_SETTINGS.dry_run in the userscript source.";
+            }
+
             rehearsalModeToggle.addEventListener("change", () => {
                 const requested = !!rehearsalModeToggle.checked;
                 const activeHere = !!giveawayData;
@@ -722,6 +729,16 @@
                     rehearsalModeToggle.checked = REHEARSAL_MODE;
                     window.alert("Unable to save the Rehearsal / Debug mode setting.");
                     return;
+                }
+
+                if (!requested && REHEARSAL_FORCED_BY_QUERY) {
+                    const cleanUrl = new URL(window.location.href);
+                    for (const key of Array.from(cleanUrl.searchParams.keys())) {
+                        if (key.toLowerCase() === "bg_rehearsal") {
+                            cleanUrl.searchParams.delete(key);
+                        }
+                    }
+                    window.history.replaceState(window.history.state, "", cleanUrl.toString());
                 }
 
                 window.location.reload();
