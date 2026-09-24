@@ -20,7 +20,7 @@
 // Changes in this fork:
 //   - All non-DarkPeers tracker support, the upload.cx extra commands and the
 //     openuserjs update check have been removed.
-//   - A host-selected percentage (0-30%, steps of 5) of the final pot is
+//   - A host-selected percentage (0-50%, steps of 5) of the final pot is
 //     contributed directly to the DarkPeers BON Pool (/bon-pool).
 //   - Winning number is drawn with crypto.getRandomValues (Math.random fallback).
 //   - Storage keys and panel IDs are namespaced; if the original script is also
@@ -9532,7 +9532,7 @@ body.host-panel-dragging * {
      * never allowed to reduce a positive gross prize below 1 BON.
      *
      * @param {number[]} allocated gross prizes
-     * @param {number} percent 0..30 in steps of 5
+     * @param {number} percent 0..50 in steps of 5
      * @returns {{percent:number, net:number[], donations:number[], total:number}}
      */
     function computeDonationSplit(allocated, percent) {
