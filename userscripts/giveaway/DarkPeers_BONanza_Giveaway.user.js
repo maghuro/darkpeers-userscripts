@@ -2,12 +2,11 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.3
+// @version      1.5.4
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
-// @homepageURL  https://github.com/maghuro/unit3d-userscripts
-// @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
-// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
-// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
+// @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
+// @downloadURL  https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
 // @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -197,6 +196,8 @@
 //   - v1.5.3 follows the 2026-09-24 live post-audit: restored pages ignore pre-reload
 //     chat hydration so old entries/commands cannot be replayed, and statement host
 //     top-ups are derived from cumulative host funding minus the opening host contribution.
+//   - v1.5.4 moves public distribution to a secret GitHub Gist. The repository remains
+//     the development source of truth, while Tampermonkey updates use the stable Gist RAW URL.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
