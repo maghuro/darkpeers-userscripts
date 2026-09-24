@@ -3025,6 +3025,46 @@ body.host-panel-dragging * {
     async function restoreGiveawayFromSnapshot(snap) {
         if (!snap || !snap.giveawayData) return false;
 
+        // Validate the live DarkPeers identity/Main Chat context BEFORE claiming
+        // ownership or touching the recoverable snapshot. A transient/wrong chat
+        // context must never destroy or mutate persisted giveaway state.
+        cacheChatContext();
+        const restoreHost = getLoggedInUsername();
+        const restoreExpectedHost = String(snap.giveawayData.host || "").trim();
+        const restoreUserId = Math.floor(Number(OT_USER_ID));
+        const restorePublicRoom = Math.floor(Number(OT_CHATROOM_ID));
+        const restoreExpectedRoom = Math.floor(Number(DARKPEERS_MAIN_CHATROOM_ID));
+        const restoreContextOk =
+            !!restoreHost &&
+            !!restoreExpectedHost &&
+            normalizeUserKey(restoreHost) === normalizeUserKey(restoreExpectedHost) &&
+            Number.isFinite(restoreUserId) &&
+            restoreUserId > 0 &&
+            Number.isFinite(restorePublicRoom) &&
+            restorePublicRoom === restoreExpectedRoom &&
+            !!OT_CSRF_TOKEN;
+
+        if (!restoreContextOk) {
+            console.warn(
+                "[BON Giveaway] Restore deferred: DarkPeers identity/Main Chat context is not trustworthy.",
+                {
+                    restoreHost,
+                    expectedHost: restoreExpectedHost,
+                    userId: restoreUserId,
+                    publicRoom: restorePublicRoom,
+                    expectedRoom: restoreExpectedRoom,
+                    csrf: !!OT_CSRF_TOKEN
+                }
+            );
+            try {
+                window.alert(
+                    "BONanza recovery is preserved, but cannot be resumed because the authenticated DarkPeers/Main Chat context was not verified. " +
+                    "Reload DarkPeers on Main Chat and try again."
+                );
+            } catch {}
+            return false;
+        }
+
         // Re-check and claim ownership before touching any in-memory state. The
         // caller already checks, but another tab can race us between those steps.
         if (!await acquireTabLock()) {
@@ -3165,9 +3205,11 @@ body.host-panel-dragging * {
             }
             cacheChatContext();
 
-            // 8) Re-start observer only while entries are still open.
+            // 8) Keep the Main Chat observer alive even after entries close.
+            // Entry/mutating-command gates remain closed during settlement, while
+            // read-only status commands such as !time continue to answer.
             if (observer) { observer.disconnect(); observer = null; }
-            if (!expiredOnRestore) addObserver(giveawayData);
+            addObserver(giveawayData);
 
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
@@ -3266,12 +3308,12 @@ body.host-panel-dragging * {
             return true;
         } catch (e) {
             console.error("Giveaway restore failed:", e);
-            const committedSettlement = snap?.giveawayData?.settlement?.committed === true;
-            if (!committedSettlement) {
-                clearGiveawaySnapshot();
-            } else {
-                console.warn("[BON Giveaway] Committed settlement snapshot retained after restore failure for a later recovery attempt.");
-            }
+            // Fail closed for every active snapshot, not just committed payouts.
+            // A transient DOM/API/parse problem during reload must never erase the
+            // only copy of entries, sponsor accounting or settlement checkpoints.
+            console.warn(
+                "[BON Giveaway] Active snapshot retained after restore failure for a later recovery attempt."
+            );
             releaseTabLock();
             return false;
         }
@@ -4612,7 +4654,19 @@ body.host-panel-dragging * {
         async bootstrapGiftHistory() {
             try {
                 const rows = await this.fetchRecentGiftHistory();
-                await this.ensureGiftHistoryClockOffset(rows);
+                const offset = await this.ensureGiftHistoryClockOffset(rows);
+
+                // DarkPeers Gift History currently renders site wall-clock time,
+                // while Notifications/System API timestamps are UTC. If historical
+                // rows exist, starting without a calibrated offset would recreate
+                // the exact sponsor-window bug from v1.4.3. Empty histories are
+                // allowed; the first received gift can establish the calibration.
+                if (rows.length && optionalFiniteNumber(offset) === null) {
+                    throw new Error(
+                        "Gift History contains rows but its DarkPeers wall-clock offset could not be calibrated."
+                    );
+                }
+
                 this.setGiftHistoryBaseline(rows);
                 this.historyFallbackActive = false;
                 return true;
