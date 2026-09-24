@@ -21,18 +21,20 @@ The host owns the giveaway and all payout-shape decisions.
 
 DarkPeers staff may use operational recovery controls:
 
-- end
+- end, with the host explicitly named, for example `!end maghuro`
 - rig / unrig
 - time add / remove
 - addtime / removetime
 - naughty
 
+Every non-host staff action is identified publicly in the command output with the staff username.
+
 The following payout-shape controls are host-only:
 
-- winners
-- maxwinners
+- winners, which changes the base number of winners and therefore the prize split
+- maxwinners, which changes the scaling cap and therefore the maximum payout shape
 
-The host is exempt from the escalating command spam lockout, but the ultra-fast duplicate-send guard still applies.
+The host and recognized staff are exempt from the escalating command spam lockout, but the ultra-fast duplicate-send guard still applies.
 
 ## Rehearsal mode
 

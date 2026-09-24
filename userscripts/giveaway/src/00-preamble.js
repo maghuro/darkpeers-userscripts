@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.5
+// @version      1.5.6
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -207,6 +207,10 @@
 //     unavailable, and rehearsal mode suppresses every script chat message and
 //     BON-moving operation while isolating snapshots, ledgers, stats, statements and
 //     naughty-list state from live giveaways.
+//   - v1.5.6 makes emergency staff intervention explicit: non-host staff actions for
+//     rig/unrig, time adjustments, naughty-list operations and !end <host> are
+//     identified publicly by staff username. Staff also shares the host's emergency
+//     spam-lockout exemption, while !winners and !maxwinners remain host-only.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 

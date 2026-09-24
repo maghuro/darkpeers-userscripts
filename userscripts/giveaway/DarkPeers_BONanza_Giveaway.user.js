@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.5
+// @version      1.5.6
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -207,6 +207,10 @@
 //     unavailable, and rehearsal mode suppresses every script chat message and
 //     BON-moving operation while isolating snapshots, ledgers, stats, statements and
 //     naughty-list state from live giveaways.
+//   - v1.5.6 makes emergency staff intervention explicit: non-host staff actions for
+//     rig/unrig, time adjustments, naughty-list operations and !end <host> are
+//     identified publicly by staff username. Staff also shares the host's emergency
+//     spam-lockout exemption, while !winners and !maxwinners remain host-only.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -6357,7 +6361,7 @@ body.host-panel-dragging * {
             if (!settlementSafeCommands.has(command) || !readOnlyTime) return;
         }
 
-        if (applyCooldown(author, { command })) return; // Spammer – ignored
+        if (applyCooldown(author, { command, fancyName })) return; // Spammer – ignored
 
         executeCommand({
             name: command,
@@ -6436,11 +6440,22 @@ body.host-panel-dragging * {
         const authorKey = rawAuthor.toLowerCase();
         if (!authorKey) return false;
 
-        // The giveaway host may need several recovery commands in quick succession.
-        // Never put the host into the escalating spam lockout. Keep only the
-        // ultra-fast double-send guard so accidental duplicate submits are ignored.
+        // The giveaway host and recognized DarkPeers staff may need several recovery
+        // commands in quick succession. Never put either into the escalating spam
+        // lockout. Keep only the ultra-fast double-send guard so accidental duplicate
+        // submits are ignored.
         const activeHostKey = normalizeUserKey(giveawayData?.host);
-        if (activeHostKey && authorKey === activeHostKey) {
+        const fancyName = (opts && typeof opts === "object") ? opts.fancyName : "";
+        const command = (opts && typeof opts === "object" && opts.command != null)
+            ? String(opts.command).trim().toLowerCase()
+            : "";
+        const staffEmergencyCommands = new Set([
+            "rig", "unrig", "time", "addtime", "removetime", "naughty", "end"
+        ]);
+        const isEmergencyOperator =
+            (activeHostKey && authorKey === activeHostKey) ||
+            (isAdmin(fancyName) && staffEmergencyCommands.has(command));
+        if (isEmergencyOperator) {
             const lastAny = userLastActionAt.get(authorKey) || 0;
             const tooFast = (now - lastAny) < MIN_ACTION_GAP_MS;
             userLastActionAt.set(authorKey, now);
@@ -6466,14 +6481,11 @@ body.host-panel-dragging * {
 
         // Per-command cooldown (prevents identical output spam)
         let repeatBlocked = false;
-        const cmd = (opts && typeof opts === "object" && opts.command != null)
-        ? String(opts.command).trim().toLowerCase()
-        : "";
 
-        if (cmd) {
-            const cd = Number(REPEAT_COMMAND_COOLDOWNS_MS[cmd]) || 0;
+        if (command) {
+            const cd = Number(REPEAT_COMMAND_COOLDOWNS_MS[command]) || 0;
             if (cd > 0) {
-                const k = `${authorKey}::${cmd}`;
+                const k = `${authorKey}::${command}`;
                 const lastCmd = userLastCommandAt.get(k) || 0;
                 repeatBlocked = (now - lastCmd) < cd;
                 userLastCommandAt.set(k, now);
@@ -6536,6 +6548,23 @@ body.host-panel-dragging * {
         }
         _adminCache.set(fancyName, result);
         return result;
+    }
+
+    function isNonHostStaffAction(author, fancyName, host) {
+        const authorKey = normalizeUserKey(author);
+        const hostKey = normalizeUserKey(host);
+        return !!(authorKey && hostKey && authorKey !== hostKey && isAdmin(fancyName));
+    }
+
+    function makeStaffAttributedReply(ctx) {
+        const reply = ctx && typeof ctx.reply === "function" ? ctx.reply : sendMessage;
+        if (!ctx || !isNonHostStaffAction(ctx.author, ctx.fancyName, ctx.giveawayData?.host)) {
+            return reply;
+        }
+
+        const prefix =
+            `👮 [b][color=#5DE2E7]Staff action by ${sanitizeNick(ctx.author)}:[/color][/b] `;
+        return (message) => reply(prefix + message);
     }
 
     /** Factory for leaderboard commands. Eliminates boilerplate across top/most/sponsors/unlucky. */
@@ -6902,6 +6931,7 @@ body.host-panel-dragging * {
                 maybeSendRigDeny(author, safeAuthor, "rig");
                 return;
             }
+            const actionReply = makeStaffAttributedReply(ctx);
 
             // Only treat as "active giveaway" if the real global giveawayData is set
             const hasActiveGiveaway = !!giveawayData;
@@ -6920,14 +6950,14 @@ body.host-panel-dragging * {
 
                 // Only announce in chat if a giveaway is actually running
                 if (hasActiveGiveaway) {
-                    reply(
+                    actionReply(
                         `${bridgeMarker(BRIDGE_MARKERS.RIGGED, "😈")} [color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
                         `[i][color=#FF9AE6]Visual flair only. The math is still fair... probably.[/color][/i]`
                     );
                 }
             } else {
                 if (hasActiveGiveaway) {
-                    reply(
+                    actionReply(
                         `[color=#FF4F9A][b]RIGGED MODE is already active![/b][/color]`
                     );
                 }
@@ -6941,6 +6971,7 @@ body.host-panel-dragging * {
                 maybeSendRigDeny(author, safeAuthor, "unrig");
                 return;
             }
+            const actionReply = makeStaffAttributedReply(ctx);
 
             const hasActiveGiveaway = !!giveawayData;
 
@@ -6957,14 +6988,14 @@ body.host-panel-dragging * {
                 updateRigToggleUI();
 
                 if (hasActiveGiveaway) {
-                    reply(
+                    actionReply(
                         `${bridgeMarker(BRIDGE_MARKERS.UNRIGGED, "😒")} [color=#32cd53][b]Rigged mode disabled.[/b][/color] ` +
                         `[i][color=#A0E7AF]Back to boring, fully transparent fairness.[/color][/i]`
                     );
                 }
             } else {
                 if (hasActiveGiveaway) {
-                    reply(
+                    actionReply(
                         `[color=#32cd53][b]Rigged mode isn&#39;t enabled.[/b][/color]`
                     );
                 }
@@ -7179,8 +7210,9 @@ body.host-panel-dragging * {
         removetime: hostAdjustTime(-1),
 
         naughty(ctx) {
-            const { author, fancyName, args, giveawayData, reply } = ctx;
+            const { author, fancyName, args, giveawayData } = ctx;
             if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const actionReply = makeStaffAttributedReply(ctx);
 
             const sub = (args.shift() || "").toLowerCase();
             const target = (args.shift() || "");
@@ -7189,10 +7221,10 @@ body.host-panel-dragging * {
 
             switch (sub) {
                 case "add": {
-                    if (!key) { reply("[color=red]Usage:[/color] !naughty add username"); return; }
+                    if (!key) { actionReply("[color=red]Usage:[/color] !naughty add username"); return; }
 
                     if (key === normalizeUserKey(giveawayData.host)) {
-                        reply(
+                        actionReply(
                             `[color=red][b]The host can't be added to the naughty list![/b][/color]`
                         );
                         return;
@@ -7226,25 +7258,25 @@ body.host-panel-dragging * {
 
                     if (removed) { updateEntries(); snapshotGiveaway(); }
 
-                    reply(`${bridgeMarker(BRIDGE_MARKERS.NAUGHTY, "👮")} [color=#FFDE59]${fmtUserList([target])} added to the naughty list and removed from the giveaway.[/color]`);
+                    actionReply(`${bridgeMarker(BRIDGE_MARKERS.NAUGHTY, "👮")} [color=#FFDE59]${fmtUserList([target])} added to the naughty list and removed from the giveaway.[/color]`);
                     break;
                 }
 
 
                 case "remove":
-                    if (!key) { reply("[color=red]Usage:[/color] !naughty remove username"); return; }
+                    if (!key) { actionReply("[color=red]Usage:[/color] !naughty remove username"); return; }
                     naughtySet.delete(key); saveNaughty();
-                    reply(`🥳 [color=#7DDA58]${fmtUserList([target])} removed from the naughty list![/color]`);
+                    actionReply(`🥳 [color=#7DDA58]${fmtUserList([target])} removed from the naughty list![/color]`);
                     break;
 
                 case "list":
-                    reply(naughtySet.size
+                    actionReply(naughtySet.size
                           ? `[color=#FFDE59]Naughty list: [b]${fmtUserList([...naughtySet])}[/b][/color]`
                           : "Naughty list is empty.");
                     break;
 
                 default:
-                    reply("[color=red]Usage:[/color] !naughty (add|remove|list) username");
+                    actionReply("[color=red]Usage:[/color] !naughty (add|remove|list) username");
             }
         },
 
@@ -7257,13 +7289,17 @@ body.host-panel-dragging * {
                 endGiveaway();
                 return;
             }
-            // If admin (not host), must specify whose to end
+            // If staff (not host), require the target host explicitly.
             if (isAdmin(fancyName)) {
+                const actionReply = makeStaffAttributedReply(ctx);
                 if (!args.length || normalizeUserKey(args[0]) !== normalizeUserKey(giveawayData.host)) {
-                    reply(`[color=red]Admins must specify whose giveaway to end. Example: !end ${sanitizeNick(giveawayData.host)}[/color]`);
+                    actionReply(`[color=red]Specify the giveaway host to end it. Example: !end ${sanitizeNick(giveawayData.host)}[/color]`);
                     return;
                 }
-                logEvent("Giveaway stop requested", `Requested by admin ${sanitizeNick(author)} via !end ${sanitizeNick(giveawayData.host)}.`);
+                actionReply(
+                    `Ending the giveaway hosted by [b][color=#d85e27]${sanitizeNick(giveawayData.host)}[/color][/b].`
+                );
+                logEvent("Giveaway stop requested", `Requested by staff ${sanitizeNick(author)} via !end ${sanitizeNick(giveawayData.host)}.`);
                 endGiveaway();
             }
         }
@@ -7444,12 +7480,14 @@ body.host-panel-dragging * {
 
     function hostAdjustTime(sign) {
         // sign = +1 for !addtime / !time add, -1 for !removetime / !time remove
-        return ({ author, fancyName, args, giveawayData, reply }) => {
+        return (ctx) => {
+            const { author, fancyName, args, giveawayData } = ctx;
             if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const actionReply = makeStaffAttributedReply(ctx);
 
             const mins = parseFloat(args[0]);
             if (isNaN(mins) || mins <= 0) {
-                reply(
+                actionReply(
                     "[color=red]Usage:[/color] !time add|remove <minutes> or !addtime|!removetime <minutes>"
                 );
                 return;
@@ -7469,7 +7507,7 @@ body.host-panel-dragging * {
             const verb = sign > 0 ? "Added" : "Removed";
             const prep = sign > 0 ? "to" : "from";
 
-            reply(
+            actionReply(
                 `${verb} [color=#DC3D1D][b]${mins}[/b][/color] minute${mins === 1 ? "" : "s"} ${prep} the giveaway. ` +
                 `New time left: [b][color=#1DDC5D]${parseTime(
                     giveawayData.endTs - Date.now()
