@@ -8766,9 +8766,11 @@ body.host-panel-dragging * {
                     continue;
                 }
 
+                const place = i + 1;
+                const placeIcon = ["🥇", "🥈", "🥉"][i] || "🎉";
                 const msg = (winners.length === 1)
-                    ? `🎉 You won! Enjoy your ${amt} BON!`
-                    : `🎉 Congratulations on placing ${ordinal(i + 1)}!`;
+                    ? "🥇 YOU WON!! Congratulations!"
+                    : `${placeIcon} ${ordinal(place)} place! Congratulations!`;
 
                 const giftResult = await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
                 const expectedGift = {
