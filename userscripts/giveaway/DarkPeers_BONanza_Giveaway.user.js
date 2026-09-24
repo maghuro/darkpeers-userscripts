@@ -3531,6 +3531,7 @@ body.host-panel-dragging * {
             if (observer) { observer.disconnect(); observer = null; }
             beginChatReplayBoundaryCapture();
             addObserver(giveawayData);
+            const localReplayCaptureStartedAt = Date.now();
 
             const replayBoundary = await getLatestMainChatReplayBoundary();
             if (replayBoundary && Number.isFinite(replayBoundary.ts)) {
@@ -3545,9 +3546,11 @@ body.host-panel-dragging * {
                 // !end / !addbon / time mutation must never be replayed.
                 chatReplayCommandIgnoreBeforeTs = replayBoundary.ts;
             } else {
-                const fallbackBoundaryTs = Date.now();
-                chatReplayIgnoreBeforeTs = fallbackBoundaryTs - 2000;
-                chatReplayCommandIgnoreBeforeTs = fallbackBoundaryTs;
+                // Preserve every entry that arrived while the API request was in
+                // flight. Privileged commands still fail closed through the end of
+                // the failed lookup and can simply be re-sent by host/staff.
+                chatReplayIgnoreBeforeTs = localReplayCaptureStartedAt - 2000;
+                chatReplayCommandIgnoreBeforeTs = Date.now();
             }
             finishChatReplayBoundaryCapture();
 
