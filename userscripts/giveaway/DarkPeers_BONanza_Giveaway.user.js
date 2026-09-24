@@ -178,7 +178,7 @@
 //     website-first limit, exact guesses say "spot on!", and the MESSAGES sentinel
 //     uses canonical IRC 05 + bold instead of extended colour 16 for bridge reliability.
 //   - v1.5.0 deliberately returns to the proven DarkPeers-only v1.3.26 engine.
-//     The Portugas/multi-tracker adapter layer is removed. Current UNIT3D navbar
+//     The multi-tracker adapter layer is removed. Current UNIT3D navbar
 //     compatibility is retained, and BON Pool choices extend to 50% in 5% steps.
 //     Live DarkPeers endpoint audits additionally harden sponsor clock calibration
 //     from persistent notifications, absolute-deadline/settlement command gating,
