@@ -1,0 +1,67 @@
+name: Publish BONanza to Gist
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Publish userscript to Gist
+        env:
+          GIST_TOKEN: ${{ secrets.BONANZA_GIST_TOKEN }}
+          GIST_ID: ${{ vars.BONANZA_GIST_ID }}
+          SOURCE_FILE: userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+          GIST_FILE: DarkPeers_BONanza_Giveaway.user.js
+        run: |
+          set -euo pipefail
+
+          : "${GIST_TOKEN:?BONANZA_GIST_TOKEN is not configured}"
+          : "${GIST_ID:?BONANZA_GIST_ID is not configured}"
+
+          python3 - <<'PY' > /tmp/gist-payload.json
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE_FILE"])
+          content = source.read_text(encoding="utf-8")
+
+          payload = {
+              "files": {
+                  os.environ["GIST_FILE"]: {
+                      "content": content,
+                  }
+              }
+          }
+
+          print(json.dumps(payload))
+          PY
+
+          curl             --fail-with-body             --silent             --show-error             --request PATCH             --header "Accept: application/vnd.github+json"             --header "Authorization: Bearer ${GIST_TOKEN}"             --header "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/gists/${GIST_ID}"             --data-binary @/tmp/gist-payload.json             > /tmp/gist-response.json
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response = json.loads(Path("/tmp/gist-response.json").read_text(encoding="utf-8"))
+          gist_file = os.environ["GIST_FILE"]
+
+          if gist_file not in response.get("files", {}):
+              raise SystemExit(f"Gist update response does not contain {gist_file!r}")
+
+          print(f"Published {gist_file} to gist {os.environ['GIST_ID']}.")
+          PY
