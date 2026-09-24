@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.4
+// @version      1.5.5
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -198,6 +198,10 @@
 //     top-ups are derived from cumulative host funding minus the opening host contribution.
 //   - v1.5.4 moves public distribution to a secret GitHub Gist. The repository remains
 //     the development source of truth, while Tampermonkey updates use the stable Gist RAW URL.
+//   - v1.5.5 applies the post-live safety review: reload replay boundaries come from
+//     Main Chat server timestamps, host lockouts cannot block emergency recovery,
+//     winner-count controls are host-only, dead sponsor chat fallback is removed,
+//     and public winner names use the same anti-ping sanitization as other chat output.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -3280,7 +3284,18 @@ body.host-panel-dragging * {
             // nodes are historical messages, not new user actions. Ignore every
             // timestamp at or before this restore boundary so old entries/commands
             // cannot be replayed and trigger duplicate replies or spam lockouts.
-            chatReplayIgnoreBeforeTs = Date.now();
+            const replayBoundary = await getLatestMainChatReplayBoundary();
+            if (replayBoundary && Number.isFinite(replayBoundary.ts)) {
+                // Keep one source-timestamp resolution window fail-open. Replaying
+                // one borderline historical message is preferable to silently
+                // dropping a genuine entry posted immediately after the reload.
+                chatReplayIgnoreBeforeTs =
+                    replayBoundary.ts - Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+            } else {
+                // API unavailable: prefer a small replay risk over losing new entries
+                // because the host PC clock is slightly fast.
+                chatReplayIgnoreBeforeTs = Date.now() - 2000;
+            }
             if (observer) { observer.disconnect(); observer = null; }
             addObserver(giveawayData);
 
@@ -4098,6 +4113,9 @@ body.host-panel-dragging * {
         const perfStart = PERF ? performance.now() : 0;
 
         const createdAtTs = getChatMessageCreatedAtTs(messageNode);
+        // If UNIT3D ever inserts a relevant node without a parseable datetime,
+        // deliberately fail open. A possible duplicate reply is safer than silently
+        // discarding a real entry.
         if (
             Number.isFinite(chatReplayIgnoreBeforeTs) &&
             Number.isFinite(createdAtTs) &&
@@ -5467,7 +5485,7 @@ body.host-panel-dragging * {
         }
 
         /* ---- Chat API/SystemBot fallback only ---- */
-        async pollChatFallback(options = {}) {
+) {
             const perfStart = PERF ? performance.now() : 0;
             this.historyFallbackActive = true;
             const optionMax = optionalFiniteNumber(options.maxCreatedAtTs);
@@ -6335,6 +6353,17 @@ body.host-panel-dragging * {
         const authorKey = rawAuthor.toLowerCase();
         if (!authorKey) return false;
 
+        // The giveaway host may need several recovery commands in quick succession.
+        // Never put the host into the escalating spam lockout. Keep only the
+        // ultra-fast double-send guard so accidental duplicate submits are ignored.
+        const activeHostKey = normalizeUserKey(giveawayData?.host);
+        if (activeHostKey && authorKey === activeHostKey) {
+            const lastAny = userLastActionAt.get(authorKey) || 0;
+            const tooFast = (now - lastAny) < MIN_ACTION_GAP_MS;
+            userLastActionAt.set(authorKey, now);
+            return tooFast;
+        }
+
         const lockoutExpires = userCooldown.get(authorKey) || 0;
         if (now < lockoutExpires) return true;
 
@@ -6398,6 +6427,9 @@ body.host-panel-dragging * {
     }
 
     const _adminCache = new Map(); // fancyName HTML → boolean (cleared per giveaway in stopGiveaway)
+    const DARKPEERS_STAFF_ROLE_TOKENS = new Set([
+        "leader", "administrator", "admin", "moderator", "mod", "developer", "operator"
+    ]);
 
     function isAdmin(fancyName) {
         if (!fancyName) return false;
@@ -6412,12 +6444,7 @@ body.host-panel-dragging * {
             if (a) {
                 const title = a.getAttribute('title')?.toLowerCase() || '';
                 const roleTokens = title.split(/[^a-z0-9]+/).filter(Boolean);
-                const privilegedRoles = new Set([
-                    'leader', 'administrator', 'admin', 'moderator', 'mod', 'developer', 'operator'
-                ]);
-                const collapsedTitle = title.replace(/[^a-z0-9]+/g, '');
-                result = roleTokens.some(token => privilegedRoles.has(token)) ||
-                    collapsedTitle.includes('onlyguardians');
+                result = roleTokens.some(token => DARKPEERS_STAFF_ROLE_TOKENS.has(token));
             }
         } catch {
             result = false;
@@ -6928,8 +6955,8 @@ body.host-panel-dragging * {
         },
 
         winners(ctx) {
-            const { author, fancyName, args, giveawayData, reply } = ctx;
-            if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const { author, args, giveawayData, reply } = ctx;
+            if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
             const newCount = parseInt(ctx.args[0], 10);
             if (isNaN(newCount) || newCount < 1 || newCount > MAX_WINNERS) {
                 reply(`[color=red]Usage:[/color] !winners 1‑${MAX_WINNERS}`);
@@ -7001,8 +7028,8 @@ body.host-panel-dragging * {
         },
 
         maxwinners(ctx) {
-            const { author, fancyName, args, giveawayData, reply } = ctx;
-            if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const { author, args, giveawayData, reply } = ctx;
+            if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
             if (!giveawayData.scaleWinnersWithSponsors) {
                 reply(`[color=red]Scaling is not enabled for this giveaway.[/color]`);
                 return;
@@ -8555,9 +8582,9 @@ body.host-panel-dragging * {
                 : [];
             const ties = Array.isArray(plan.ties) ? plan.ties.map(item => ({ ...item })) : [];
             if (ties.length > 1) {
-                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
+                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${sanitizeNick(e.author)}[/color][/b]`).join(", ");
                 if (!(await sendSettlementMessage(
-                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
+                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${sanitizeNick(entries[0].author)}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
                     "tie result",
                     "tie-result"
                 ))) return;
@@ -8643,7 +8670,7 @@ body.host-panel-dragging * {
                     : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
 
                 const winnerLine =
-                      `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
+                      `Congrats [b][color=#DC3D1D]${sanitizeNick(w.author)}[/color][/b]! ` +
                       `Guess [color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ` +
                       `${accuracyText} ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
@@ -8662,7 +8689,7 @@ body.host-panel-dragging * {
                     const accuracyText = diff === 0
                         ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
                         : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
-                    return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
+                    return `${medal} [b][color=#DC3D1D]${sanitizeNick(w.author)}[/color][/b]: ` +
                         `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ${accuracyText} ` +
                         `[color=#FFC00A][b]${prize} BON[/b][/color]`;
                 });
@@ -9229,6 +9256,39 @@ body.host-panel-dragging * {
             return await fetch(url, { ...options, signal: controller.signal });
         } finally {
             clearTimeout(t);
+        }
+    }
+
+    async function getLatestMainChatReplayBoundary() {
+        try {
+            const url = new URL(`/api/chat/messages/${DARKPEERS_MAIN_CHATROOM_ID}`, location.origin);
+            const res = await fetchWithTimeout(
+                url,
+                { credentials: "include", cache: "no-store" },
+                5000
+            );
+            if (!res || !res.ok) return null;
+
+            const payload = await res.json();
+            const messages = Array.isArray(payload?.data) ? payload.data : [];
+            let latest = null;
+
+            for (const message of messages) {
+                const rawTimestamp = String(message?.created_at || "").trim();
+                const ts = Date.parse(rawTimestamp);
+                if (!Number.isFinite(ts)) continue;
+
+                const resolutionMs = unit3dTimestampResolutionMs(rawTimestamp);
+                if (!latest || ts > latest.ts) {
+                    latest = { ts, resolutionMs };
+                } else if (latest && ts === latest.ts) {
+                    latest.resolutionMs = Math.max(latest.resolutionMs, resolutionMs);
+                }
+            }
+
+            return latest;
+        } catch {
+            return null;
         }
     }
 
