@@ -642,7 +642,7 @@
 
         return compact
             ? `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME}: ${pct}%[/color][/b]`
-            : `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME}: ${pct}% of final pot[/color][/b]`;
+            : `💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${pct}% of the final pot (including sponsor gifts) goes to the ${BONANZA.FUND_NAME}[/color][/b]; winners share the remaining ${100 - pct}%.`;
     }
 
 
@@ -10022,14 +10022,15 @@ body.host-panel-dragging * {
         const reminderStartMarker = reminderPct > 0
             ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
             : BRIDGE_MARKERS.START;
-        const reminderDonationContext = buildDonationContext(giveawayData, { compact: true });
+        const reminderDonationContext = buildDonationContext(giveawayData);
         const msg = reminderPrefix +
               `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
-              (reminderDonationContext ? `${reminderDonationContext} | ` : "") +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(getGiveawayRemainingMs(giveawayData))}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
-              `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
+              `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]` +
+              (reminderDonationContext ? `\n${reminderDonationContext}` : "") +
+              `\n` +
               `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨` +
               silentLine +
               rigLine;
