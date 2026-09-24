@@ -6617,7 +6617,9 @@ body.host-panel-dragging * {
 
         reminder(ctx) {
             if (normalizeUserKey(ctx.author) === normalizeUserKey(ctx.giveawayData.host)) {
-                sendReminder();
+                // An explicit host !reminder is a manual override: send it now
+                // instead of applying the automatic recent-reminder suppression.
+                sendReminder({ force: true });
             }
         },
 
