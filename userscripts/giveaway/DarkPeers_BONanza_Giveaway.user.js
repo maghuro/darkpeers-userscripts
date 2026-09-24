@@ -5753,7 +5753,7 @@ body.host-panel-dragging * {
             const prefix =
                 `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
                 `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
-            const donationContext = buildDonationContext(this.data);
+            const donationContext = buildDonationContext(this.data, { compact: true });
             const suffix =
                 `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].` +
                 (donationContext ? ` ${donationContext}.` : "") +
@@ -6953,7 +6953,7 @@ body.host-panel-dragging * {
     
             const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
             const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
-            const donationPart = buildDonationContext(giveawayData);
+            const donationPart = buildDonationContext(giveawayData, { compact: true });
     
             let scalingPart = "";
             if (giveawayData.scaleWinnersWithSponsors) {
