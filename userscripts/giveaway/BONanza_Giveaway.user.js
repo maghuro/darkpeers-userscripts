@@ -7762,6 +7762,29 @@ body.host-panel-dragging * {
             const expectedGifts = [];
             const deferredWinnerGifts = [];
             const settlement = giveawayData.settlement;
+
+            // Persistent Gift History is the authoritative payout receipt on
+            // DarkPeers. Capture the baseline once, before the first winner POST,
+            // and persist it in the settlement so reload recovery compares against
+            // the same pre-transfer state instead of accidentally baselining a gift
+            // that already landed.
+            if (!Array.isArray(settlement.payoutGiftHistoryBaseline)) {
+                try {
+                    const tracker = window.__activeTracker;
+                    if (tracker && typeof tracker.fetchRecentGiftHistory === "function") {
+                        settlement.payoutGiftHistoryBaseline = await tracker.fetchRecentGiftHistory();
+                    }
+                } catch (e) {
+                    logEvent(
+                        "Payout Gift History baseline unavailable",
+                        String(e?.message || e)
+                    );
+                }
+            }
+            const payoutGiftHistoryBaseline = Array.isArray(settlement.payoutGiftHistoryBaseline)
+                ? settlement.payoutGiftHistoryBaseline
+                : null;
+
             const payoutNotBeforeTs = Number.isFinite(settlement.payoutNotBeforeTs)
                 ? settlement.payoutNotBeforeTs
                 : Date.now();
@@ -7799,6 +7822,7 @@ body.host-panel-dragging * {
                 const expectedGift = {
                     recipient: w.author,
                     amount: amt,
+                    message: msg,
                     purpose: GIFT_PURPOSE.WINNER
                 };
                 expectedGifts.push(expectedGift);
@@ -7816,6 +7840,7 @@ body.host-panel-dragging * {
 
             // 6a) Verify winner payouts BEFORE any irreversible BON Pool transfer.
             const winnersVerifiedBeforePool = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
+                giftHistoryBaseline: payoutGiftHistoryBaseline,
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
                 statementId: null
@@ -8324,6 +8349,303 @@ body.host-panel-dragging * {
     }
 
     async function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
+        const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
+        const verificationStillOwned = () => canMutateActiveGiveaway();
+        const verificationGiveawayId = getActiveGiveawayId();
+
+        try {
+            const afterId = Number.isFinite(Number(verificationContext?.afterId))
+                ? Math.floor(Number(verificationContext.afterId))
+                : null;
+            const notBeforeTs = Number.isFinite(Number(verificationContext?.notBeforeTs))
+                ? Number(verificationContext.notBeforeTs)
+                : null;
+            const baselineRows = Array.isArray(verificationContext?.giftHistoryBaseline)
+                ? verificationContext.giftHistoryBaseline
+                : null;
+            const selfKeys = resolveSelfKeys(hostName);
+
+            if (!selfKeys.size) {
+                if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
+                    markAllPendingWinnerGiftsFailed();
+                }
+                const targetStatement = getStatementRecordById(statementId);
+                if (targetStatement) {
+                    targetStatement.verification = "could not verify (host name unknown)";
+                    persistStatementRecord(targetStatement);
+                }
+                return false;
+            }
+
+            const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
+                .map(g => ({
+                    recipient: String(g?.recipient || "").trim(),
+                    key: normalizeUserKey(g?.recipient),
+                    amount: Math.round(Number(g?.amount) || 0),
+                    message: sanitizeSponsorGiftMessage(g?.message || ""),
+                    purpose: g?.purpose || GIFT_PURPOSE.WINNER,
+                    done: false
+                }))
+                .filter(g => g.recipient && g.amount > 0 && !selfKeys.has(g.key));
+
+            if (!expected.length) return true;
+
+            const describe = g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`;
+            const canTouchLiveUI = () =>
+                !!giveawayData &&
+                getActiveGiveawayId() === verificationGiveawayId &&
+                (
+                    statementId == null ||
+                    (
+                        currentStatement &&
+                        String(currentStatement.id) === String(statementId)
+                    )
+                );
+
+            function markConfirmed(g, status = "confirmed") {
+                if (canTouchLiveUI()) markWinnerGiftConfirmed(g.recipient);
+                updateStatementGiftStatus(g.recipient, g.purpose, status, statementId);
+            }
+
+            function markFailed(g) {
+                if (canTouchLiveUI()) markWinnerGiftFailed(g.recipient);
+                updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
+            }
+
+            // 1) PRIMARY RECEIPT: authenticated persistent Gift History.
+            // System room is only a rolling 100-message view; Gift History is the
+            // durable record of whether the transfer actually exists.
+            const tracker = window.__activeTracker;
+            const canUseHistory =
+                baselineRows &&
+                tracker &&
+                typeof tracker.fetchRecentGiftHistory === "function";
+
+            if (canUseHistory) {
+                const baselineCounts = new Map();
+                for (const row of baselineRows) {
+                    const key = giftHistoryBaseKey(row);
+                    if (!key) continue;
+                    baselineCounts.set(key, (baselineCounts.get(key) || 0) + 1);
+                }
+
+                let successfulHistoryReads = 0;
+                const historyAttempts = 6;
+                const historyDelayMs = 2000;
+
+                for (let attempt = 1; attempt <= historyAttempts; attempt++) {
+                    if (attempt > 1) {
+                        await new Promise(resolve => setTimeout(resolve, historyDelayMs));
+                        if (!verificationStillOwned()) return false;
+                    }
+
+                    try {
+                        const rows = await tracker.fetchRecentGiftHistory();
+                        if (!verificationStillOwned()) return false;
+                        successfulHistoryReads += 1;
+
+                        const currentCounts = new Map();
+                        const freshRows = [];
+                        for (const row of rows) {
+                            const key = giftHistoryBaseKey(row);
+                            if (!key) continue;
+                            const occurrence = (currentCounts.get(key) || 0) + 1;
+                            currentCounts.set(key, occurrence);
+                            if (occurrence > (baselineCounts.get(key) || 0)) {
+                                freshRows.push(row);
+                            }
+                        }
+
+                        const consumed = new Set();
+                        for (const gift of expected) {
+                            if (gift.done) continue;
+
+                            let matchIndex = freshRows.findIndex((row, idx) =>
+                                !consumed.has(idx) &&
+                                selfKeys.has(normalizeUserKey(row?.sender)) &&
+                                normalizeUserKey(row?.recipient) === gift.key &&
+                                Math.max(0, Math.floor(Number(row?.amount) || 0)) === gift.amount &&
+                                (
+                                    !gift.message ||
+                                    sanitizeSponsorGiftMessage(row?.message) === gift.message
+                                )
+                            );
+
+                            // Message text is an additional discriminator, not a
+                            // reason to reject an otherwise exact durable receipt if
+                            // UNIT3D normalises whitespace/emoji in the stored note.
+                            if (matchIndex < 0) {
+                                matchIndex = freshRows.findIndex((row, idx) =>
+                                    !consumed.has(idx) &&
+                                    selfKeys.has(normalizeUserKey(row?.sender)) &&
+                                    normalizeUserKey(row?.recipient) === gift.key &&
+                                    Math.max(0, Math.floor(Number(row?.amount) || 0)) === gift.amount
+                                );
+                            }
+
+                            if (matchIndex < 0) continue;
+                            consumed.add(matchIndex);
+                            gift.done = true;
+                            markConfirmed(gift, "confirmed-history");
+                        }
+
+                        if (expected.every(g => g.done)) {
+                            finalizeStatementVerification(true, 0, statementId);
+                            return true;
+                        }
+                    } catch (e) {
+                        if (!verificationStillOwned()) return false;
+                        logEvent(
+                            "Winner Gift History verify retry",
+                            `Attempt ${attempt}/${historyAttempts}: ${String(e?.message || e)}`
+                        );
+                    }
+                }
+
+                if (successfulHistoryReads > 0) {
+                    logEvent(
+                        "Winner Gift History fallback",
+                        "Persistent Gift History did not yet confirm every expected payout; checking the System room as secondary evidence."
+                    );
+                } else {
+                    logEvent(
+                        "Winner Gift History unavailable",
+                        "No authoritative Gift History read succeeded; checking the System room as secondary evidence."
+                    );
+                }
+            } else {
+                logEvent(
+                    "Winner Gift History baseline unavailable",
+                    "Using the System room as secondary payout verification."
+                );
+            }
+
+            // 2) SECONDARY RECEIPT: genuine DPBot/SystemBot messages in room 2.
+            const remainingBeforeChat = expected.filter(g => !g.done);
+            if (remainingBeforeChat.length) {
+                const maxAttempts = 5;
+                const delayMs = 3000;
+                const fetchTimeoutMs = 5000;
+                const consumedMessageIds = new Set();
+
+                // Allow DPBot a moment to emit the event.
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                if (!verificationStillOwned()) return false;
+
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+                        if (afterId !== null) url.searchParams.set("after_id", String(afterId));
+                        const res = await fetchWithTimeout(
+                            url,
+                            { credentials: "include", cache: "no-store" },
+                            fetchTimeoutMs
+                        );
+                        if (!verificationStillOwned()) return false;
+
+                        if (res?.ok) {
+                            const payload = await res.json();
+                            if (!verificationStillOwned()) return false;
+                            const messages = Array.isArray(payload?.data) ? payload.data : [];
+
+                            for (const m of messages) {
+                                const numericMsgId = Math.floor(Number(m?.id));
+                                if (
+                                    afterId !== null &&
+                                    Number.isFinite(numericMsgId) &&
+                                    numericMsgId <= afterId
+                                ) continue;
+
+                                const createdAt = Date.parse(m?.created_at);
+                                if (
+                                    notBeforeTs !== null &&
+                                    Number.isFinite(createdAt) &&
+                                    createdAt < (notBeforeTs - 5000)
+                                ) continue;
+
+                                const msgId = m?.id != null ? String(m.id) : null;
+                                if (msgId && consumedMessageIds.has(msgId)) continue;
+                                if (!m?.bot?.is_systembot) continue;
+
+                                const gift = parseGiftMessage(m.message);
+                                if (!gift?.gifter || !gift?.recipient) continue;
+                                if (!selfKeys.has(normalizeUserKey(gift.gifter))) continue;
+
+                                const recKey = normalizeUserKey(gift.recipient);
+                                const amt = Math.round(Number(gift.amount) || 0);
+                                const match = expected.find(g =>
+                                    !g.done &&
+                                    g.key === recKey &&
+                                    g.amount === amt
+                                );
+                                if (!match) continue;
+
+                                match.done = true;
+                                if (msgId) consumedMessageIds.add(msgId);
+                                markConfirmed(match, "confirmed-system");
+                            }
+                        }
+                    } catch (e) {
+                        if (!verificationStillOwned()) return false;
+                        logEvent(
+                            "Winner System-room verify retry",
+                            `Attempt ${attempt}/${maxAttempts}: ${String(e?.message || e)}`
+                        );
+                    }
+
+                    if (!verificationStillOwned()) return false;
+                    if (expected.every(g => g.done)) {
+                        finalizeStatementVerification(true, 0, statementId);
+                        return true;
+                    }
+
+                    if (attempt < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                        if (!verificationStillOwned()) return false;
+                    }
+                }
+            }
+
+            if (!verificationStillOwned()) return false;
+            const missing = expected.filter(g => !g.done);
+            missing.forEach(markFailed);
+            finalizeStatementVerification(false, missing.length, statementId);
+
+            const missingList = missing.map(describe).join(", ");
+            logEvent(
+                "Payout verification warning",
+                `Could not confirm gifts in Gift History or System room for: ${missingList}`
+            );
+            if (!verificationStillOwned()) return false;
+            await sendMessage(
+                `[color=#ff4f4f][b]Warning:[/b][/color] ` +
+                `Some giveaway gifts could not be confirmed. ` +
+                `Please manually verify BON for: ${missingList}.`,
+                { requireExclusiveGiveawayOwnership: true }
+            );
+            if (!verificationStillOwned()) return false;
+            return false;
+        } catch (e) {
+            if (!verificationStillOwned()) return false;
+            logEvent(
+                "Payout verification error",
+                `Unexpected error while confirming winner gifts: ${String(e?.message || e)}`
+            );
+            if (
+                currentStatement &&
+                statementId != null &&
+                String(currentStatement.id) === String(statementId)
+            ) {
+                markAllPendingWinnerGiftsFailed();
+            }
+            const targetStatement = getStatementRecordById(statementId);
+            if (targetStatement) {
+                targetStatement.verification = "verification error, check manually";
+                persistStatementRecord(targetStatement);
+            }
+            return false;
+        }
+    }) {
         const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
         const verificationStillOwned = () => canMutateActiveGiveaway();
         try {
