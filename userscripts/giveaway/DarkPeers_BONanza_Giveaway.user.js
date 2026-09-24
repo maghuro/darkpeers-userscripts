@@ -3296,6 +3296,28 @@ body.host-panel-dragging * {
             });
             window.__activeTracker = tracker;
 
+            // Before any restored timer/poll/settlement resumes, rebuild sponsor
+            // accounting from persistent Gift History. This self-heals snapshots
+            // affected by the v1.5.0 System/DPBot replay bug and fails closed if
+            // canonical coverage cannot be proven.
+            const sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
+                repairStats: true
+            });
+            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+            }
+            if (sponsorReconciliation.repaired) {
+                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                coinHeader.prepend(goldCoins.cloneNode(false));
+                updateHostPanelUI();
+                try {
+                    window.alert(
+                        "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
+                        `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                    );
+                } catch {}
+            }
+
             let expiredLegacyBootstrap = Promise.resolve();
             if (savedTracker) {
                 // Current snapshots have a persisted cursor. For an expired restore,
@@ -4736,6 +4758,257 @@ body.host-panel-dragging * {
                 this.historyFallbackActive = true;
                 return false;
             }
+        }
+
+        async reconcileCanonicalSponsorAccounting({ repairStats = false } = {}) {
+            const endpointPath = getGiftEndpointPath(getAuthenticatedUserSlug());
+            if (!endpointPath) {
+                throw new Error("Cannot resolve Gift History endpoint for sponsor reconciliation.");
+            }
+
+            const rows = [];
+            const MAX_RECONCILE_PAGES = 20;
+            let reachedWindowStart = false;
+
+            for (let page = 1; page <= MAX_RECONCILE_PAGES; page++) {
+                const historyUrl = new URL(endpointPath, location.origin);
+                if (page > 1) historyUrl.searchParams.set("page", String(page));
+                historyUrl.searchParams.set("_dpgw_reconcile", String(Date.now()));
+
+                const res = await fetchWithTimeout(
+                    historyUrl,
+                    {
+                        credentials: "same-origin",
+                        cache: "no-store"
+                    },
+                    7000
+                );
+                if (!res.ok) {
+                    throw new Error(`Gift History reconciliation page ${page} HTTP ${res.status}`);
+                }
+
+                const pageRows = parseGiftHistoryPage(await res.text());
+                if (!pageRows.length) {
+                    reachedWindowStart = true;
+                    break;
+                }
+
+                rows.push(...pageRows);
+
+                const offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs)
+                    ?? await this.ensureGiftHistoryClockOffset(rows);
+
+                if (offset !== null) {
+                    reachedWindowStart = rows.some(item => {
+                        const wallTs = Number.isFinite(Number(item?.createdAtAltTs))
+                            ? Number(item.createdAtAltTs)
+                            : Number(item?.createdAtTs);
+                        if (!Number.isFinite(wallTs)) return false;
+                        const resolutionMs = Math.max(
+                            1,
+                            Number.isFinite(Number(item?.timestampResolutionMs))
+                                ? Number(item.timestampResolutionMs)
+                                : unit3dTimestampResolutionMs(item?.rawTimestamp)
+                        );
+                        return ((wallTs - offset) + resolutionMs) <= this.giveawayStartTs;
+                    });
+                    if (reachedWindowStart) break;
+                }
+
+                if (page === MAX_RECONCILE_PAGES) {
+                    throw new Error(
+                        "Gift History reconciliation reached its page safety cap before proving coverage back to giveaway start."
+                    );
+                }
+            }
+
+            const offset = await this.ensureGiftHistoryClockOffset(rows);
+            if (rows.length && optionalFiniteNumber(offset) === null) {
+                throw new Error("Gift History reconciliation could not calibrate DarkPeers wall-clock time.");
+            }
+
+            if (!reachedWindowStart && rows.length) {
+                // If every fetched Gift History row belongs to this giveaway, an empty
+                // next page is required to prove that no older page was skipped.
+                const endpointCheck = new URL(endpointPath, location.origin);
+                endpointCheck.searchParams.set("page", String(MAX_RECONCILE_PAGES + 1));
+                endpointCheck.searchParams.set("_dpgw_reconcile", String(Date.now()));
+                // We deliberately do not guess completeness here. The loop normally
+                // exits on an empty page; reaching this branch means coverage could not
+                // be proven safely.
+                throw new Error("Gift History reconciliation could not prove complete coverage of the giveaway window.");
+            }
+
+            const indexed = indexGiftHistoryRows(rows);
+            const hostKey = normalizeUserKey(this.data.host);
+            const hostRows = indexed.filter(item =>
+                item.historyKey &&
+                normalizeUserKey(item.recipient) === hostKey
+            );
+
+            const maxTs =
+                optionalFiniteNumber(this.maxAcceptedCreatedAtTs) ??
+                optionalFiniteNumber(this.data?.settlement?.cutoffTs) ??
+                optionalFiniteNumber(this.data?.endTs);
+
+            const filtered = await this.filterHistoryRowsByWindow(
+                hostRows,
+                this.giveawayStartTs,
+                maxTs,
+                indexed
+            );
+            if (filtered.retryableKeys.size) {
+                throw new Error(
+                    "Gift History reconciliation found timestamp-boundary rows that are not yet safe to classify."
+                );
+            }
+
+            const canonicalRows = filtered.accepted;
+            const canonicalContribs = {};
+            const canonicalNamesByKey = new Map();
+            const canonicalMessages = [];
+            let canonicalSponsoredTotal = 0;
+
+            for (const item of canonicalRows) {
+                const sponsor = String(item?.sender || "").trim();
+                const sponsorKey = normalizeUserKey(sponsor);
+                const amount = Math.max(0, Math.floor(Number(item?.amount) || 0));
+                if (!sponsorKey || !(amount > 0)) continue;
+
+                const displayName = canonicalNamesByKey.get(sponsorKey) || sponsor;
+                canonicalNamesByKey.set(sponsorKey, displayName);
+                canonicalContribs[displayName] =
+                    (Number(canonicalContribs[displayName]) || 0) + amount;
+                canonicalSponsoredTotal += amount;
+
+                const message = sanitizeSponsorGiftMessage(item?.message);
+                if (message) {
+                    canonicalMessages.push({
+                        sponsor: displayName,
+                        amount,
+                        message,
+                        createdAtTs: Number.isFinite(Number(item?.createdAtTs))
+                            ? Number(item.createdAtTs)
+                            : null
+                    });
+                }
+            }
+
+            const oldLiveTotals = new Map(liveSponsorTotalThisGiveaway);
+            const oldLiveSeen = new Set(liveSponsorSeenThisGiveaway);
+            const canonicalTotalsByKey = new Map();
+            for (const [name, amount] of Object.entries(canonicalContribs)) {
+                const key = normalizeUserKey(name);
+                if (key) canonicalTotalsByKey.set(key, Math.max(0, Math.floor(Number(amount) || 0)));
+            }
+
+            const hostAdded = Math.max(
+                0,
+                Math.floor(
+                    Number(this.data.hostAdded ?? this.data.initialPotVerifiedAtStart) || 0
+                )
+            );
+            const previousPot = Math.max(0, Math.floor(Number(this.data.amount) || 0));
+            const previousSponsoredTotal = Math.max(
+                0,
+                Math.floor(sumSponsorContribs(this.data.sponsorContribs, this.data.host) || 0)
+            );
+            const canonicalPot = hostAdded + canonicalSponsoredTotal;
+
+            this.data.sponsorContribs = canonicalContribs;
+            this.data.sponsors = Array.from(canonicalNamesByKey.values());
+            this.data.sponsorGiftMessages = canonicalMessages;
+            this.data.amount = canonicalPot;
+
+            liveSponsorSeenThisGiveaway.clear();
+            liveSponsorTotalThisGiveaway.clear();
+            for (const [name, amount] of Object.entries(canonicalContribs)) {
+                const key = normalizeUserKey(name);
+                if (!key || !(amount > 0)) continue;
+                liveSponsorSeenThisGiveaway.add(key);
+                liveSponsorTotalThisGiveaway.set(key, amount);
+            }
+
+            if (repairStats) {
+                const stats = getStatsCached();
+                const keys = new Set([
+                    ...oldLiveTotals.keys(),
+                    ...canonicalTotalsByKey.keys(),
+                    ...oldLiveSeen
+                ]);
+
+                let statsChanged = false;
+                for (const key of keys) {
+                    const oldAmount = Math.max(0, Math.floor(Number(oldLiveTotals.get(key)) || 0));
+                    const newAmount = Math.max(0, Math.floor(Number(canonicalTotalsByKey.get(key)) || 0));
+                    const amountDelta = newAmount - oldAmount;
+                    const wasSeen = oldLiveSeen.has(key);
+                    const isSeen = canonicalTotalsByKey.has(key) && newAmount > 0;
+                    const displayName =
+                        canonicalNamesByKey.get(key) ||
+                        this.data.sponsors.find(name => normalizeUserKey(name) === key) ||
+                        key;
+                    const rec = getOrCreateUserStats(stats, displayName);
+                    if (!rec) continue;
+
+                    if (amountDelta !== 0) {
+                        rec.sponsoredTotal = Math.max(
+                            0,
+                            Math.floor(Number(rec.sponsoredTotal) || 0) + amountDelta
+                        );
+                        statsChanged = true;
+                    }
+
+                    if (wasSeen !== isSeen) {
+                        rec.sponsorCount = Math.max(
+                            0,
+                            Math.floor(Number(rec.sponsorCount) || 0) + (isSeen ? 1 : -1)
+                        );
+                        statsChanged = true;
+                    }
+
+                    // Increasing this max is always safe. Decreasing it is not: the
+                    // previous legitimate per-giveaway maximum is not retained
+                    // separately, so an inflated live max is audited manually instead
+                    // of risking destruction of an older valid record.
+                    if (newAmount > Math.max(0, Math.floor(Number(rec.biggestSponsor) || 0))) {
+                        rec.biggestSponsor = newAmount;
+                        statsChanged = true;
+                    }
+                }
+
+                if (statsChanged) {
+                    saveGiveawayStats(stats);
+                    _statsCache = stats;
+                    _statsDirty = false;
+                    if (_statsFlushTimer) {
+                        clearTimeout(_statsFlushTimer);
+                        _statsFlushTimer = null;
+                    }
+                }
+            }
+
+            recomputeEffectiveWinners(this.data);
+            this.setGiftHistoryBaseline(rows);
+            this.historyFallbackActive = false;
+
+            logEvent(
+                previousPot === canonicalPot && previousSponsoredTotal === canonicalSponsoredTotal
+                    ? "Sponsor accounting verified from Gift History"
+                    : "Sponsor accounting repaired from Gift History",
+                `Persistent Gift History canonical total=${fmtBONCurrency(canonicalSponsoredTotal)} BON | pot ${fmtBONCurrency(previousPot)} -> ${fmtBONCurrency(canonicalPot)} BON`
+            );
+
+            return {
+                repaired:
+                    previousPot !== canonicalPot ||
+                    previousSponsoredTotal !== canonicalSponsoredTotal,
+                previousPot,
+                canonicalPot,
+                previousSponsoredTotal,
+                canonicalSponsoredTotal,
+                canonicalContribs
+            };
         }
 
         async fetchRecentChatGiftEvents() {
