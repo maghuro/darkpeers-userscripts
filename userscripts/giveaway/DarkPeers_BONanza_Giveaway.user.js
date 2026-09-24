@@ -7970,7 +7970,7 @@ body.host-panel-dragging * {
                 // settlement must reuse these original boundaries; taking a fresh
                 // baseline/cursor after a crash would make already-sent refunds look old.
                 const settlement = giveawayData.settlement;
-                const hasSavedRefundBaseline = Object.prototype.hasOwnProperty.call(
+                let hasSavedRefundBaseline = Object.prototype.hasOwnProperty.call(
                     settlement,
                     "refundGiftHistoryBaseline"
                 );
@@ -7978,21 +7978,48 @@ body.host-panel-dragging * {
                     ? settlement.refundGiftHistoryBaseline
                     : null;
 
+                // A failed preflight from an older/current attempt may have left a
+                // non-array sentinel (notably null). That is NOT an initialized
+                // verification boundary. Drop it so this attempt can retry Gift
+                // History once DarkPeers is healthy again.
+                if (hasSavedRefundBaseline && !Array.isArray(refundGiftHistoryBaseline)) {
+                    delete settlement.refundGiftHistoryBaseline;
+                    hasSavedRefundBaseline = false;
+                    refundGiftHistoryBaseline = null;
+                }
+
                 if (!hasSavedRefundBaseline) {
                     try {
-                        refundGiftHistoryBaseline = sponsorRefunds.length &&
+                        const fetchedRefundBaseline = sponsorRefunds.length &&
                             window.__activeTracker &&
                             typeof window.__activeTracker.fetchRecentGiftHistory === "function"
                             ? await window.__activeTracker.fetchRecentGiftHistory()
                             : [];
+
+                        if (Array.isArray(fetchedRefundBaseline)) {
+                            refundGiftHistoryBaseline = fetchedRefundBaseline;
+                            // Persist only a valid baseline. Never serialize null/error
+                            // as though the pre-transfer boundary had been captured.
+                            settlement.refundGiftHistoryBaseline = fetchedRefundBaseline;
+                        } else {
+                            refundGiftHistoryBaseline = null;
+                            delete settlement.refundGiftHistoryBaseline;
+                            logEvent(
+                                "Sponsor refund Gift History preflight",
+                                "Gift History returned a non-array baseline; refund settlement remains retryable."
+                            );
+                        }
                     } catch (e) {
                         refundGiftHistoryBaseline = null;
+                        delete settlement.refundGiftHistoryBaseline;
                         logEvent("Sponsor refund Gift History preflight", String(e?.message || e));
                     }
-                    settlement.refundGiftHistoryBaseline = refundGiftHistoryBaseline;
                 }
 
                 if (sponsorRefunds.length && !Array.isArray(refundGiftHistoryBaseline)) {
+                    // Keep the property absent while paused so Retry performs a fresh
+                    // preflight instead of treating a previous failure as initialized.
+                    delete settlement.refundGiftHistoryBaseline;
                     pauseSettlementForRetry(
                         "Settlement paused (refund baseline unavailable)",
                         "Persistent Gift History could not be captured before sponsor refunds. No refund was attempted.",
