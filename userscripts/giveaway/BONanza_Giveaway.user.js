@@ -2,7 +2,7 @@
 // @name         BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.2
+// @version      1.4.3
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -200,6 +200,10 @@
 //     450 px control panel stays readable without overflowing narrow controls.
 //     The winner-scaling fields also use the available row width more efficiently;
 //     BON Pool contribution choices now run from 0% to 50% in 5% steps.
+//   - v1.4.3 fixes authenticated-user resolution on current UNIT3D top navigation:
+//     DarkPeers now supports both class-on-link and legacy wrapper markup, while
+//     host identity consumers share the same resolver instead of depending on one
+//     tracker-specific .top-nav__username DOM shape.
 //
 //// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -1447,8 +1451,17 @@
         return null;
     }
 
+    function getTopNavUserLink(root = document) {
+        const scope = root && typeof root.querySelector === "function" ? root : document;
+        return scope.querySelector([
+            'a.top-nav__username[href*="/users/"]',
+            'a.top-nav__username--highresolution[href*="/users/"]',
+            '.top-nav__username a[href*="/users/"]'
+        ].join(", "));
+    }
+
     function getAuthenticatedUserSlug() {
-        const navLink = document.querySelector('.top-nav__username a[href*="/users/"]');
+        const navLink = getTopNavUserLink();
         if (navLink) {
             try {
                 const url = new URL(navLink.getAttribute("href") || navLink.href || "", location.origin);
@@ -3564,8 +3577,7 @@ body.host-panel-dragging * {
         rigToggleInput = document.getElementById("rigModeToggle");
         if (rigToggleInput) {
             rigToggleInput.addEventListener("change", () => {
-                const nameNode = document.getElementsByClassName("top-nav__username")[0];
-                const hostName = nameNode?.children[0]?.textContent.trim() || "";
+                const hostName = getLoggedInUsername();
 
                 const ctx = {
                     author: hostName,
@@ -4724,7 +4736,7 @@ body.host-panel-dragging * {
             : null;
 
         giveawayData = {
-            host: document.getElementsByClassName("top-nav__username")[0].children[0].textContent.trim(),
+            host: getLoggedInUsername(),
             chatroomId,
             amount: amountInt,
             startNum: parseInt(startInput.value, 10),
@@ -11745,7 +11757,7 @@ body.host-panel-dragging * {
     // Best-effort: derive the logged-in username from the navbar /users/<name> link
     // so it matches what getAuthor() extracts from chat messages.
     function getLoggedInUsername() {
-        const navLink = document.querySelector('.top-nav__username a[href*="/users/"]');
+        const navLink = getTopNavUserLink();
         if (navLink) {
             const href = navLink.getAttribute("href") || navLink.href || "";
             const m = href.match(/\/users\/([^/?#]+)/i);
@@ -11754,7 +11766,7 @@ body.host-panel-dragging * {
             }
         }
 
-        const t = document.querySelector('.top-nav__username a')?.textContent || "";
+        const t = navLink?.textContent || "";
         return String(t || "").trim();
     }
 
@@ -13005,7 +13017,7 @@ body.host-panel-dragging * {
     }
 
     function isCurrentUserGiveawayHost() {
-        const navDisplayName = document.getElementsByClassName("top-nav__username")[0]?.children?.[0]?.textContent || "";
+        const navDisplayName = getTopNavUserLink()?.textContent || "";
         const selfNames = [getLoggedInUsername(), navDisplayName].map((name) => normUserKey(name)).filter(Boolean);
         if (!selfNames.length) return false;
 
