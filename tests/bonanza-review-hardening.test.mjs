@@ -111,6 +111,19 @@ test("historical commands use a strict replay cutoff while entries keep toleranc
   assert.match(source, /chatReplayIgnoreBeforeTs = replayBoundary\.ts - resolutionMs/);
 });
 
+test("failed replay-boundary lookup preserves entries received during the wait", () => {
+  const restoreStart = source.indexOf("async function restoreGiveawayFromSnapshot");
+  const captureStart = source.indexOf("const localReplayCaptureStartedAt = Date.now()", restoreStart);
+  const fetchBoundary = source.indexOf("await getLatestMainChatReplayBoundary()", captureStart);
+  const fallbackEntry = source.indexOf("chatReplayIgnoreBeforeTs = localReplayCaptureStartedAt - 2000", fetchBoundary);
+  const fallbackCommand = source.indexOf("chatReplayCommandIgnoreBeforeTs = Date.now()", fallbackEntry);
+
+  assert.ok(captureStart > restoreStart);
+  assert.ok(fetchBoundary > captureStart);
+  assert.ok(fallbackEntry > fetchBoundary);
+  assert.ok(fallbackCommand > fallbackEntry);
+});
+
 
 test("rehearsal guards precede every money/chat POST path", () => {
   const poolStart = source.indexOf("async function contributeBonPool");
