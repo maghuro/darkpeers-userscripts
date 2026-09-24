@@ -180,6 +180,9 @@
 //   - v1.5.0 deliberately returns to the proven DarkPeers-only v1.3.26 engine.
 //     The Portugas/multi-tracker adapter layer is removed. Current UNIT3D navbar
 //     compatibility is retained, and BON Pool choices extend to 50% in 5% steps.
+//     Live DarkPeers endpoint audits additionally harden sponsor clock calibration
+//     from persistent notifications, absolute-deadline/settlement command gating,
+//     Main Chat settlement-output reconciliation and fail-closed chatbox fallback.
 //     DarkPeers remains the sole production target; another tracker must use a
 //     separate userscript rather than changing this engine.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
@@ -2890,6 +2893,7 @@ body.host-panel-dragging * {
                     sponsorGiftMessages: Array.isArray(giveawayData.sponsorGiftMessages)
                         ? giveawayData.sponsorGiftMessages
                         : [],
+                    closingNoticeSent: giveawayData.__closingNoticeSent === true,
                     lastAnnouncedWinners: giveawayData.lastAnnouncedWinners,
                     settlement: giveawayData.settlement && typeof giveawayData.settlement === "object"
                         ? { ...giveawayData.settlement }
@@ -3019,6 +3023,7 @@ body.host-panel-dragging * {
         try {
             // 1) Restore giveaway data
             giveawayData = snap.giveawayData;
+            giveawayData.__closingNoticeSent = giveawayData.closingNoticeSent === true;
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
                 : [];
@@ -4516,6 +4521,7 @@ body.host-panel-dragging * {
         async bootstrapGiftHistory() {
             try {
                 const rows = await this.fetchRecentGiftHistory();
+                await this.ensureGiftHistoryClockOffset(rows);
                 this.setGiftHistoryBaseline(rows);
                 this.historyFallbackActive = false;
                 return true;
@@ -4588,8 +4594,7 @@ body.host-panel-dragging * {
             };
 
             if (offset === null) {
-                const events = await loadChatEvents();
-                offset = this.inferGiftHistoryClockOffset(events, rows);
+                offset = await this.ensureGiftHistoryClockOffset(rows);
             }
 
             // Re-read the closing latch after the await above. If endGiveaway()
@@ -5108,6 +5113,66 @@ body.host-panel-dragging * {
             return parseGiftHistoryPage(await res.text());
         }
 
+        notificationRowsToClockEvents(rows) {
+            return (Array.isArray(rows) ? rows : [])
+                .map(item => {
+                    const createdAtTs = Number.isFinite(Number(item?.createdAtAltTs))
+                        ? Number(item.createdAtAltTs)
+                        : Number(item?.createdAtTs);
+                    return {
+                        messageId: null,
+                        gifter: String(item?.sender || "").trim(),
+                        recipient: String(item?.recipient || "").trim(),
+                        amount: Math.max(0, Math.floor(Number(item?.amount) || 0)),
+                        rawAmount: Number(item?.amount),
+                        createdAtTs,
+                        timestampResolutionMs: unit3dTimestampResolutionMs(item?.rawTimestamp)
+                    };
+                })
+                .filter(event =>
+                    event.gifter &&
+                    normalizeUserKey(event.recipient) === normalizeUserKey(this.data.host) &&
+                    Number.isFinite(event.createdAtTs) &&
+                    event.amount > 0
+                );
+        }
+
+        async ensureGiftHistoryClockOffset(rows) {
+            let offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
+            if (offset !== null) return offset;
+            if (!Array.isArray(rows) || !rows.length) return null;
+
+            // DarkPeers Gift History renders site wall-clock time while persistent
+            // "Has Gifted You" notifications use UTC-scale event time. Notifications
+            // survive the rolling System-room window, so use them for calibration.
+            try {
+                const notifications = await this.fetchRecentGiftNotifications();
+                offset = this.inferGiftHistoryClockOffset(
+                    this.notificationRowsToClockEvents(notifications),
+                    rows
+                );
+                if (offset !== null) return offset;
+            } catch (e) {
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Gift History clock calibration via notifications failed:", e);
+                }
+            }
+
+            // Secondary only: System room is a rolling 100-message window.
+            try {
+                offset = this.inferGiftHistoryClockOffset(
+                    await this.fetchRecentChatGiftEvents(),
+                    rows
+                );
+            } catch (e) {
+                if (DEBUG_SETTINGS.log_chat_messages) {
+                    console.warn("Gift History clock calibration via System room failed:", e);
+                }
+            }
+
+            return optionalFiniteNumber(offset);
+        }
+
         inferGiftHistoryClockOffset(events, rows) {
             const persisted = optionalFiniteNumber(this.giftHistoryClockOffsetMs);
             if (!Array.isArray(events) || !events.length || !Array.isArray(rows) || !rows.length) {
@@ -5352,7 +5417,7 @@ body.host-panel-dragging * {
             if (!canMutateActiveGiveaway()) return;
             const data = this.data;
             if (!data || data !== giveawayData || !data.scaleWinnersWithSponsors) return;
-            if (!(Number(data.timeLeft) > 0)) return;
+            if (isGiveawaySettling(data) || getGiveawayRemainingMs(data) <= 0) return;
 
             const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
             const newWinners = recomputeEffectiveWinners(data);
@@ -5640,9 +5705,17 @@ body.host-panel-dragging * {
 
         if (!validCommands.has(command)) return; // Unsupported
 
-        if (isGiveawaySettling(giveawayData)) {
-            const settlementSafeCommands = new Set(["time", "entries", "bon", "number", "help", "commands"]);
-            if (!settlementSafeCommands.has(command)) return;
+        const entriesClosed =
+            isGiveawaySettling(giveawayData) ||
+            getGiveawayRemainingMs(giveawayData) <= 0;
+        if (entriesClosed) {
+            const settlementSafeCommands = new Set([
+                "time", "entries", "bon", "number", "gift", "range", "scale",
+                "stats", "top", "most", "sponsors", "unlucky", "largest",
+                "help", "commands"
+            ]);
+            const readOnlyTime = command !== "time" || args.length === 0;
+            if (!settlementSafeCommands.has(command) || !readOnlyTime) return;
         }
 
         if (applyCooldown(author, { command })) return; // Spammer – ignored
@@ -5683,8 +5756,12 @@ body.host-panel-dragging * {
         });
 
         if (maybePromise && typeof maybePromise.then === "function") {
-            maybePromise.catch(err => console.error("Giveaway command handler error:", err));
+            return maybePromise.catch(err => {
+                console.error("Giveaway command handler error:", err);
+                throw err;
+            });
         }
+        return maybePromise;
     }
 
 
@@ -6781,7 +6858,12 @@ body.host-panel-dragging * {
                 if (!canMutateActiveGiveaway()) return { owned: false, found: false };
 
                 try {
-                    const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+                    if (!OT_CHATROOM_ID) cacheChatContext();
+                    const publicChatroomId = Math.floor(Number(OT_CHATROOM_ID));
+                    if (!Number.isFinite(publicChatroomId) || publicChatroomId <= 0) {
+                        throw new Error("Public chatroom id unavailable for settlement reconciliation");
+                    }
+                    const url = new URL(`/api/chat/messages/${publicChatroomId}`, location.origin);
                     if (afterId !== null) url.searchParams.set("after_id", String(afterId));
                     const res = await fetchWithTimeout(url, { credentials: "include" }, 5000);
                     if (!canMutateActiveGiveaway()) return { owned: false, found: false };
@@ -7113,15 +7195,28 @@ body.host-panel-dragging * {
             }
             if (!finalSponsorSyncOk) {
                 logEvent(
-                    "Final sponsor sync warning",
-                    "Could not refresh the chat API after 3 attempts; settling with the last confirmed sponsor state."
+                    "Settlement paused (final sponsor sync failed)",
+                    "Could not establish an authoritative final sponsor state after 3 attempts. Refusing to draw winners or move BON with stale sponsor accounting."
                 );
                 try {
                     window.alert(
-                        "Giveaway warning: final sponsor sync failed after 3 attempts. " +
-                        "Settlement will use the last confirmed sponsor total; verify any very recent gifts manually."
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "The final sponsor reconciliation failed after 3 attempts. " +
+                        "No winner draw, winner gift or BON Pool contribution will be performed from stale sponsor data.\n\n" +
+                        "Retry settlement after connectivity/DarkPeers is healthy."
                     );
                 } catch {}
+                try {
+                    if (startButton) {
+                        startButton.disabled = false;
+                        startButton.textContent = "Retry settlement";
+                        startButton.title = "Retry final sponsor reconciliation and settlement";
+                        startButton.onclick = () => endGiveaway();
+                    }
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
             }
         }
 
@@ -7667,6 +7762,29 @@ body.host-panel-dragging * {
             const expectedGifts = [];
             const deferredWinnerGifts = [];
             const settlement = giveawayData.settlement;
+
+            // Persistent Gift History is the authoritative payout receipt on
+            // DarkPeers. Capture the baseline once, before the first winner POST,
+            // and persist it in the settlement so reload recovery compares against
+            // the same pre-transfer state instead of accidentally baselining a gift
+            // that already landed.
+            if (!Array.isArray(settlement.payoutGiftHistoryBaseline)) {
+                try {
+                    const tracker = window.__activeTracker;
+                    if (tracker && typeof tracker.fetchRecentGiftHistory === "function") {
+                        settlement.payoutGiftHistoryBaseline = await tracker.fetchRecentGiftHistory();
+                    }
+                } catch (e) {
+                    logEvent(
+                        "Payout Gift History baseline unavailable",
+                        String(e?.message || e)
+                    );
+                }
+            }
+            const payoutGiftHistoryBaseline = Array.isArray(settlement.payoutGiftHistoryBaseline)
+                ? settlement.payoutGiftHistoryBaseline
+                : null;
+
             const payoutNotBeforeTs = Number.isFinite(settlement.payoutNotBeforeTs)
                 ? settlement.payoutNotBeforeTs
                 : Date.now();
@@ -7704,6 +7822,7 @@ body.host-panel-dragging * {
                 const expectedGift = {
                     recipient: w.author,
                     amount: amt,
+                    message: msg,
                     purpose: GIFT_PURPOSE.WINNER
                 };
                 expectedGifts.push(expectedGift);
@@ -7721,6 +7840,7 @@ body.host-panel-dragging * {
 
             // 6a) Verify winner payouts BEFORE any irreversible BON Pool transfer.
             const winnersVerifiedBeforePool = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
+                giftHistoryBaseline: payoutGiftHistoryBaseline,
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
                 statementId: null
@@ -8231,12 +8351,17 @@ body.host-panel-dragging * {
     async function verifyWinnerGifts(expectedGifts, hostName, verificationContext = {}) {
         const statementId = verificationContext?.statementId ?? currentStatement?.id ?? null;
         const verificationStillOwned = () => canMutateActiveGiveaway();
+        const verificationGiveawayId = getActiveGiveawayId();
+
         try {
-            const afterId = Number.isFinite(Number(verificationContext && verificationContext.afterId))
+            const afterId = Number.isFinite(Number(verificationContext?.afterId))
                 ? Math.floor(Number(verificationContext.afterId))
                 : null;
-            const notBeforeTs = Number.isFinite(Number(verificationContext && verificationContext.notBeforeTs))
+            const notBeforeTs = Number.isFinite(Number(verificationContext?.notBeforeTs))
                 ? Number(verificationContext.notBeforeTs)
+                : null;
+            const baselineRows = Array.isArray(verificationContext?.giftHistoryBaseline)
+                ? verificationContext.giftHistoryBaseline
                 : null;
             const selfKeys = resolveSelfKeys(hostName);
 
@@ -8254,29 +8379,32 @@ body.host-panel-dragging * {
 
             const expected = (Array.isArray(expectedGifts) ? expectedGifts : [])
                 .map(g => ({
-                    recipient: String(g && g.recipient || "").trim(),
-                    key: normalizeUserKey(g && g.recipient),
-                    amount: Math.round(Number(g && g.amount) || 0),
-                    purpose: (g && g.purpose) || GIFT_PURPOSE.WINNER,
+                    recipient: String(g?.recipient || "").trim(),
+                    key: normalizeUserKey(g?.recipient),
+                    amount: Math.round(Number(g?.amount) || 0),
+                    message: sanitizeSponsorGiftMessage(g?.message || ""),
+                    purpose: g?.purpose || GIFT_PURPOSE.WINNER,
                     done: false
                 }))
                 .filter(g => g.recipient && g.amount > 0 && !selfKeys.has(g.key));
 
             if (!expected.length) return true;
 
-            const maxAttempts = 5;
-            const delayMs = 5000;
-            const fetchTimeoutMs = 5000;
-            const consumedMessageIds = new Set();
             const describe = g => `${sanitizeNick(g.recipient)} (${fmtBONCurrency(g.amount)} BON)`;
             const canTouchLiveUI = () =>
-                currentStatement &&
-                statementId != null &&
-                String(currentStatement.id) === String(statementId);
+                !!giveawayData &&
+                getActiveGiveawayId() === verificationGiveawayId &&
+                (
+                    statementId == null ||
+                    (
+                        currentStatement &&
+                        String(currentStatement.id) === String(statementId)
+                    )
+                );
 
-            function markConfirmed(g) {
+            function markConfirmed(g, status = "confirmed") {
                 if (canTouchLiveUI()) markWinnerGiftConfirmed(g.recipient);
-                updateStatementGiftStatus(g.recipient, g.purpose, "confirmed", statementId);
+                updateStatementGiftStatus(g.recipient, g.purpose, status, statementId);
             }
 
             function markFailed(g) {
@@ -8284,65 +8412,197 @@ body.host-panel-dragging * {
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
             }
 
-            // Give UNIT3D a short moment to emit SystemBot gift messages.
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            if (!verificationStillOwned()) return false;
+            // 1) PRIMARY RECEIPT: authenticated persistent Gift History.
+            // System room is only a rolling 100-message view; Gift History is the
+            // durable record of whether the transfer actually exists.
+            const tracker = window.__activeTracker;
+            const canUseHistory =
+                baselineRows &&
+                tracker &&
+                typeof tracker.fetchRecentGiftHistory === "function";
 
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                try {
-                    const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
-                    if (afterId !== null) url.searchParams.set("after_id", String(afterId));
-                    const res = await fetchWithTimeout(url, { credentials: "include" }, fetchTimeoutMs);
-                    if (!verificationStillOwned()) return false;
+            if (canUseHistory) {
+                const baselineCounts = new Map();
+                for (const row of baselineRows) {
+                    const key = giftHistoryBaseKey(row);
+                    if (!key) continue;
+                    baselineCounts.set(key, (baselineCounts.get(key) || 0) + 1);
+                }
 
-                    if (res && res.ok) {
-                        const payload = await res.json();
+                let successfulHistoryReads = 0;
+                const historyAttempts = 6;
+                const historyDelayMs = 2000;
+
+                for (let attempt = 1; attempt <= historyAttempts; attempt++) {
+                    if (attempt > 1) {
+                        await new Promise(resolve => setTimeout(resolve, historyDelayMs));
                         if (!verificationStillOwned()) return false;
-                        const messages = Array.isArray(payload.data) ? payload.data : [];
-
-                        for (const m of messages) {
-                            const numericMsgId = Math.floor(Number(m && m.id));
-                            if (afterId !== null && Number.isFinite(numericMsgId) && numericMsgId <= afterId) continue;
-
-                            const createdAt = Date.parse(m && m.created_at);
-                            if (notBeforeTs !== null && Number.isFinite(createdAt) && createdAt < (notBeforeTs - 5000)) continue;
-
-                            const msgId = m && m.id != null ? String(m.id) : null;
-                            if (msgId && consumedMessageIds.has(msgId)) continue;
-
-                            // Chat verification is fallback/confirmation only:
-                            // accept genuine SystemBot gifts from host/self, never
-                            // arbitrary user-written text that imitates a gift.
-                            if (!m?.bot?.is_systembot) continue;
-
-                            const gift = parseGiftMessage(m.message);
-                            if (!gift || !gift.gifter || !gift.recipient) continue;
-                            if (!selfKeys.has(normalizeUserKey(gift.gifter))) continue;
-
-                            const recKey = normalizeUserKey(gift.recipient);
-                            const amt = Math.round(gift.amount);
-                            const match = expected.find(g => !g.done && g.key === recKey && g.amount === amt);
-                            if (!match) continue;
-
-                            match.done = true;
-                            if (msgId) consumedMessageIds.add(msgId);
-                            markConfirmed(match);
-                        }
                     }
-                } catch {
-                    if (!verificationStillOwned()) return false;
-                    // Retry below. Each fetch is independently bounded by timeout.
+
+                    try {
+                        const rows = await tracker.fetchRecentGiftHistory();
+                        if (!verificationStillOwned()) return false;
+                        successfulHistoryReads += 1;
+
+                        const currentCounts = new Map();
+                        const freshRows = [];
+                        for (const row of rows) {
+                            const key = giftHistoryBaseKey(row);
+                            if (!key) continue;
+                            const occurrence = (currentCounts.get(key) || 0) + 1;
+                            currentCounts.set(key, occurrence);
+                            if (occurrence > (baselineCounts.get(key) || 0)) {
+                                freshRows.push(row);
+                            }
+                        }
+
+                        const consumed = new Set();
+                        for (const gift of expected) {
+                            if (gift.done) continue;
+
+                            let matchIndex = freshRows.findIndex((row, idx) =>
+                                !consumed.has(idx) &&
+                                selfKeys.has(normalizeUserKey(row?.sender)) &&
+                                normalizeUserKey(row?.recipient) === gift.key &&
+                                Math.max(0, Math.floor(Number(row?.amount) || 0)) === gift.amount &&
+                                (
+                                    !gift.message ||
+                                    sanitizeSponsorGiftMessage(row?.message) === gift.message
+                                )
+                            );
+
+                            // Message text is an additional discriminator, not a
+                            // reason to reject an otherwise exact durable receipt if
+                            // UNIT3D normalises whitespace/emoji in the stored note.
+                            if (matchIndex < 0) {
+                                matchIndex = freshRows.findIndex((row, idx) =>
+                                    !consumed.has(idx) &&
+                                    selfKeys.has(normalizeUserKey(row?.sender)) &&
+                                    normalizeUserKey(row?.recipient) === gift.key &&
+                                    Math.max(0, Math.floor(Number(row?.amount) || 0)) === gift.amount
+                                );
+                            }
+
+                            if (matchIndex < 0) continue;
+                            consumed.add(matchIndex);
+                            gift.done = true;
+                            markConfirmed(gift, "confirmed-history");
+                        }
+
+                        if (expected.every(g => g.done)) {
+                            finalizeStatementVerification(true, 0, statementId);
+                            return true;
+                        }
+                    } catch (e) {
+                        if (!verificationStillOwned()) return false;
+                        logEvent(
+                            "Winner Gift History verify retry",
+                            `Attempt ${attempt}/${historyAttempts}: ${String(e?.message || e)}`
+                        );
+                    }
                 }
 
+                if (successfulHistoryReads > 0) {
+                    logEvent(
+                        "Winner Gift History fallback",
+                        "Persistent Gift History did not yet confirm every expected payout; checking the System room as secondary evidence."
+                    );
+                } else {
+                    logEvent(
+                        "Winner Gift History unavailable",
+                        "No authoritative Gift History read succeeded; checking the System room as secondary evidence."
+                    );
+                }
+            } else {
+                logEvent(
+                    "Winner Gift History baseline unavailable",
+                    "Using the System room as secondary payout verification."
+                );
+            }
+
+            // 2) SECONDARY RECEIPT: genuine DPBot/SystemBot messages in room 2.
+            const remainingBeforeChat = expected.filter(g => !g.done);
+            if (remainingBeforeChat.length) {
+                const maxAttempts = 5;
+                const delayMs = 3000;
+                const fetchTimeoutMs = 5000;
+                const consumedMessageIds = new Set();
+
+                // Allow DPBot a moment to emit the event.
+                await new Promise(resolve => setTimeout(resolve, 1500));
                 if (!verificationStillOwned()) return false;
-                if (expected.every(g => g.done)) {
-                    finalizeStatementVerification(true, 0, statementId);
-                    return true;
-                }
 
-                if (attempt < maxAttempts) {
-                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+                        if (afterId !== null) url.searchParams.set("after_id", String(afterId));
+                        const res = await fetchWithTimeout(
+                            url,
+                            { credentials: "include", cache: "no-store" },
+                            fetchTimeoutMs
+                        );
+                        if (!verificationStillOwned()) return false;
+
+                        if (res?.ok) {
+                            const payload = await res.json();
+                            if (!verificationStillOwned()) return false;
+                            const messages = Array.isArray(payload?.data) ? payload.data : [];
+
+                            for (const m of messages) {
+                                const numericMsgId = Math.floor(Number(m?.id));
+                                if (
+                                    afterId !== null &&
+                                    Number.isFinite(numericMsgId) &&
+                                    numericMsgId <= afterId
+                                ) continue;
+
+                                const createdAt = Date.parse(m?.created_at);
+                                if (
+                                    notBeforeTs !== null &&
+                                    Number.isFinite(createdAt) &&
+                                    createdAt < (notBeforeTs - 5000)
+                                ) continue;
+
+                                const msgId = m?.id != null ? String(m.id) : null;
+                                if (msgId && consumedMessageIds.has(msgId)) continue;
+                                if (!m?.bot?.is_systembot) continue;
+
+                                const gift = parseGiftMessage(m.message);
+                                if (!gift?.gifter || !gift?.recipient) continue;
+                                if (!selfKeys.has(normalizeUserKey(gift.gifter))) continue;
+
+                                const recKey = normalizeUserKey(gift.recipient);
+                                const amt = Math.round(Number(gift.amount) || 0);
+                                const match = expected.find(g =>
+                                    !g.done &&
+                                    g.key === recKey &&
+                                    g.amount === amt
+                                );
+                                if (!match) continue;
+
+                                match.done = true;
+                                if (msgId) consumedMessageIds.add(msgId);
+                                markConfirmed(match, "confirmed-system");
+                            }
+                        }
+                    } catch (e) {
+                        if (!verificationStillOwned()) return false;
+                        logEvent(
+                            "Winner System-room verify retry",
+                            `Attempt ${attempt}/${maxAttempts}: ${String(e?.message || e)}`
+                        );
+                    }
+
                     if (!verificationStillOwned()) return false;
+                    if (expected.every(g => g.done)) {
+                        finalizeStatementVerification(true, 0, statementId);
+                        return true;
+                    }
+
+                    if (attempt < maxAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                        if (!verificationStillOwned()) return false;
+                    }
                 }
             }
 
@@ -8352,7 +8612,10 @@ body.host-panel-dragging * {
             finalizeStatementVerification(false, missing.length, statementId);
 
             const missingList = missing.map(describe).join(", ");
-            logEvent("Payout verification warning", `Could not confirm gifts for: ${missingList}`);
+            logEvent(
+                "Payout verification warning",
+                `Could not confirm gifts in Gift History or System room for: ${missingList}`
+            );
             if (!verificationStillOwned()) return false;
             await sendMessage(
                 `[color=#ff4f4f][b]Warning:[/b][/color] ` +
@@ -8364,8 +8627,15 @@ body.host-panel-dragging * {
             return false;
         } catch (e) {
             if (!verificationStillOwned()) return false;
-            logEvent("Payout verification error", "Unexpected error while confirming gift messages.");
-            if (currentStatement && statementId != null && String(currentStatement.id) === String(statementId)) {
+            logEvent(
+                "Payout verification error",
+                `Unexpected error while confirming winner gifts: ${String(e?.message || e)}`
+            );
+            if (
+                currentStatement &&
+                statementId != null &&
+                String(currentStatement.id) === String(statementId)
+            ) {
                 markAllPendingWinnerGiftsFailed();
             }
             const targetStatement = getStatementRecordById(statementId);
@@ -8375,7 +8645,6 @@ body.host-panel-dragging * {
             }
             return false;
         }
-    }
 
     // ───────────────────────────────────────────────────────────
     // SECTION 12: Utility Functions
@@ -8954,6 +9223,18 @@ body.host-panel-dragging * {
     }
 
     function sendReminder(options = {}) {
+        if (
+            !giveawayData ||
+            isGiveawaySettling(giveawayData) ||
+            getGiveawayRemainingMs(giveawayData) <= 0
+        ) {
+            if (reminderRetryTimeout) {
+                clearTimeout(reminderRetryTimeout);
+                reminderRetryTimeout = null;
+            }
+            return false;
+        }
+
         const force = !!(options && options.force);
         if (!force && !shouldSendReminder(giveawayData)) {
             // Try again in 15 seconds if still eligible
@@ -9722,7 +10003,7 @@ body.host-panel-dragging * {
 
     /** Legacy fallback: inject message into the chatbox input and simulate Enter. */
     function sendViaChatbox(messageStr) {
-        if (!chatbox) return;
+        if (!chatbox) return false;
         if (DEBUG_SETTINGS.log_chat_messages) console.log(`Fallback send (chatbox): ${messageStr}`);
         if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: sending message via chatbox fallback");
 
@@ -9734,6 +10015,7 @@ body.host-panel-dragging * {
             chatbox.value = originalValue;
             if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: restored chatbox original value");
         }, 50);
+        return true;
     }
 
     async function sendMessage(messageStr, options = {}) {
@@ -9772,8 +10054,7 @@ body.host-panel-dragging * {
             return false;
         }
 
-        sendViaChatbox(messageStr);
-        return true;
+        return sendViaChatbox(messageStr);
     }
 
     function countdownTimer (display, giveawayData) {
@@ -10585,7 +10866,14 @@ body.host-panel-dragging * {
     }
 
     function isGiveawaySettling(data = giveawayData) {
-        return !!(data && (data.__ending || data?.settlement?.phase === "settling"));
+        return !!(
+            data &&
+            (
+                data.__ending ||
+                data.__closingNoticeSent === true ||
+                data?.settlement?.phase === "settling"
+            )
+        );
     }
 
     function parseTime(ms) {
@@ -11466,7 +11754,7 @@ body.host-panel-dragging * {
         setButtonDisabledWithTooltip(state.button, !canRun, disabledReason || "Fix invalid arguments.", `${validation.meta.description} Example: ${validation.meta.usage}`);
         if (!canRun) return;
 
-        executeCommand({
+        return executeCommand({
             name,
             args: validation.args,
             author: giveawayData?.host || getLoggedInUsername() || "",
