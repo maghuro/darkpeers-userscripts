@@ -195,9 +195,8 @@
 //     "🥇 YOU WON!! Congratulations!". Multi-winner giveaways use podium medals for
 //     1st, 2nd and 3rd place, then 🎉 for every later ordinal place.
 //   - v1.5.3 follows the 2026-09-24 live post-audit: restored pages ignore pre-reload
-//     chat hydration so old entries/commands cannot be replayed, statement host top-ups
-//     are derived from cumulative host funding minus the opening host contribution,
-//     and the audit collector normalizes DarkPeers decimal BON values correctly.
+//     chat hydration so old entries/commands cannot be replayed, and statement host
+//     top-ups are derived from cumulative host funding minus the opening host contribution.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
