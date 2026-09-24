@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.0
+// @version      1.5.1
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -185,6 +185,9 @@
 //     Main Chat settlement-output reconciliation and fail-closed chatbox fallback.
 //     DarkPeers remains the sole production target; another tracker must use a
 //     separate userscript rather than changing this engine.
+//   - v1.5.1 keeps BON Pool context visible during an active giveaway: reminders,
+//     !bon, sponsor digests and host top-ups now repeat the selected pool percentage
+//     near the live pot/status information instead of relying only on the opening header.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -625,6 +628,21 @@
         const n = Math.floor(Number(raw));
         if (!Number.isFinite(n)) return 0;
         return BONANZA.PERCENT_OPTIONS.includes(n) ? n : 0;
+    }
+
+    function buildDonationContext(data, { compact = false } = {}) {
+        const pct = normalizeDonationPercent(data?.donationPercent);
+        if (pct <= 0) return "";
+
+        if (riggedMode) {
+            return compact
+                ? `[b][color=#FF4F9A]${BONANZA.FUND_NAME}: ${pct}% tax[/color][/b]`
+                : `[b][color=#FF4F9A]${pct}% rigging tax to the ${BONANZA.FUND_NAME}[/color][/b]`;
+        }
+
+        return compact
+            ? `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME}: ${pct}%[/color][/b]`
+            : `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME}: ${pct}% of final pot[/color][/b]`;
     }
 
 
@@ -5735,8 +5753,10 @@ body.host-panel-dragging * {
             const prefix =
                 `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
                 `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
+            const donationContext = buildDonationContext(this.data);
             const suffix =
                 `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].` +
+                (donationContext ? ` ${donationContext}.` : "") +
                 (nextWinnerLine ? ` ${nextWinnerLine}` : "");
 
             const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
@@ -6353,8 +6373,10 @@ body.host-panel-dragging * {
 
         bon({ giveawayData , reply}) {
             const rigTag = rigNote("(pot size [b]carefully curated[/b] by our rigging department)");
+            const donationContext = buildDonationContext(giveawayData);
             reply(
                 `Giveaway Amount: [b][color=#FFB700]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b]` +
+                (donationContext ? ` | ${donationContext}` : "") +
                 rigTag
             );
         },
@@ -6931,6 +6953,7 @@ body.host-panel-dragging * {
     
             const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
             const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
+            const donationPart = buildDonationContext(giveawayData);
     
             let scalingPart = "";
             if (giveawayData.scaleWinnersWithSponsors) {
@@ -6945,7 +6968,7 @@ body.host-panel-dragging * {
 
             const announced = await sendMessage(
                 `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
-                [addedPart, totalPart, scalingPart].filter(Boolean).join(" "),
+                [addedPart, totalPart, donationPart, scalingPart].filter(Boolean).join(" "),
                 { requireExclusiveGiveawayOwnership: true }
             );
 
@@ -9999,8 +10022,10 @@ body.host-panel-dragging * {
         const reminderStartMarker = reminderPct > 0
             ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
             : BRIDGE_MARKERS.START;
+        const reminderDonationContext = buildDonationContext(giveawayData, { compact: true });
         const msg = reminderPrefix +
               `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
+              (reminderDonationContext ? `${reminderDonationContext} | ` : "") +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(getGiveawayRemainingMs(giveawayData))}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
