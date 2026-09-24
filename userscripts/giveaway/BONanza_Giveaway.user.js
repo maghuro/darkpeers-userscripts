@@ -5352,7 +5352,7 @@ body.host-panel-dragging * {
             if (!canMutateActiveGiveaway()) return;
             const data = this.data;
             if (!data || data !== giveawayData || !data.scaleWinnersWithSponsors) return;
-            if (!(Number(data.timeLeft) > 0)) return;
+            if (isGiveawaySettling(data) || getGiveawayRemainingMs(data) <= 0) return;
 
             const baseWinners = Math.max(1, Math.min(MAX_WINNERS, Math.floor(Number(data.baseWinnersAtStart || data.winnersNum) || 1)));
             const newWinners = recomputeEffectiveWinners(data);
@@ -7113,15 +7113,28 @@ body.host-panel-dragging * {
             }
             if (!finalSponsorSyncOk) {
                 logEvent(
-                    "Final sponsor sync warning",
-                    "Could not refresh the chat API after 3 attempts; settling with the last confirmed sponsor state."
+                    "Settlement paused (final sponsor sync failed)",
+                    "Could not establish an authoritative final sponsor state after 3 attempts. Refusing to draw winners or move BON with stale sponsor accounting."
                 );
                 try {
                     window.alert(
-                        "Giveaway warning: final sponsor sync failed after 3 attempts. " +
-                        "Settlement will use the last confirmed sponsor total; verify any very recent gifts manually."
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "The final sponsor reconciliation failed after 3 attempts. " +
+                        "No winner draw, winner gift or BON Pool contribution will be performed from stale sponsor data.\n\n" +
+                        "Retry settlement after connectivity/DarkPeers is healthy."
                     );
                 } catch {}
+                try {
+                    if (startButton) {
+                        startButton.disabled = false;
+                        startButton.textContent = "Retry settlement";
+                        startButton.title = "Retry final sponsor reconciliation and settlement";
+                        startButton.onclick = () => endGiveaway();
+                    }
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
             }
         }
 
@@ -10585,7 +10598,14 @@ body.host-panel-dragging * {
     }
 
     function isGiveawaySettling(data = giveawayData) {
-        return !!(data && (data.__ending || data?.settlement?.phase === "settling"));
+        return !!(
+            data &&
+            (
+                data.__ending ||
+                data.__closingNoticeSent === true ||
+                data?.settlement?.phase === "settling"
+            )
+        );
     }
 
     function parseTime(ms) {
