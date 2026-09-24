@@ -3001,16 +3001,25 @@ body.host-panel-dragging * {
 
             const overdueMs = Date.now() - endTs;
             const committedSettlement = snap.giveawayData?.settlement?.committed === true;
-            if (overdueMs > EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS && !committedSettlement) {
+            const closingSettlementLatched =
+                snap.giveawayData?.closingNoticeSent === true ||
+                snap.giveawayData?.settlement?.phase === "settling";
+
+            if (
+                overdueMs > EXPIRED_SNAPSHOT_SETTLEMENT_GRACE_MS &&
+                !committedSettlement &&
+                !closingSettlementLatched
+            ) {
                 console.warn("[BON Giveaway] Discarding stale expired active snapshot; automatic settlement grace exceeded.");
                 clearGiveawaySnapshot();
                 return null;
             }
 
-            // Once settlement is committed, retain it until a terminal cleanup.
-            // Money/state recovery is more important than the normal one-hour
+            // Once settlement is committed OR the closing latch has been persisted,
+            // retain it until terminal cleanup. A pre-commit sponsor-sync pause is
+            // still settlement state and must survive beyond the normal one-hour
             // active-giveaway grace window.
-            snap.__expiredAtLoad = overdueMs >= 0;
+            snap.__expiredAtLoad = overdueMs >= 0 || closingSettlementLatched;
             return snap;
         } catch {
             clearGiveawaySnapshot();
@@ -3101,6 +3110,7 @@ body.host-panel-dragging * {
             // Never reopen entries/timers after a crash in that state.
             const expiredOnRestore =
                 committedSettlement ||
+                giveawayData.__closingNoticeSent === true ||
                 giveawayData.timeLeft <= 0 ||
                 snap.__expiredAtLoad === true;
 
@@ -8081,26 +8091,67 @@ body.host-panel-dragging * {
             const settlement = giveawayData.settlement;
 
             // Persistent Gift History is the authoritative payout receipt on
-            // DarkPeers. Capture the baseline once, before the first winner POST,
-            // and persist it in the settlement so reload recovery compares against
-            // the same pre-transfer state instead of accidentally baselining a gift
-            // that already landed.
+            // DarkPeers. Capture the baseline once, BEFORE the first winner POST,
+            // and persist it. If the baseline cannot be obtained we fail closed:
+            // sending first and re-baselining later can permanently hide an
+            // already-landed payout from durable verification.
             if (!Array.isArray(settlement.payoutGiftHistoryBaseline)) {
+                const hasAmbiguousPriorWinnerAttempt = winners.some((winner, index) => {
+                    const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
+                    if (!amount) return false;
+                    if (selfKeys.has(normalizeUserKey(winner?.author))) return false;
+                    const state = getGiftAttemptState(
+                        settlementGiveawayId,
+                        winner?.author,
+                        amount,
+                        GIFT_PURPOSE.WINNER
+                    ).state;
+                    return state === "pending" || state === "attempted";
+                });
+
+                if (hasAmbiguousPriorWinnerAttempt) {
+                    settlement.payoutGiftHistoryBaselineState = "missing-after-attempt";
+                    pauseSettlementForRetry(
+                        "Settlement paused (payout baseline missing after prior attempt)",
+                        "At least one winner transfer is already pending/attempted but the original pre-transfer Gift History baseline is missing. Refusing to re-baseline over a possibly landed payment.",
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "A winner transfer may already have been attempted, but the original pre-transfer Gift History baseline is unavailable. " +
+                        "Automatic payout/pool progression is blocked to avoid a duplicate or unverifiable payment."
+                    );
+                    return;
+                }
+
                 try {
                     const tracker = window.__activeTracker;
-                    if (tracker && typeof tracker.fetchRecentGiftHistory === "function") {
-                        settlement.payoutGiftHistoryBaseline = await tracker.fetchRecentGiftHistory();
+                    if (!tracker || typeof tracker.fetchRecentGiftHistory !== "function") {
+                        throw new Error("DarkPeers Gift History tracker is unavailable");
                     }
+                    const baseline = await tracker.fetchRecentGiftHistory();
+                    if (!Array.isArray(baseline)) {
+                        throw new Error("DarkPeers Gift History baseline returned an invalid payload");
+                    }
+                    settlement.payoutGiftHistoryBaseline = baseline;
+                    settlement.payoutGiftHistoryBaselineState = "ready";
+                    settlement.payoutGiftHistoryBaselineCapturedAt = Date.now();
+                    snapshotGiveaway({ force: true });
                 } catch (e) {
+                    settlement.payoutGiftHistoryBaselineState = "unavailable";
                     logEvent(
                         "Payout Gift History baseline unavailable",
                         String(e?.message || e)
                     );
+                    pauseSettlementForRetry(
+                        "Settlement paused (payout Gift History baseline unavailable)",
+                        "Could not capture the authoritative pre-transfer Gift History baseline. No winner transfer was attempted.",
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "DarkPeers Gift History could not be baselined before payout. " +
+                        "No winner gift or BON Pool contribution has been attempted by this payout step. Retry when Gift History is healthy."
+                    );
+                    return;
                 }
             }
-            const payoutGiftHistoryBaseline = Array.isArray(settlement.payoutGiftHistoryBaseline)
-                ? settlement.payoutGiftHistoryBaseline
-                : null;
+
+            const payoutGiftHistoryBaseline = settlement.payoutGiftHistoryBaseline;
 
             const payoutNotBeforeTs = Number.isFinite(settlement.payoutNotBeforeTs)
                 ? settlement.payoutNotBeforeTs
@@ -8865,23 +8916,27 @@ body.host-panel-dragging * {
 
                 if (successfulHistoryReads > 0) {
                     logEvent(
-                        "Winner Gift History fallback",
-                        "Persistent Gift History did not yet confirm every expected payout; checking the System room as secondary evidence."
+                        "Winner Gift History pending",
+                        "Persistent Gift History did not yet confirm every expected payout; the System room will be checked for diagnostics only."
                     );
                 } else {
                     logEvent(
                         "Winner Gift History unavailable",
-                        "No authoritative Gift History read succeeded; checking the System room as secondary evidence."
+                        "No authoritative Gift History read succeeded; the System room will be checked for diagnostics only."
                     );
                 }
             } else {
                 logEvent(
                     "Winner Gift History baseline unavailable",
-                    "Using the System room as secondary payout verification."
+                    "Durable payout verification is impossible without the pre-transfer Gift History baseline; System room evidence is diagnostic only."
                 );
             }
 
-            // 2) SECONDARY RECEIPT: genuine DPBot/SystemBot messages in room 2.
+            // 2) SECONDARY EVIDENCE ONLY: genuine DPBot/SystemBot messages in room 2.
+            // A rolling chat event may show that a POST probably landed, but it is
+            // NOT a durable receipt and can never unlock the irreversible BON Pool
+            // leg. Only persistent Gift History may set gift.done=true.
+            const systemObserved = new Set();
             const remainingBeforeChat = expected.filter(g => !g.done);
             if (remainingBeforeChat.length) {
                 const maxAttempts = 5;
@@ -8941,9 +8996,14 @@ body.host-panel-dragging * {
                                 );
                                 if (!match) continue;
 
-                                match.done = true;
                                 if (msgId) consumedMessageIds.add(msgId);
-                                markConfirmed(match, "confirmed-system");
+                                systemObserved.add(match.key + "::" + match.amount);
+                                updateStatementGiftStatus(
+                                    match.recipient,
+                                    match.purpose,
+                                    "observed-system",
+                                    statementId
+                                );
                             }
                         }
                     } catch (e) {
@@ -8955,10 +9015,6 @@ body.host-panel-dragging * {
                     }
 
                     if (!verificationStillOwned()) return false;
-                    if (expected.every(g => g.done)) {
-                        finalizeStatementVerification(true, 0, statementId);
-                        return true;
-                    }
 
                     if (attempt < maxAttempts) {
                         await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -8969,13 +9025,30 @@ body.host-panel-dragging * {
 
             if (!verificationStillOwned()) return false;
             const missing = expected.filter(g => !g.done);
-            missing.forEach(markFailed);
+            for (const gift of missing) {
+                const observedKey = gift.key + "::" + gift.amount;
+                if (systemObserved.has(observedKey)) {
+                    updateStatementGiftStatus(
+                        gift.recipient,
+                        gift.purpose,
+                        "observed-system",
+                        statementId
+                    );
+                } else {
+                    markFailed(gift);
+                }
+            }
             finalizeStatementVerification(false, missing.length, statementId);
 
             const missingList = missing.map(describe).join(", ");
+            const observedList = missing
+                .filter(g => systemObserved.has(g.key + "::" + g.amount))
+                .map(describe)
+                .join(", ");
             logEvent(
                 "Payout verification warning",
-                `Could not confirm gifts in Gift History or System room for: ${missingList}`
+                `Persistent Gift History did not confirm: ${missingList}` +
+                (observedList ? ` | System room observed (diagnostic only): ${observedList}` : "")
             );
             if (!verificationStillOwned()) return false;
             await sendMessage(
@@ -9383,6 +9456,7 @@ body.host-panel-dragging * {
             confirmed: "confirmed",
             "confirmed-history": "confirmed in Gift History",
             "confirmed-system": "confirmed in System room",
+            "observed-system": "seen in System room; awaiting Gift History",
             failed: "NOT CONFIRMED, check manually",
             self: "self (host, no gift sent)"
         })[status] || status;
