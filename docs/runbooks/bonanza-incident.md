@@ -54,7 +54,9 @@ While rehearsal mode is active:
 - sponsor refunds are simulated only;
 - BON Pool contributions are simulated only;
 - Gift History and other read-only checks may still run;
-- settlement calculations, restore paths and local state still execute.
+- settlement calculations and restore paths still execute;
+- active snapshots, transfer ledgers, statements, stats and naughty-list state use a rehearsal-only namespace;
+- the cross-tab ownership lock remains shared with live mode, so a rehearsal cannot run alongside a real giveaway in another tab.
 
 Suggested pre-release rehearsal:
 
