@@ -7492,6 +7492,44 @@ body.host-panel-dragging * {
             const entrantsTotal = Math.max(0, Math.floor(Number(plan.entrantsTotal) || 0));
             const scaleIncrease = Math.max(0, Math.floor(Number(plan.scaleIncrease) || 0));
 
+            // Before announcing or moving any BON, prove that the host can cover
+            // the entire remaining external settlement in one go.
+            const settlementSelfKeys = resolveSelfKeys(giveawayData.host);
+            const requiredWinnerOutflow = winners.reduce((sum, winner, index) => {
+                const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
+                if (!amount) return sum;
+                if (settlementSelfKeys.has(normalizeUserKey(winner?.author))) return sum;
+                return sum + amount;
+            }, 0);
+            const requiredSettlementOutflow =
+                requiredWinnerOutflow + Math.max(0, Math.floor(Number(split.total) || 0));
+            const verifiedSettlementBalance =
+                await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
+
+            if (
+                !Number.isFinite(verifiedSettlementBalance) ||
+                verifiedSettlementBalance < requiredSettlementOutflow
+            ) {
+                const availableText = Number.isFinite(verifiedSettlementBalance)
+                    ? fmtBONCurrency(verifiedSettlementBalance)
+                    : "unavailable";
+                logEvent(
+                    "Settlement paused (insufficient verified BON)",
+                    `Required=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No settlement transfer was attempted.`
+                );
+                try {
+                    window.alert(
+                        `GIVEAWAY SETTLEMENT PAUSED\n\n` +
+                        `Required to settle: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
+                        `Verified balance: ${availableText} BON\n\n` +
+                        `No winner gift or BON Pool contribution has been made by this settlement attempt.`
+                    );
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
+            }
+
             //hard-coded emoji “podium”
             const podium = ["🥇", "🥈", "🥉", "🏅", "🎖️"];
 
@@ -7588,7 +7626,7 @@ body.host-panel-dragging * {
 
             // 6) Send gifts sequentially. Capture a chat cursor immediately before
             // payout so verification cannot accidentally match an older identical gift.
-            const selfKeys = resolveSelfKeys(giveawayData.host);
+            const selfKeys = settlementSelfKeys;
             const expectedGifts = [];
             const deferredWinnerGifts = [];
             const settlement = giveawayData.settlement;
@@ -7644,7 +7682,38 @@ body.host-panel-dragging * {
                 }
             }
 
-            // 6a) Direct BON Pool contribution. Success is announced publicly only
+            // 6a) Verify winner payouts BEFORE any irreversible BON Pool transfer.
+            const winnersVerifiedBeforePool = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
+                afterId: payoutAfterMessageId,
+                notBeforeTs: payoutNotBeforeTs,
+                statementId: null
+            });
+
+            if (!winnersVerifiedBeforePool) {
+                logEvent(
+                    "Settlement paused (winner payout not confirmed)",
+                    "At least one winner gift could not be confirmed. BON Pool contribution was not attempted."
+                );
+                try {
+                    currentStatement = createStatementRecord({
+                        winners, gross: allocated, net, donations: split.donations, split,
+                        poolStatus: donationActive
+                            ? "NOT ATTEMPTED: winner payout not confirmed"
+                            : "none",
+                        entrants: entrantsTotal
+                    });
+                    if (currentStatement) {
+                        currentStatement.verification =
+                            "winner payout not confirmed; settlement paused before BON Pool";
+                        persistCurrentStatement();
+                    }
+                } catch {}
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                return;
+            }
+
+            // 6b) Direct BON Pool contribution. Success is announced publicly only
             //     after both the host's own contribution counter and the global pool
             //     total confirm the expected increase.
             let poolResult = { confirmed: false, attempted: false, reason: "not-active" };
@@ -7688,12 +7757,8 @@ body.host-panel-dragging * {
                 persistCurrentStatement();
             } catch (e) { /* statements are best-effort */ }
 
-            // 6b) Verify that the gifts actually show up in chat via the API
-            const winnersVerified = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
-                afterId: payoutAfterMessageId,
-                notBeforeTs: payoutNotBeforeTs,
-                statementId: currentStatement?.id ?? null
-            });
+            // Winner payouts were already verified before the BON Pool transfer.
+            const winnersVerified = winnersVerifiedBeforePool;
 
             if (
                 !winnersVerified &&
