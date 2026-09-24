@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.1
+// @version      1.5.2
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -191,6 +191,9 @@
 //     Sponsor accounting is also Gift-History-only: transient Gift History outages no
 //     longer let stale System/DPBot messages increment the pot a second time; recovery
 //     reconciles unseen persistent Gift History rows instead of replacing the baseline.
+//   - v1.5.2 polishes winner gift notes. A single winner receives
+//     "🥇 YOU WON!! Congratulations!". Multi-winner giveaways use podium medals for
+//     1st, 2nd and 3rd place, then 🎉 for every later ordinal place.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
