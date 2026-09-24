@@ -1,0 +1,33 @@
+name: Validate BONanza
+
+on:
+  pull_request:
+    paths:
+      - "userscripts/giveaway/**"
+      - "tests/bonanza-*.test.mjs"
+      - ".github/workflows/validate-bonanza.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "userscripts/giveaway/**"
+      - "tests/bonanza-*.test.mjs"
+      - ".github/workflows/validate-bonanza.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Syntax check userscript
+        run: node --check userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+
+      - name: Run BONanza tests
+        run: node --test tests/bonanza-review-hardening.test.mjs

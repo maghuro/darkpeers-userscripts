@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.4
+// @version      1.5.5
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -198,6 +198,15 @@
 //     top-ups are derived from cumulative host funding minus the opening host contribution.
 //   - v1.5.4 moves public distribution to a secret GitHub Gist. The repository remains
 //     the development source of truth, while Tampermonkey updates use the stable Gist RAW URL.
+//   - v1.5.5 applies the post-live safety review: reload replay boundaries come from
+//     Main Chat server timestamps, host lockouts cannot block emergency recovery,
+//     winner-count controls are host-only, dead sponsor chat fallback is removed,
+//     public winner names use the same anti-ping sanitization as other chat output,
+//     settlement message checkpoints use the Main Chat cursor while gift diagnostics
+//     use the System cursor, restore can remain entry-live while sponsor accounting is
+//     unavailable, and rehearsal mode suppresses every script chat message and
+//     BON-moving operation while isolating snapshots, ledgers, stats, statements and
+//     naughty-list state from live giveaways.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -253,12 +262,6 @@
     // Persistent stats (saved in localStorage on this site)
     // GM store is per-script anyway; the v2 suffix retires the pre-1.2.0 copy so it can
     // never out-date the shared record and overwrite it (see migrateLegacyForkStats).
-    const STATS_KEY_GM = `BONANZA_GIVEAWAY_STATS_v2::${location.hostname}`;
-    const STATS_KEY_LS_LEGACY_FORK = `BONANZA_GIVEAWAY_STATS::${location.hostname}`;
-    // Shared with the original "Blutopia BON Giveaway" script on purpose: stats are
-    // additive counters with no payout logic, and the loader below picks whichever
-    // copy is newer, so months of history carry across when a host switches scripts.
-    const STATS_KEY_LS = `BON_GIVEAWAY_STATS::${location.hostname}`;
     const STATS_VERSION = 1;
     const STATS_DEFAULT_TOP_N = 3;
     const STATS_MAX_TOP_N = 10;
@@ -306,6 +309,7 @@
     const DEBUG_SETTINGS = {
         log_chat_messages: false,
         disable_chat_output: false,
+        dry_run: false,
         verify_extractor: false,
         verify_sendmessage: false,
         verify_cacheChatContext: false,
@@ -337,6 +341,24 @@
         localStorage.getItem(SELF_CHECK_FLAG) === "true" ||
         SELF_CHECK_QUERY_RE.test(String(window.location.search || ""))
     );
+
+    const REHEARSAL_FLAG = "BONANZA_GIVEAWAY_REHEARSAL";
+    const REHEARSAL_QUERY_RE = /(?:^|[?&])bg_rehearsal=1(?:&|$)/i;
+    const REHEARSAL_MODE = !!(
+        DEBUG_SETTINGS.dry_run ||
+        localStorage.getItem(REHEARSAL_FLAG) === "true" ||
+        REHEARSAL_QUERY_RE.test(String(window.location.search || ""))
+    );
+    const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE ? "::rehearsal" : "";
+
+    // Rehearsals use separate persistent state. The shared production stats
+    // remain untouched even when the whole start/reload/end flow is exercised.
+    const STATS_KEY_GM =
+        `BONANZA_GIVEAWAY_STATS_v2::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const STATS_KEY_LS_LEGACY_FORK =
+        `BONANZA_GIVEAWAY_STATS::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const STATS_KEY_LS =
+        `BON_GIVEAWAY_STATS::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
 
     function selfCheck(condition, message, details) {
         if (!SELF_CHECKS_ENABLED || condition) return;
@@ -513,7 +535,8 @@
     }
     const LS_DONATION_PERCENT = `bonanza-giveaway-donationPercent::${location.hostname}`;
     // End-of-giveaway statements (plain text). Only the most recent few are kept.
-    const LS_STATEMENTS = `bonanza-giveaway-statements::${location.hostname}`;
+    const LS_STATEMENTS =
+        `bonanza-giveaway-statements::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
     const STATEMENTS_KEEP = 2;
 
     // Mutual exclusion with the original "Blutopia BON Giveaway" script (see injectMenu)
@@ -667,8 +690,10 @@
     const LS_TAB_LOCK = `bonanza-giveaway-tabLock::${location.hostname}`;
     // Per-giveaway ledger of completed gift attempts. Survives reload + visible to other tabs,
     // so even if endGiveaway runs in two tabs the second one won't re-pay.
-    const LS_PAID_GIFTS = `bonanza-giveaway-paidGifts::${location.hostname}`;
-    const LS_POOL_CONTRIBUTIONS = `bonanza-giveaway-poolContributions::${location.hostname}`;
+    const LS_PAID_GIFTS =
+        `bonanza-giveaway-paidGifts::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
+    const LS_POOL_CONTRIBUTIONS =
+        `bonanza-giveaway-poolContributions::${location.hostname}${REHEARSAL_STORAGE_SUFFIX}`;
     // Cap retained giveaway-id entries in the ledger so it can't grow unbounded over time.
     const PAID_GIFTS_MAX_GIVEAWAYS = 50;
     const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -805,6 +830,7 @@
     // ───────────────────────────────────────────────────────────
     let giveawayStartTime;
     let sponsorsInterval;
+    let sponsorRecoveryInterval;
     let observer;
     let giveawayData;
     let chatbox = null;
@@ -867,13 +893,64 @@
     const regNum = /^-?\d+$/; // matches integers (including negative) for entry detection
 
     /* --- Naughty (exclusion) list ------------------------------------- */
-    const NAUGHTY_KEY = "bonanza-giveaway-naughty-list";
+    const NAUGHTY_KEY =
+        `bonanza-giveaway-naughty-list${REHEARSAL_STORAGE_SUFFIX}`;
     const naughtySet = new Set(
         JSON.parse(localStorage.getItem(NAUGHTY_KEY) || "[]")
         .map(normalizeLower) // store lowercase for case-insensitive match
     );
     function saveNaughty() {
         localStorage.setItem(NAUGHTY_KEY, JSON.stringify([...naughtySet]));
+    }
+
+    function setHostSafetyBanner(key, message, tone = "warning") {
+        const frame = bonanzaGiveawayFrame || document.getElementById("bonanzaGiveawayFrame");
+        if (!frame) return;
+
+        let container = frame.querySelector("#bonanzaSafetyBanners");
+        if (!container) {
+            container = document.createElement("div");
+            container.id = "bonanzaSafetyBanners";
+            container.style.cssText =
+                "display:flex;flex-direction:column;gap:6px;padding:8px 10px 0 10px;";
+
+            const header = frame.querySelector("header.panel__heading");
+            if (header && header.parentNode) {
+                header.parentNode.insertBefore(container, header.nextSibling);
+            } else {
+                frame.prepend(container);
+            }
+        }
+
+        const id = `bonanzaSafetyBanner-${String(key || "general").replace(/[^a-z0-9_-]/gi, "-")}`;
+        let banner = container.querySelector(`#${id}`);
+        if (!banner) {
+            banner = document.createElement("div");
+            banner.id = id;
+            banner.setAttribute("role", "status");
+            banner.style.cssText =
+                "padding:8px 10px;border-radius:5px;font-size:12px;font-weight:700;line-height:1.35;";
+            container.appendChild(banner);
+        }
+
+        if (tone === "danger") {
+            banner.style.background = "rgba(179,37,37,.25)";
+            banner.style.border = "1px solid #ff6f6f";
+            banner.style.color = "#ffd7d7";
+        } else {
+            banner.style.background = "rgba(255,192,10,.16)";
+            banner.style.border = "1px solid #ffc00a";
+            banner.style.color = "#fff0b3";
+        }
+        banner.textContent = String(message || "");
+    }
+
+    function clearHostSafetyBanner(key) {
+        const id = `bonanzaSafetyBanner-${String(key || "general").replace(/[^a-z0-9_-]/gi, "-")}`;
+        const banner = document.getElementById(id);
+        if (banner) banner.remove();
+        const container = document.getElementById("bonanzaSafetyBanners");
+        if (container && !container.children.length) container.remove();
     }
 
     // Toolbar button icon: Font Awesome Free 7 "robot" (solid), CC BY 4.0, https://fontawesome.com
@@ -1661,6 +1738,15 @@ body.host-panel-dragging * {
     let hostPanelResizeBound = false;
     // Inject the giveaway menu into the chat UI
     injectMenu();
+
+    if (REHEARSAL_MODE) {
+        setHostSafetyBanner(
+            "rehearsal",
+            "REHEARSAL MODE: userscript chat output, winner/refund gifts and BON Pool contributions are disabled.",
+            "danger"
+        );
+        console.warn("[BON Giveaway] REHEARSAL MODE active: no script chat output or BON-moving request will be sent.");
+    }
 
     // ── Mutual exclusion with the original "Blutopia BON Giveaway" script ──
     // Both scripts drive the same chat and would both try to restore and pay out
@@ -2647,7 +2733,7 @@ body.host-panel-dragging * {
     function getActiveGiveawayStorageKey(hostName = "") {
         const hostKey = normalizeUserKey(hostName || getLoggedInUsername());
         return hostKey
-            ? `${LS_ACTIVE_GIVEAWAY_LEGACY}::${encodeURIComponent(hostKey)}`
+            ? `${LS_ACTIVE_GIVEAWAY_LEGACY}${REHEARSAL_STORAGE_SUFFIX}::${encodeURIComponent(hostKey)}`
             : null;
     }
 
@@ -2663,7 +2749,11 @@ body.host-panel-dragging * {
             // Backwards-compatible migration from pre-v1.3.24 hostname-wide storage.
             // A legacy snapshot belonging to another account is deliberately left
             // untouched; the current account now has its own namespace and cannot
-            // overwrite that foreign recovery state.
+            // overwrite that foreign recovery state. Rehearsal storage never
+            // imports a live legacy snapshot.
+            if (REHEARSAL_MODE) {
+                return { storageKey, raw: null, migratedLegacy: false };
+            }
             const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
             if (!legacyRaw) return { storageKey, raw: null, migratedLegacy: false };
 
@@ -2907,6 +2997,7 @@ body.host-panel-dragging * {
         try {
             const snapshot = {
                 giveawayData: {
+                    rehearsalMode: giveawayData.rehearsalMode === true,
                     host: giveawayData.host,
                     amount: giveawayData.amount,
                     startNum: giveawayData.startNum,
@@ -2982,7 +3073,9 @@ body.host-panel-dragging * {
             // Remove only a matching legacy snapshot after the namespaced write
             // succeeds. Never delete another account's retained recovery state.
             try {
-                const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+                const legacyRaw = REHEARSAL_MODE
+                    ? null
+                    : localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
                 if (legacyRaw) {
                     const legacy = JSON.parse(legacyRaw);
                     if (normalizeUserKey(legacy?.giveawayData?.host) === normalizeUserKey(giveawayData.host)) {
@@ -3008,8 +3101,11 @@ body.host-panel-dragging * {
 
             // Backwards-compatible cleanup: remove the old hostname-wide key only
             // when it belongs to the same host. A foreign account's recovery state
-            // must survive logout/login switches.
-            const legacyRaw = localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
+            // must survive logout/login switches. Rehearsal cleanup never touches
+            // the production legacy recovery key.
+            const legacyRaw = REHEARSAL_MODE
+                ? null
+                : localStorage.getItem(LS_ACTIVE_GIVEAWAY_LEGACY);
             if (legacyRaw) {
                 const legacy = JSON.parse(legacyRaw);
                 if (hostKey && normalizeUserKey(legacy?.giveawayData?.host) === hostKey) {
@@ -3029,6 +3125,12 @@ body.host-panel-dragging * {
             if (!stored.raw) return null;
             const snap = JSON.parse(stored.raw);
             if (!snap || !snap.giveawayData) return null;
+
+            const savedRehearsalMode = snap.giveawayData.rehearsalMode === true;
+            if (savedRehearsalMode !== REHEARSAL_MODE) {
+                console.warn("[BON Giveaway] Refusing restore across live/rehearsal modes.");
+                return null;
+            }
 
             const savedHostKey = normalizeUserKey(snap.giveawayData.host);
             if (!savedHostKey || savedHostKey !== loggedInHostKey) {
@@ -3077,6 +3179,92 @@ body.host-panel-dragging * {
      * Restore a giveaway from a snapshot. Re-establishes entries, timers, observer, and sponsor tracker.
      * Called during injectMenu() if a valid snapshot exists.
      */
+    function clearSponsorAccountingRecoveryTimer() {
+        if (sponsorRecoveryInterval) {
+            clearInterval(sponsorRecoveryInterval);
+            sponsorRecoveryInterval = null;
+        }
+    }
+
+    function setSponsorAccountingVerificationState(verified, details = "") {
+        if (!giveawayData) return;
+        giveawayData.__sponsorAccountingVerified = verified === true;
+
+        if (verified === true) {
+            clearHostSafetyBanner("accounting");
+        } else {
+            setHostSafetyBanner(
+                "accounting",
+                "ACCOUNTING NOT VERIFIED: entries and time controls remain active, but sponsor pot changes and settlement are paused until persistent Gift History reconciliation succeeds.",
+                "danger"
+            );
+        }
+
+        if (details) logEvent(verified ? "Sponsor accounting verified" : "Sponsor accounting blocked", details);
+        updateHostPanelUI();
+    }
+
+    function scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore = false } = {}) {
+        clearSponsorAccountingRecoveryTimer();
+        if (!tracker) return;
+
+        let inFlight = false;
+        const retry = async () => {
+            if (inFlight || !giveawayData || window.__activeTracker !== tracker) return;
+            if (!canMutateActiveGiveaway()) return;
+            inFlight = true;
+
+            try {
+                const result = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+                }
+
+                setSponsorAccountingVerificationState(
+                    true,
+                    result?.repaired
+                        ? `Recovered canonical pot: ${fmtBONCurrency(result.previousPot)} -> ${fmtBONCurrency(result.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded."
+                );
+                clearSponsorAccountingRecoveryTimer();
+
+                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                coinHeader.prepend(goldCoins.cloneNode(false));
+
+                const expiredNow =
+                    expiredOnRestore ||
+                    getGiveawayRemainingMs(giveawayData) <= 0 ||
+                    giveawayData.__closingIntent === true;
+
+                if (expiredNow) {
+                    setTimeout(() => {
+                        if (giveawayData && !giveawayData.__ending) endGiveaway();
+                    }, 0);
+                    return;
+                }
+
+                if (!sponsorsInterval) {
+                    tracker.poll().catch(console.error);
+                    sponsorsInterval = setInterval(
+                        () => tracker.poll(),
+                        SPONSOR_GIFT_HISTORY_POLL_MS
+                    );
+                }
+            } catch (e) {
+                console.warn(
+                    "[BON Giveaway] Sponsor accounting recovery still unavailable:",
+                    e
+                );
+            } finally {
+                inFlight = false;
+            }
+        };
+
+        sponsorRecoveryInterval = setInterval(retry, SPONSOR_GIFT_HISTORY_POLL_MS);
+    }
+
     async function restoreGiveawayFromSnapshot(snap) {
         if (!snap || !snap.giveawayData) return false;
 
@@ -3280,7 +3468,18 @@ body.host-panel-dragging * {
             // nodes are historical messages, not new user actions. Ignore every
             // timestamp at or before this restore boundary so old entries/commands
             // cannot be replayed and trigger duplicate replies or spam lockouts.
-            chatReplayIgnoreBeforeTs = Date.now();
+            const replayBoundary = await getLatestMainChatReplayBoundary();
+            if (replayBoundary && Number.isFinite(replayBoundary.ts)) {
+                // Keep one source-timestamp resolution window fail-open. Replaying
+                // one borderline historical message is preferable to silently
+                // dropping a genuine entry posted immediately after the reload.
+                chatReplayIgnoreBeforeTs =
+                    replayBoundary.ts - Math.max(1, Number(replayBoundary.resolutionMs) || 1);
+            } else {
+                // API unavailable: prefer a small replay risk over losing new entries
+                // because the host PC clock is slightly fast.
+                chatReplayIgnoreBeforeTs = Date.now() - 2000;
+            }
             if (observer) { observer.disconnect(); observer = null; }
             addObserver(giveawayData);
 
@@ -3310,41 +3509,61 @@ body.host-panel-dragging * {
             });
             window.__activeTracker = tracker;
 
-            // Before any restored timer/poll/settlement resumes, rebuild sponsor
-            // accounting from persistent Gift History. This self-heals snapshots
-            // affected by the v1.5.0 System/DPBot replay bug and fails closed if
-            // canonical coverage cannot be proven.
-            const sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
-                repairStats: true
-            });
-            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
-                throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
-            }
-            if (sponsorReconciliation.repaired) {
-                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
-                coinHeader.prepend(goldCoins.cloneNode(false));
-                updateHostPanelUI();
-                try {
-                    window.alert(
-                        "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
-                        `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
-                    );
-                } catch {}
+            // Rebuild sponsor accounting from persistent Gift History. If the
+            // service is temporarily unavailable, keep entries/time alive but freeze
+            // every pot mutation and settlement operation until canonical recovery.
+            let sponsorAccountingReady = false;
+            let sponsorReconciliation = null;
+            try {
+                sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+                }
+                sponsorAccountingReady = true;
+                setSponsorAccountingVerificationState(
+                    true,
+                    sponsorReconciliation.repaired
+                        ? `Canonical pot repaired: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded."
+                );
+
+                if (sponsorReconciliation.repaired) {
+                    coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                    coinHeader.prepend(goldCoins.cloneNode(false));
+                    try {
+                        window.alert(
+                            "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
+                            `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                        );
+                    } catch {}
+                }
+            } catch (e) {
+                sponsorAccountingReady = false;
+                setSponsorAccountingVerificationState(
+                    false,
+                    `Persistent Gift History reconciliation unavailable: ${String(e?.message || e)}`
+                );
+                snapshotGiveaway({ force: true });
+                scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore });
             }
 
             let expiredLegacyBootstrap = Promise.resolve();
-            if (savedTracker) {
-                // Current snapshots have a persisted cursor. For an expired restore,
-                // endGiveaway() performs the one authoritative final poll itself.
-                if (!expiredOnRestore) tracker.poll().catch(console.error);
-            } else {
-                // Legacy snapshots had no cursor. Bootstrap without replaying old
-                // gifts; this favors under-count + manual verification over duplicates.
-                const p = tracker.bootstrapCursor().catch(console.error);
-                if (expiredOnRestore) expiredLegacyBootstrap = p;
-            }
-            if (!expiredOnRestore) {
-                sponsorsInterval = setInterval(() => tracker.poll(), SPONSOR_GIFT_HISTORY_POLL_MS);
+            if (sponsorAccountingReady) {
+                if (savedTracker) {
+                    // Current snapshots have a persisted cursor. For an expired restore,
+                    // endGiveaway() performs the authoritative final poll itself.
+                    if (!expiredOnRestore) tracker.poll().catch(console.error);
+                } else {
+                    // Legacy snapshots had no cursor. Bootstrap without replaying old
+                    // gifts; this favors under-count + manual verification over duplicates.
+                    const p = tracker.bootstrapCursor().catch(console.error);
+                    if (expiredOnRestore) expiredLegacyBootstrap = p;
+                }
+                if (!expiredOnRestore) {
+                    sponsorsInterval = setInterval(() => tracker.poll(), SPONSOR_GIFT_HISTORY_POLL_MS);
+                }
             }
 
             // 10) Re-start countdown timer only for a still-active giveaway.
@@ -3392,7 +3611,7 @@ body.host-panel-dragging * {
             );
             updateHostPanelUI();
 
-            if (expiredOnRestore) {
+            if (expiredOnRestore && sponsorAccountingReady) {
                 Promise.resolve(expiredLegacyBootstrap).finally(() => {
                     setTimeout(() => {
                         if (giveawayData && !giveawayData.__ending) endGiveaway();
@@ -3601,6 +3820,7 @@ body.host-panel-dragging * {
             : null;
 
         giveawayData = {
+            rehearsalMode: REHEARSAL_MODE,
             host: authenticatedHost,
             amount: amountInt,
             startNum: parseInt(startInput.value, 10),
@@ -3886,6 +4106,8 @@ body.host-panel-dragging * {
             clearInterval(sponsorsInterval);
             sponsorsInterval = null;
         }
+        clearSponsorAccountingRecoveryTimer();
+        clearHostSafetyBanner("accounting");
         if (window.__activeTracker) window.__activeTracker = null;
 
         if (observer) { observer.disconnect(); observer = null; }
@@ -4098,6 +4320,9 @@ body.host-panel-dragging * {
         const perfStart = PERF ? performance.now() : 0;
 
         const createdAtTs = getChatMessageCreatedAtTs(messageNode);
+        // If UNIT3D ever inserts a relevant node without a parseable datetime,
+        // deliberately fail open. A possible duplicate reply is safer than silently
+        // discarding a real entry.
         if (
             Number.isFinite(chatReplayIgnoreBeforeTs) &&
             Number.isFinite(createdAtTs) &&
@@ -5466,130 +5691,6 @@ body.host-panel-dragging * {
             return ok;
         }
 
-        /* ---- Chat API/SystemBot fallback only ---- */
-        async pollChatFallback(options = {}) {
-            const perfStart = PERF ? performance.now() : 0;
-            this.historyFallbackActive = true;
-            const optionMax = optionalFiniteNumber(options.maxCreatedAtTs);
-            const trackerMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
-            const scheduledMax = optionalFiniteNumber(this.data?.endTs);
-            let maxCreatedAtTs = optionMax;
-            for (const bound of [trackerMax, scheduledMax]) {
-                if (bound !== null) {
-                    maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
-                }
-            }
-            const announce = options.announce !== false;
-            let messages;
-            try {
-                messages = await this.fetchNew();
-            } catch (e) {
-                if (DEBUG_SETTINGS.log_chat_messages) console.error("Sponsor API error:", e);
-                return false;
-            }
-
-            if (!canMutateActiveGiveaway()) return false;
-
-            // fetchNew() can overlap endGiveaway(). Rebuild the upper boundary
-            // after the await so a manual close that latches an earlier cutoff is
-            // immediately inherited by this already-running fallback pass.
-            const latestTrackerMax = optionalFiniteNumber(this.maxAcceptedCreatedAtTs);
-            const latestScheduledMax = optionalFiniteNumber(this.data?.endTs);
-            maxCreatedAtTs = optionMax;
-            for (const bound of [latestTrackerMax, latestScheduledMax]) {
-                if (bound !== null) {
-                    maxCreatedAtTs = maxCreatedAtTs === null ? bound : Math.min(maxCreatedAtTs, bound);
-                }
-            }
-
-            this.cursorInitialized = true;
-
-            /* Filter new, unprocessed gift messages */
-            const gifts = [];
-            const cursorAtPollStart = this.lastMsgId;
-            for (const m of messages) {
-                const numericId = Math.floor(Number(m && m.id));
-
-                // Correctness boundary: never replay a message at/before the persisted
-                // cursor. This protects reloads even if the server ignores after_id.
-                if (this.cursorInitialized && Number.isFinite(numericId) && numericId <= cursorAtPollStart) continue;
-                if (this.processedIds.has(m.id)) continue;
-
-                const createdAtTs = Date.parse(m.created_at);
-                const timestampResolutionMs = unit3dTimestampResolutionMs(m.created_at);
-                if (
-                    Number.isFinite(createdAtTs) &&
-                    (createdAtTs + timestampResolutionMs) <= this.giveawayStartTs
-                ) continue;
-                if (
-                    maxCreatedAtTs !== null &&
-                    Number.isFinite(createdAtTs) &&
-                    (createdAtTs + timestampResolutionMs) > (maxCreatedAtTs + 1)
-                ) continue;
-
-                const msgText = m.message || "";
-                const isSystemBot = !!m.bot?.is_systembot;
-                if (isSystemBot && msgText.includes("has gifted")) gifts.push(m);
-            }
-
-            // Advance cursor for every message, not just gifts.
-            for (const m of messages) {
-                const id = Math.floor(Number(m && m.id));
-                if (Number.isFinite(id) && id > this.lastMsgId) this.lastMsgId = id;
-            }
-
-            /* parse gifts and update accounting immediately */
-            const sponsorEvents = [];
-            for (const msg of gifts) {
-                this.processedIds.add(msg.id);
-
-                const { gifter, recipient, amount } = this.parseGiftMsg(msg.message);
-                if (!gifter || normalizeUserKey(recipient) !== normalizeUserKey(this.data.host)) continue; // only gifts to this host
-
-                const cleanAmount = Math.max(0, Math.floor(Number(amount) || 0));
-                if (!(cleanAmount > 0)) continue;
-
-                sponsorEvents.push({
-                    gifter,
-                    recipient,
-                    amount: cleanAmount,
-                    rawAmount: Number(amount),
-                    createdAtTs: parseUnit3dTimestamp(msg.created_at),
-                    timestampResolutionMs: unit3dTimestampResolutionMs(msg.created_at)
-                });
-                this.applyGift(gifter, cleanAmount); // update totals immediately
-            }
-
-            // The SystemBot line omits the optional gift message. Enrich every new
-            // sponsor event from the host's own read-only gift history, including
-            // the final settlement poll. Chat announcement remains controlled by
-            // `announce`, but statement/audit data should not lose a last-second note.
-            const bufferedEvents = sponsorEvents.length
-                ? await this.enrichGiftEventsWithMessages(sponsorEvents)
-                : sponsorEvents;
-
-            if (!canMutateActiveGiveaway()) return false;
-
-            let recordedGiftNote = false;
-            for (const event of bufferedEvents) {
-                if (recordSponsorGiftMessage(this.data, event)) recordedGiftNote = true;
-                this.buffer.push({
-                    gifter: event.gifter,
-                    amount: event.amount,
-                    message: event.message || ""
-                });
-            }
-            if (recordedGiftNote) snapshotGiveaway();
-
-            /* send ONE summary line if anything new arrived */
-            if (this.buffer.length) {
-                if (announce) await this.maybeFlush();
-                else await this.flushBuffer(Date.now(), { announce: false });
-            }
-            if (PERF) perfMeasure('sponsor_poll', perfStart);
-            return true;
-        }
-
         /* ---- pull gifter / recipient / amount from the HTML blob ---- */
         parseGiftMsg(html) {
             return parseGiftMessage(html);
@@ -6335,6 +6436,17 @@ body.host-panel-dragging * {
         const authorKey = rawAuthor.toLowerCase();
         if (!authorKey) return false;
 
+        // The giveaway host may need several recovery commands in quick succession.
+        // Never put the host into the escalating spam lockout. Keep only the
+        // ultra-fast double-send guard so accidental duplicate submits are ignored.
+        const activeHostKey = normalizeUserKey(giveawayData?.host);
+        if (activeHostKey && authorKey === activeHostKey) {
+            const lastAny = userLastActionAt.get(authorKey) || 0;
+            const tooFast = (now - lastAny) < MIN_ACTION_GAP_MS;
+            userLastActionAt.set(authorKey, now);
+            return tooFast;
+        }
+
         const lockoutExpires = userCooldown.get(authorKey) || 0;
         if (now < lockoutExpires) return true;
 
@@ -6398,6 +6510,9 @@ body.host-panel-dragging * {
     }
 
     const _adminCache = new Map(); // fancyName HTML → boolean (cleared per giveaway in stopGiveaway)
+    const DARKPEERS_STAFF_ROLE_NAMES = new Set([
+        "leader", "administrator", "admin", "moderator", "mod", "developer", "operator"
+    ]);
 
     function isAdmin(fancyName) {
         if (!fancyName) return false;
@@ -6410,14 +6525,11 @@ body.host-panel-dragging * {
             div.innerHTML = fancyName;
             const a = div.querySelector('a.user-tag__link');
             if (a) {
-                const title = a.getAttribute('title')?.toLowerCase() || '';
-                const roleTokens = title.split(/[^a-z0-9]+/).filter(Boolean);
-                const privilegedRoles = new Set([
-                    'leader', 'administrator', 'admin', 'moderator', 'mod', 'developer', 'operator'
-                ]);
-                const collapsedTitle = title.replace(/[^a-z0-9]+/g, '');
-                result = roleTokens.some(token => privilegedRoles.has(token)) ||
-                    collapsedTitle.includes('onlyguardians');
+                const title = String(a.getAttribute('title') || "")
+                    .trim()
+                    .toLowerCase()
+                    .replace(/\s+/g, " ");
+                result = DARKPEERS_STAFF_ROLE_NAMES.has(title);
             }
         } catch {
             result = false;
@@ -6916,7 +7028,7 @@ body.host-panel-dragging * {
         },
 
 
-        /* Host + Admin commands */
+        /* Privileged commands. Each handler applies its own host/staff policy. */
         addbon: hostAddBon,
 
         reminder(ctx) {
@@ -6928,8 +7040,8 @@ body.host-panel-dragging * {
         },
 
         winners(ctx) {
-            const { author, fancyName, args, giveawayData, reply } = ctx;
-            if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const { author, args, giveawayData, reply } = ctx;
+            if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
             const newCount = parseInt(ctx.args[0], 10);
             if (isNaN(newCount) || newCount < 1 || newCount > MAX_WINNERS) {
                 reply(`[color=red]Usage:[/color] !winners 1‑${MAX_WINNERS}`);
@@ -7001,8 +7113,8 @@ body.host-panel-dragging * {
         },
 
         maxwinners(ctx) {
-            const { author, fancyName, args, giveawayData, reply } = ctx;
-            if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
+            const { author, args, giveawayData, reply } = ctx;
+            if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
             if (!giveawayData.scaleWinnersWithSponsors) {
                 reply(`[color=red]Scaling is not enabled for this giveaway.[/color]`);
                 return;
@@ -7207,6 +7319,14 @@ body.host-panel-dragging * {
     async function hostAddBon(ctx) {
         const { author, args, giveawayData, reply } = ctx;
         if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
+
+        if (giveawayData?.__sponsorAccountingVerified === false) {
+            reply(
+                "[b][color=#FFDE59]Sponsor accounting is not verified yet. " +
+                "Entries and time controls remain active, but BON pot changes are paused until Gift History reconciliation succeeds.[/color][/b]"
+            );
+            return;
+        }
 
         if (hostAddBonInFlight) {
             reply("[b][color=#FFDE59]A host BON top-up is already being verified. Please wait a moment.[/color][/b]");
@@ -7582,7 +7702,7 @@ body.host-panel-dragging * {
                 // The previous attempt is authoritatively absent. Any replay is a
                 // new side-effect window, so give it a fresh cursor/timestamp and
                 // durably persist that boundary before sending again.
-                checkpoint.afterMessageId = await getLatestChatMessageId();
+                checkpoint.afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                 checkpoint.startedAt = Date.now();
                 checkpoint.preparedMessage =
                     typeof checkpoint.preparedMessage === "string"
@@ -7598,7 +7718,7 @@ body.host-panel-dragging * {
                 }
                 replayingPendingCheckpoint = true;
             } else {
-                const afterMessageId = await getLatestChatMessageId();
+                const afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                 if (!(await ensureExclusiveTabOwnership())) {
                     giveawayData.__ending = false;
                     return false;
@@ -7725,7 +7845,7 @@ body.host-panel-dragging * {
                             giveawayData.__ending = false;
                             return;
                         } else {
-                            closingCheckpoint.afterMessageId = await getLatestChatMessageId();
+                            closingCheckpoint.afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                             closingCheckpoint.startedAt = Date.now();
                             closingCheckpoint.preparedMessage =
                                 typeof closingCheckpoint.preparedMessage === "string"
@@ -7747,7 +7867,7 @@ body.host-panel-dragging * {
                         // host-close wording. Preserve that exact payload; only
                         // create a fresh checkpoint when no pending attempt exists.
                         if (closingCheckpoint?.status !== "pending") {
-                            const afterMessageId = await getLatestChatMessageId();
+                            const afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
 
                             if (!(await ensureExclusiveTabOwnership())) {
                                 giveawayData.__ending = false;
@@ -7933,6 +8053,53 @@ body.host-panel-dragging * {
             giveawayData.winnersNum = Math.max(1, Math.floor(Number(raw.winnersNum) || 1));
             riggedMode = !!raw.riggedMode;
         };
+
+        if (
+            giveawayData?.settlement?.committed !== true &&
+            giveawayData?.__sponsorAccountingVerified === false
+        ) {
+            const tracker = window.__activeTracker;
+            try {
+                if (!tracker || typeof tracker.reconcileCanonicalSponsorAccounting !== "function") {
+                    throw new Error("Canonical sponsor tracker is unavailable.");
+                }
+                const recovered = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Recovered sponsor accounting could not be persisted safely.");
+                }
+                setSponsorAccountingVerificationState(
+                    true,
+                    recovered?.repaired
+                        ? `Canonical pot repaired before settlement: ${fmtBONCurrency(recovered.previousPot)} -> ${fmtBONCurrency(recovered.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded before settlement."
+                );
+                clearSponsorAccountingRecoveryTimer();
+            } catch (e) {
+                setSponsorAccountingVerificationState(
+                    false,
+                    `Settlement remains blocked: ${String(e?.message || e)}`
+                );
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                try {
+                    if (startButton) {
+                        startButton.disabled = false;
+                        startButton.textContent = "Retry settlement";
+                        startButton.title = "Retry after persistent Gift History reconciliation is healthy";
+                        startButton.onclick = () => endGiveaway();
+                    }
+                    window.alert(
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "Persistent Gift History reconciliation is not currently available. " +
+                        "Entries are already closed if time expired, but no winner draw or BON transfer will occur until accounting is verified."
+                    );
+                } catch {}
+                scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore: true });
+                return;
+            }
+        }
 
         // Close the sponsor accounting window with one final synchronous API poll.
         // The regular tracker runs every 10s, so without this a gift in the final
@@ -8391,7 +8558,7 @@ body.host-panel-dragging * {
                 );
                 const refundAfterMessageId = hasSavedRefundCursor
                     ? settlement.refundAfterMessageId
-                    : (sponsorRefunds.length ? await getLatestChatMessageId() : null);
+                    : (sponsorRefunds.length ? await getLatestChatMessageId(DARKPEERS_CHATROOM_ID) : null);
 
                 settlement.refundNotBeforeTs = refundNotBeforeTs;
                 settlement.refundAfterMessageId = refundAfterMessageId;
@@ -8555,9 +8722,9 @@ body.host-panel-dragging * {
                 : [];
             const ties = Array.isArray(plan.ties) ? plan.ties.map(item => ({ ...item })) : [];
             if (ties.length > 1) {
-                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
+                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${sanitizeNick(e.author)}[/color][/b]`).join(", ");
                 if (!(await sendSettlementMessage(
-                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
+                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${sanitizeNick(entries[0].author)}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
                     "tie result",
                     "tie-result"
                 ))) return;
@@ -8643,7 +8810,7 @@ body.host-panel-dragging * {
                     : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
 
                 const winnerLine =
-                      `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
+                      `Congrats [b][color=#DC3D1D]${sanitizeNick(w.author)}[/color][/b]! ` +
                       `Guess [color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ` +
                       `${accuracyText} ` +
                       `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
@@ -8662,7 +8829,7 @@ body.host-panel-dragging * {
                     const accuracyText = diff === 0
                         ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
                         : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
-                    return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
+                    return `${medal} [b][color=#DC3D1D]${sanitizeNick(w.author)}[/color][/b]: ` +
                         `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ${accuracyText} ` +
                         `[color=#FFC00A][b]${prize} BON[/b][/color]`;
                 });
@@ -8782,7 +8949,7 @@ body.host-panel-dragging * {
             );
             const payoutAfterMessageId = hasSavedPayoutCursor
                 ? settlement.payoutAfterMessageId
-                : await getLatestChatMessageId();
+                : await getLatestChatMessageId(DARKPEERS_CHATROOM_ID);
 
             settlement.payoutNotBeforeTs = payoutNotBeforeTs;
             settlement.payoutAfterMessageId = payoutAfterMessageId;
@@ -9232,9 +9399,44 @@ body.host-panel-dragging * {
         }
     }
 
-    async function getLatestChatMessageId() {
+    async function getLatestMainChatReplayBoundary() {
         try {
-            const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+            const url = new URL(`/api/chat/messages/${DARKPEERS_MAIN_CHATROOM_ID}`, location.origin);
+            const res = await fetchWithTimeout(
+                url,
+                { credentials: "include", cache: "no-store" },
+                5000
+            );
+            if (!res || !res.ok) return null;
+
+            const payload = await res.json();
+            const messages = Array.isArray(payload?.data) ? payload.data : [];
+            let latest = null;
+
+            for (const message of messages) {
+                const rawTimestamp = String(message?.created_at || "").trim();
+                const ts = Date.parse(rawTimestamp);
+                if (!Number.isFinite(ts)) continue;
+
+                const resolutionMs = unit3dTimestampResolutionMs(rawTimestamp);
+                if (!latest || ts > latest.ts) {
+                    latest = { ts, resolutionMs };
+                } else if (latest && ts === latest.ts) {
+                    latest.resolutionMs = Math.max(latest.resolutionMs, resolutionMs);
+                }
+            }
+
+            return latest;
+        } catch {
+            return null;
+        }
+    }
+
+    async function getLatestChatMessageId(roomId = chatroomId) {
+        try {
+            const targetRoomId = String(roomId || "").trim();
+            if (!targetRoomId) return null;
+            const url = new URL(`/api/chat/messages/${targetRoomId}`, location.origin);
             const res = await fetchWithTimeout(url, { credentials: "include" }, 5000);
             if (!res || !res.ok) return null;
             const payload = await res.json();
@@ -9279,6 +9481,17 @@ body.host-panel-dragging * {
             .filter(g => g.recipient && g.key && g.amount > 0);
 
         if (!expected.length) return true;
+
+        if (REHEARSAL_MODE) {
+            for (const gift of expected) {
+                updateStatementGiftStatus(gift.recipient, gift.purpose, "dry-run", statementId);
+            }
+            logEvent(
+                "Rehearsal refund verification",
+                `Suppressed and accepted ${expected.length} simulated sponsor refund(s).`
+            );
+            return true;
+        }
 
         const tracker = window.__activeTracker;
         const canUseHistory = Array.isArray(baselineRows) && tracker && typeof tracker.fetchRecentGiftHistory === "function";
@@ -9456,6 +9669,18 @@ body.host-panel-dragging * {
             function markFailed(g) {
                 if (canTouchLiveUI()) markWinnerGiftFailed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
+            }
+
+            if (REHEARSAL_MODE) {
+                for (const gift of expected) {
+                    markConfirmed(gift, "dry-run");
+                }
+                finalizeStatementVerification(true, 0, statementId);
+                logEvent(
+                    "Rehearsal payout verification",
+                    `Suppressed and accepted ${expected.length} simulated gift(s).`
+                );
+                return true;
             }
 
             // 1) PRIMARY RECEIPT: authenticated persistent Gift History.
@@ -10561,6 +10786,19 @@ body.host-panel-dragging * {
         if (!(await ensureExclusiveTabOwnership())) {
             return { attempted: false, confirmed: false, reason: "ownership-lost" };
         }
+
+        if (REHEARSAL_MODE) {
+            logEvent(
+                "Rehearsal BON Pool contribution suppressed",
+                `${fmtBONCurrency(safeAmount)} BON`
+            );
+            return {
+                attempted: true,
+                confirmed: true,
+                dryRun: true,
+                reason: "rehearsal"
+            };
+        }
     
         const existing = getPoolContributionAttempt(giveawayId);
         if (existing) {
@@ -10879,6 +11117,19 @@ body.host-panel-dragging * {
                 `Refusing to send ${fmtBONCurrency(safeAmount)} BON to ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership.`
             );
             return { attempted: false, reason: "ownership-lost" };
+        }
+
+        if (REHEARSAL_MODE) {
+            logEvent(
+                "Rehearsal gift suppressed",
+                `${sanitizeNick(safeRecipient)} | ${fmtBONCurrency(safeAmount)} BON | purpose=${purpose}`
+            );
+            return {
+                attempted: true,
+                confirmed: true,
+                dryRun: true,
+                transport: "rehearsal"
+            };
         }
 
         // ── Idempotency check ─────────────────────────────────────────────
@@ -11233,6 +11484,13 @@ body.host-panel-dragging * {
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
 
+        if (REHEARSAL_MODE) {
+            logEvent("Rehearsal chat suppressed", messageStr);
+            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                console.debug("[BON Giveaway rehearsal] chat suppressed:", messageStr);
+            }
+            return true;
+        }
         if (DEBUG_SETTINGS.disable_chat_output) return true;
 
         if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: caching chat context if needed");
