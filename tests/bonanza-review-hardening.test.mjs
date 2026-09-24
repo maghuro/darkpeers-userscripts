@@ -9,7 +9,7 @@ const sourcePath = new URL(
 const source = readFileSync(sourcePath, "utf8");
 
 test("review hardening invariants stay present", () => {
-  assert.match(source, /^\/\/ @version\s+1\.5\.5$/m);
+  assert.match(source, /^\/\/ @version\s+1\.5\.6$/m);
   assert.doesNotMatch(source, /pollChatFallback/);
   assert.doesNotMatch(source, /onlyguardians/i);
   assert.match(source, /async function getLatestMainChatReplayBoundary\(\)/);
@@ -48,6 +48,14 @@ test("staff emergency controls remain available", () => {
   ];
 
   for (const pattern of required) assert.match(source, pattern);
+});
+
+test("staff emergency actions are publicly attributed and cooldown-exempt", () => {
+  assert.match(source, /function makeStaffAttributedReply\(ctx\)/);
+  assert.match(source, /Staff action by \$\{sanitizeNick\(ctx\.author\)\}/);
+  assert.match(source, /const actionReply = makeStaffAttributedReply\(ctx\)/);
+  assert.match(source, /Requested by staff \$\{sanitizeNick\(author\)\} via !end/);
+  assert.match(source, /isEmergencyOperator[\s\S]*?isAdmin\(fancyName\)/);
 });
 
 test("public winner names use anti-ping sanitization", () => {
