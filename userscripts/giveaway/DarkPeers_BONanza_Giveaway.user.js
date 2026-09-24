@@ -201,7 +201,9 @@
 //   - v1.5.5 applies the post-live safety review: reload replay boundaries come from
 //     Main Chat server timestamps, host lockouts cannot block emergency recovery,
 //     winner-count controls are host-only, dead sponsor chat fallback is removed,
-//     and public winner names use the same anti-ping sanitization as other chat output.
+//     public winner names use the same anti-ping sanitization as other chat output,
+//     restore can remain entry-live while sponsor accounting is unavailable, and a
+//     rehearsal mode suppresses every script chat message and BON-moving operation.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -310,6 +312,7 @@
     const DEBUG_SETTINGS = {
         log_chat_messages: false,
         disable_chat_output: false,
+        dry_run: false,
         verify_extractor: false,
         verify_sendmessage: false,
         verify_cacheChatContext: false,
@@ -340,6 +343,14 @@
         DEBUG_SETTINGS.enable_self_checks ||
         localStorage.getItem(SELF_CHECK_FLAG) === "true" ||
         SELF_CHECK_QUERY_RE.test(String(window.location.search || ""))
+    );
+
+    const REHEARSAL_FLAG = "BONANZA_GIVEAWAY_REHEARSAL";
+    const REHEARSAL_QUERY_RE = /(?:^|[?&])bg_rehearsal=1(?:&|$)/i;
+    const REHEARSAL_MODE = !!(
+        DEBUG_SETTINGS.dry_run ||
+        localStorage.getItem(REHEARSAL_FLAG) === "true" ||
+        REHEARSAL_QUERY_RE.test(String(window.location.search || ""))
     );
 
     function selfCheck(condition, message, details) {
@@ -809,6 +820,7 @@
     // ───────────────────────────────────────────────────────────
     let giveawayStartTime;
     let sponsorsInterval;
+    let sponsorRecoveryInterval;
     let observer;
     let giveawayData;
     let chatbox = null;
@@ -878,6 +890,56 @@
     );
     function saveNaughty() {
         localStorage.setItem(NAUGHTY_KEY, JSON.stringify([...naughtySet]));
+    }
+
+    function setHostSafetyBanner(key, message, tone = "warning") {
+        const frame = bonanzaGiveawayFrame || document.getElementById("bonanzaGiveawayFrame");
+        if (!frame) return;
+
+        let container = frame.querySelector("#bonanzaSafetyBanners");
+        if (!container) {
+            container = document.createElement("div");
+            container.id = "bonanzaSafetyBanners";
+            container.style.cssText =
+                "display:flex;flex-direction:column;gap:6px;padding:8px 10px 0 10px;";
+
+            const header = frame.querySelector("header.panel__heading");
+            if (header && header.parentNode) {
+                header.parentNode.insertBefore(container, header.nextSibling);
+            } else {
+                frame.prepend(container);
+            }
+        }
+
+        const id = `bonanzaSafetyBanner-${String(key || "general").replace(/[^a-z0-9_-]/gi, "-")}`;
+        let banner = container.querySelector(`#${id}`);
+        if (!banner) {
+            banner = document.createElement("div");
+            banner.id = id;
+            banner.setAttribute("role", "status");
+            banner.style.cssText =
+                "padding:8px 10px;border-radius:5px;font-size:12px;font-weight:700;line-height:1.35;";
+            container.appendChild(banner);
+        }
+
+        if (tone === "danger") {
+            banner.style.background = "rgba(179,37,37,.25)";
+            banner.style.border = "1px solid #ff6f6f";
+            banner.style.color = "#ffd7d7";
+        } else {
+            banner.style.background = "rgba(255,192,10,.16)";
+            banner.style.border = "1px solid #ffc00a";
+            banner.style.color = "#fff0b3";
+        }
+        banner.textContent = String(message || "");
+    }
+
+    function clearHostSafetyBanner(key) {
+        const id = `bonanzaSafetyBanner-${String(key || "general").replace(/[^a-z0-9_-]/gi, "-")}`;
+        const banner = document.getElementById(id);
+        if (banner) banner.remove();
+        const container = document.getElementById("bonanzaSafetyBanners");
+        if (container && !container.children.length) container.remove();
     }
 
     // Toolbar button icon: Font Awesome Free 7 "robot" (solid), CC BY 4.0, https://fontawesome.com
@@ -1665,6 +1727,15 @@ body.host-panel-dragging * {
     let hostPanelResizeBound = false;
     // Inject the giveaway menu into the chat UI
     injectMenu();
+
+    if (REHEARSAL_MODE) {
+        setHostSafetyBanner(
+            "rehearsal",
+            "REHEARSAL MODE: userscript chat output, winner/refund gifts and BON Pool contributions are disabled.",
+            "danger"
+        );
+        console.warn("[BON Giveaway] REHEARSAL MODE active: no script chat output or BON-moving request will be sent.");
+    }
 
     // ── Mutual exclusion with the original "Blutopia BON Giveaway" script ──
     // Both scripts drive the same chat and would both try to restore and pay out
@@ -3081,6 +3152,92 @@ body.host-panel-dragging * {
      * Restore a giveaway from a snapshot. Re-establishes entries, timers, observer, and sponsor tracker.
      * Called during injectMenu() if a valid snapshot exists.
      */
+    function clearSponsorAccountingRecoveryTimer() {
+        if (sponsorRecoveryInterval) {
+            clearInterval(sponsorRecoveryInterval);
+            sponsorRecoveryInterval = null;
+        }
+    }
+
+    function setSponsorAccountingVerificationState(verified, details = "") {
+        if (!giveawayData) return;
+        giveawayData.__sponsorAccountingVerified = verified === true;
+
+        if (verified === true) {
+            clearHostSafetyBanner("accounting");
+        } else {
+            setHostSafetyBanner(
+                "accounting",
+                "ACCOUNTING NOT VERIFIED: entries and time controls remain active, but sponsor pot changes and settlement are paused until persistent Gift History reconciliation succeeds.",
+                "danger"
+            );
+        }
+
+        if (details) logEvent(verified ? "Sponsor accounting verified" : "Sponsor accounting blocked", details);
+        updateHostPanelUI();
+    }
+
+    function scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore = false } = {}) {
+        clearSponsorAccountingRecoveryTimer();
+        if (!tracker) return;
+
+        let inFlight = false;
+        const retry = async () => {
+            if (inFlight || !giveawayData || window.__activeTracker !== tracker) return;
+            if (!canMutateActiveGiveaway()) return;
+            inFlight = true;
+
+            try {
+                const result = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+                }
+
+                setSponsorAccountingVerificationState(
+                    true,
+                    result?.repaired
+                        ? `Recovered canonical pot: ${fmtBONCurrency(result.previousPot)} -> ${fmtBONCurrency(result.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded."
+                );
+                clearSponsorAccountingRecoveryTimer();
+
+                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                coinHeader.prepend(goldCoins.cloneNode(false));
+
+                const expiredNow =
+                    expiredOnRestore ||
+                    getGiveawayRemainingMs(giveawayData) <= 0 ||
+                    giveawayData.__closingIntent === true;
+
+                if (expiredNow) {
+                    setTimeout(() => {
+                        if (giveawayData && !giveawayData.__ending) endGiveaway();
+                    }, 0);
+                    return;
+                }
+
+                if (!sponsorsInterval) {
+                    tracker.poll().catch(console.error);
+                    sponsorsInterval = setInterval(
+                        () => tracker.poll(),
+                        SPONSOR_GIFT_HISTORY_POLL_MS
+                    );
+                }
+            } catch (e) {
+                console.warn(
+                    "[BON Giveaway] Sponsor accounting recovery still unavailable:",
+                    e
+                );
+            } finally {
+                inFlight = false;
+            }
+        };
+
+        sponsorRecoveryInterval = setInterval(retry, SPONSOR_GIFT_HISTORY_POLL_MS);
+    }
+
     async function restoreGiveawayFromSnapshot(snap) {
         if (!snap || !snap.giveawayData) return false;
 
@@ -3325,41 +3482,61 @@ body.host-panel-dragging * {
             });
             window.__activeTracker = tracker;
 
-            // Before any restored timer/poll/settlement resumes, rebuild sponsor
-            // accounting from persistent Gift History. This self-heals snapshots
-            // affected by the v1.5.0 System/DPBot replay bug and fails closed if
-            // canonical coverage cannot be proven.
-            const sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
-                repairStats: true
-            });
-            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
-                throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
-            }
-            if (sponsorReconciliation.repaired) {
-                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
-                coinHeader.prepend(goldCoins.cloneNode(false));
-                updateHostPanelUI();
-                try {
-                    window.alert(
-                        "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
-                        `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
-                    );
-                } catch {}
+            // Rebuild sponsor accounting from persistent Gift History. If the
+            // service is temporarily unavailable, keep entries/time alive but freeze
+            // every pot mutation and settlement operation until canonical recovery.
+            let sponsorAccountingReady = false;
+            let sponsorReconciliation = null;
+            try {
+                sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+                }
+                sponsorAccountingReady = true;
+                setSponsorAccountingVerificationState(
+                    true,
+                    sponsorReconciliation.repaired
+                        ? `Canonical pot repaired: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded."
+                );
+
+                if (sponsorReconciliation.repaired) {
+                    coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                    coinHeader.prepend(goldCoins.cloneNode(false));
+                    try {
+                        window.alert(
+                            "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
+                            `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                        );
+                    } catch {}
+                }
+            } catch (e) {
+                sponsorAccountingReady = false;
+                setSponsorAccountingVerificationState(
+                    false,
+                    `Persistent Gift History reconciliation unavailable: ${String(e?.message || e)}`
+                );
+                snapshotGiveaway({ force: true });
+                scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore });
             }
 
             let expiredLegacyBootstrap = Promise.resolve();
-            if (savedTracker) {
-                // Current snapshots have a persisted cursor. For an expired restore,
-                // endGiveaway() performs the one authoritative final poll itself.
-                if (!expiredOnRestore) tracker.poll().catch(console.error);
-            } else {
-                // Legacy snapshots had no cursor. Bootstrap without replaying old
-                // gifts; this favors under-count + manual verification over duplicates.
-                const p = tracker.bootstrapCursor().catch(console.error);
-                if (expiredOnRestore) expiredLegacyBootstrap = p;
-            }
-            if (!expiredOnRestore) {
-                sponsorsInterval = setInterval(() => tracker.poll(), SPONSOR_GIFT_HISTORY_POLL_MS);
+            if (sponsorAccountingReady) {
+                if (savedTracker) {
+                    // Current snapshots have a persisted cursor. For an expired restore,
+                    // endGiveaway() performs the authoritative final poll itself.
+                    if (!expiredOnRestore) tracker.poll().catch(console.error);
+                } else {
+                    // Legacy snapshots had no cursor. Bootstrap without replaying old
+                    // gifts; this favors under-count + manual verification over duplicates.
+                    const p = tracker.bootstrapCursor().catch(console.error);
+                    if (expiredOnRestore) expiredLegacyBootstrap = p;
+                }
+                if (!expiredOnRestore) {
+                    sponsorsInterval = setInterval(() => tracker.poll(), SPONSOR_GIFT_HISTORY_POLL_MS);
+                }
             }
 
             // 10) Re-start countdown timer only for a still-active giveaway.
@@ -3407,7 +3584,7 @@ body.host-panel-dragging * {
             );
             updateHostPanelUI();
 
-            if (expiredOnRestore) {
+            if (expiredOnRestore && sponsorAccountingReady) {
                 Promise.resolve(expiredLegacyBootstrap).finally(() => {
                     setTimeout(() => {
                         if (giveawayData && !giveawayData.__ending) endGiveaway();
@@ -3901,6 +4078,8 @@ body.host-panel-dragging * {
             clearInterval(sponsorsInterval);
             sponsorsInterval = null;
         }
+        clearSponsorAccountingRecoveryTimer();
+        clearHostSafetyBanner("accounting");
         if (window.__activeTracker) window.__activeTracker = null;
 
         if (observer) { observer.disconnect(); observer = null; }
@@ -7235,6 +7414,14 @@ body.host-panel-dragging * {
         const { author, args, giveawayData, reply } = ctx;
         if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
 
+        if (giveawayData?.__sponsorAccountingVerified === false) {
+            reply(
+                "[b][color=#FFDE59]Sponsor accounting is not verified yet. " +
+                "Entries and time controls remain active, but BON pot changes are paused until Gift History reconciliation succeeds.[/color][/b]"
+            );
+            return;
+        }
+
         if (hostAddBonInFlight) {
             reply("[b][color=#FFDE59]A host BON top-up is already being verified. Please wait a moment.[/color][/b]");
             return;
@@ -7960,6 +8147,53 @@ body.host-panel-dragging * {
             giveawayData.winnersNum = Math.max(1, Math.floor(Number(raw.winnersNum) || 1));
             riggedMode = !!raw.riggedMode;
         };
+
+        if (
+            giveawayData?.settlement?.committed !== true &&
+            giveawayData?.__sponsorAccountingVerified === false
+        ) {
+            const tracker = window.__activeTracker;
+            try {
+                if (!tracker || typeof tracker.reconcileCanonicalSponsorAccounting !== "function") {
+                    throw new Error("Canonical sponsor tracker is unavailable.");
+                }
+                const recovered = await tracker.reconcileCanonicalSponsorAccounting({
+                    repairStats: false
+                });
+                if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                    throw new Error("Recovered sponsor accounting could not be persisted safely.");
+                }
+                setSponsorAccountingVerificationState(
+                    true,
+                    recovered?.repaired
+                        ? `Canonical pot repaired before settlement: ${fmtBONCurrency(recovered.previousPot)} -> ${fmtBONCurrency(recovered.canonicalPot)} BON.`
+                        : "Persistent Gift History reconciliation succeeded before settlement."
+                );
+                clearSponsorAccountingRecoveryTimer();
+            } catch (e) {
+                setSponsorAccountingVerificationState(
+                    false,
+                    `Settlement remains blocked: ${String(e?.message || e)}`
+                );
+                snapshotGiveaway({ force: true });
+                giveawayData.__ending = false;
+                try {
+                    if (startButton) {
+                        startButton.disabled = false;
+                        startButton.textContent = "Retry settlement";
+                        startButton.title = "Retry after persistent Gift History reconciliation is healthy";
+                        startButton.onclick = () => endGiveaway();
+                    }
+                    window.alert(
+                        "GIVEAWAY SETTLEMENT PAUSED\n\n" +
+                        "Persistent Gift History reconciliation is not currently available. " +
+                        "Entries are already closed if time expired, but no winner draw or BON transfer will occur until accounting is verified."
+                    );
+                } catch {}
+                scheduleSponsorAccountingRecovery(tracker, { expiredOnRestore: true });
+                return;
+            }
+        }
 
         // Close the sponsor accounting window with one final synchronous API poll.
         // The regular tracker runs every 10s, so without this a gift in the final
@@ -9340,6 +9574,17 @@ body.host-panel-dragging * {
 
         if (!expected.length) return true;
 
+        if (REHEARSAL_MODE) {
+            for (const gift of expected) {
+                updateStatementGiftStatus(gift.recipient, gift.purpose, "dry-run", statementId);
+            }
+            logEvent(
+                "Rehearsal refund verification",
+                `Suppressed and accepted ${expected.length} simulated sponsor refund(s).`
+            );
+            return true;
+        }
+
         const tracker = window.__activeTracker;
         const canUseHistory = Array.isArray(baselineRows) && tracker && typeof tracker.fetchRecentGiftHistory === "function";
         const selfKeys = resolveSelfKeys(hostName);
@@ -9516,6 +9761,18 @@ body.host-panel-dragging * {
             function markFailed(g) {
                 if (canTouchLiveUI()) markWinnerGiftFailed(g.recipient);
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
+            }
+
+            if (REHEARSAL_MODE) {
+                for (const gift of expected) {
+                    markConfirmed(gift, "dry-run");
+                }
+                finalizeStatementVerification(true, 0, statementId);
+                logEvent(
+                    "Rehearsal payout verification",
+                    `Suppressed and accepted ${expected.length} simulated gift(s).`
+                );
+                return true;
             }
 
             // 1) PRIMARY RECEIPT: authenticated persistent Gift History.
@@ -10621,6 +10878,19 @@ body.host-panel-dragging * {
         if (!(await ensureExclusiveTabOwnership())) {
             return { attempted: false, confirmed: false, reason: "ownership-lost" };
         }
+
+        if (REHEARSAL_MODE) {
+            logEvent(
+                "Rehearsal BON Pool contribution suppressed",
+                `${fmtBONCurrency(safeAmount)} BON`
+            );
+            return {
+                attempted: true,
+                confirmed: true,
+                dryRun: true,
+                reason: "rehearsal"
+            };
+        }
     
         const existing = getPoolContributionAttempt(giveawayId);
         if (existing) {
@@ -10939,6 +11209,19 @@ body.host-panel-dragging * {
                 `Refusing to send ${fmtBONCurrency(safeAmount)} BON to ${sanitizeNick(safeRecipient)} because this tab cannot prove exclusive giveaway ownership.`
             );
             return { attempted: false, reason: "ownership-lost" };
+        }
+
+        if (REHEARSAL_MODE) {
+            logEvent(
+                "Rehearsal gift suppressed",
+                `${sanitizeNick(safeRecipient)} | ${fmtBONCurrency(safeAmount)} BON | purpose=${purpose}`
+            );
+            return {
+                attempted: true,
+                confirmed: true,
+                dryRun: true,
+                transport: "rehearsal"
+            };
         }
 
         // ── Idempotency check ─────────────────────────────────────────────
@@ -11293,6 +11576,13 @@ body.host-panel-dragging * {
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
 
+        if (REHEARSAL_MODE) {
+            logEvent("Rehearsal chat suppressed", messageStr);
+            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                console.debug("[BON Giveaway rehearsal] chat suppressed:", messageStr);
+            }
+            return true;
+        }
         if (DEBUG_SETTINGS.disable_chat_output) return true;
 
         if (DEBUG_SETTINGS.verify_sendmessage) console.debug("sendMessage: caching chat context if needed");
