@@ -7287,39 +7287,112 @@ body.host-panel-dragging * {
 
         // Tell chat immediately that the entry window is closed. This deliberately
         // happens BEFORE sponsor reconciliation or any money-moving operation.
+        //
+        // The closing announcement has its own durable pending checkpoint because
+        // it happens before settlement is committed. If the POST lands and this
+        // page crashes/BFCache-handoffs before the response is persisted, recovery
+        // reconciles the exact message instead of posting it a second time.
         if (!giveawayData.__closingNoticeSent) {
-            const closedByTimer = Number.isFinite(Number(scheduledEndTs)) && nowAtSettlement >= scheduledEndTs;
-            try {
-                const closingNoticeSent = await sendMessage(
-                    closedByTimer
-                        ? "⏱️ [b][color=#FFDE59]Time is up — entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
-                        : "⏱️ [b][color=#FFDE59]Entries are now closed by the host.[/color][/b] Finalising sponsor accounting and settlement…",
-                    { requireExclusiveGiveawayOwnership: true }
-                );
+            const closedByTimer =
+                Number.isFinite(Number(scheduledEndTs)) &&
+                nowAtSettlement >= scheduledEndTs;
+            const closingMessage = closedByTimer
+                ? "⏱️ [b][color=#FFDE59]Time is up — entries are now closed.[/color][/b] Finalising sponsor accounting and settlement…"
+                : "⏱️ [b][color=#FFDE59]Entries are now closed by the host.[/color][/b] Finalising sponsor accounting and settlement…";
+            const preparedClosingMessage = prepareOutgoingMessage(closingMessage);
 
-                if (closingNoticeSent !== false) {
+            try {
+                let closingCheckpoint =
+                    giveawayData.__closingNoticeProgress &&
+                    typeof giveawayData.__closingNoticeProgress === "object"
+                        ? giveawayData.__closingNoticeProgress
+                        : null;
+
+                if (closingCheckpoint?.status === "sent") {
                     giveawayData.__closingNoticeSent = true;
-                    snapshotGiveaway({ force: true });
                 } else {
-                    logEvent(
-                        "Closing notice deferred",
-                        "Entries are closed locally, but the closing chat notice was not accepted for sending. Settlement will not move BON until the closing state can be announced."
-                    );
-                    snapshotGiveaway({ force: true });
-                    giveawayData.__ending = false;
-                    try {
-                        if (startButton) {
-                            startButton.disabled = false;
-                            startButton.textContent = "Retry settlement";
-                            startButton.title = "Retry the closing announcement and settlement";
-                            startButton.onclick = () => endGiveaway();
+                    if (closingCheckpoint?.status === "pending") {
+                        const reconciled = await reconcileSettlementOutput(
+                            closingCheckpoint,
+                            preparedClosingMessage
+                        );
+
+                        if (!reconciled.owned) {
+                            giveawayData.__ending = false;
+                            return;
                         }
-                    } catch {}
-                    return;
+
+                        if (reconciled.found) {
+                            closingCheckpoint.status = "sent";
+                            closingCheckpoint.messageId = reconciled.messageId;
+                            closingCheckpoint.confirmedAt = Date.now();
+                            giveawayData.__closingNoticeSent = true;
+                            snapshotGiveaway({ force: true });
+                        } else if (!reconciled.conclusive) {
+                            logEvent(
+                                "Closing notice reconciliation deferred",
+                                "The persisted closing announcement attempt could not be checked authoritatively; refusing to replay it."
+                            );
+                            giveawayData.__ending = false;
+                            return;
+                        }
+                    }
+
+                    if (!giveawayData.__closingNoticeSent) {
+                        const afterMessageId = await getLatestChatMessageId();
+
+                        if (!(await ensureExclusiveTabOwnership())) {
+                            giveawayData.__ending = false;
+                            return;
+                        }
+
+                        closingCheckpoint = {
+                            status: "pending",
+                            afterMessageId,
+                            preparedMessage: preparedClosingMessage,
+                            startedAt: Date.now()
+                        };
+                        giveawayData.__closingNoticeProgress = closingCheckpoint;
+
+                        if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                            logEvent(
+                                "Closing notice paused (checkpoint not durable)",
+                                "Could not persist/read back the pre-send closing-message checkpoint. The announcement was not sent."
+                            );
+                            giveawayData.__ending = false;
+                            return;
+                        }
+
+                        const closingNoticeSent = await sendMessage(
+                            closingMessage,
+                            { requireExclusiveGiveawayOwnership: true }
+                        );
+
+                        if (closingNoticeSent === false) {
+                            logEvent(
+                                "Closing notice deferred",
+                                "Entries are closed locally, but the closing chat notice was not accepted for sending. Settlement will not move BON until the closing state can be announced."
+                            );
+                            giveawayData.__ending = false;
+                            try {
+                                if (startButton) {
+                                    startButton.disabled = false;
+                                    startButton.textContent = "Retry settlement";
+                                    startButton.title = "Retry the closing announcement and settlement";
+                                    startButton.onclick = () => endGiveaway();
+                                }
+                            } catch {}
+                            return;
+                        }
+
+                        closingCheckpoint.status = "sent";
+                        closingCheckpoint.sentAt = Date.now();
+                        giveawayData.__closingNoticeSent = true;
+                        snapshotGiveaway({ force: true });
+                    }
                 }
             } catch (e) {
                 logEvent("Closing notice warning", String(e?.message || e));
-                snapshotGiveaway({ force: true });
                 giveawayData.__ending = false;
                 try {
                     if (startButton) {
@@ -7862,7 +7935,20 @@ body.host-panel-dragging * {
                 settlement.refundAfterMessageId = refundAfterMessageId;
                 snapshotGiveaway({ force: true });
 
+                let refundSendFailure = false;
+
                 for (const refund of sponsorRefunds) {
+                    // Every planned refund belongs to the verification set, even
+                    // when giftBon() cannot initiate it. Otherwise a durable-ledger
+                    // failure could be omitted from verification and settlement
+                    // could incorrectly complete with a sponsor left unpaid.
+                    const expectedRefund = {
+                        recipient: refund.name,
+                        amount: refund.amount,
+                        purpose: GIFT_PURPOSE.SPONSOR_REFUND
+                    };
+                    refundExpectedGifts.push(expectedRefund);
+
                     const result = await giftBon(
                         refund.name,
                         refund.amount,
@@ -7882,23 +7968,23 @@ body.host-panel-dragging * {
                     }
 
                     if (
-                        result?.attempted ||
-                        result?.reason === "duplicate" ||
                         result?.reason === "pending" ||
                         result?.reason === "ownership-lost"
                     ) {
-                        const expectedRefund = {
-                            recipient: refund.name,
-                            amount: refund.amount,
-                            purpose: GIFT_PURPOSE.SPONSOR_REFUND
-                        };
-                        refundExpectedGifts.push(expectedRefund);
-                        if (
-                            result?.reason === "pending" ||
-                            result?.reason === "ownership-lost"
-                        ) {
-                            refundDeferredGifts.push(expectedRefund);
-                        }
+                        refundDeferredGifts.push(expectedRefund);
+                    }
+
+                    if (
+                        !result?.attempted &&
+                        result?.reason !== "duplicate" &&
+                        result?.reason !== "pending" &&
+                        result?.reason !== "ownership-lost"
+                    ) {
+                        refundSendFailure = true;
+                        logEvent(
+                            "Sponsor refund not initiated",
+                            `${sanitizeNick(refund.name)} | ${fmtBONCurrency(refund.amount)} BON | reason=${result?.reason || "unknown"}`
+                        );
                     }
 
                     if (PAYOUT_GIFT_GAP_MS > 0) {
@@ -7930,8 +8016,10 @@ body.host-panel-dragging * {
                     }
                 } catch (e) { /* statements are best-effort */ }
 
-                let refundsVerified = refundExpectedGifts.length === 0;
-                if (refundExpectedGifts.length) {
+                let refundsVerified =
+                    refundExpectedGifts.length === 0 &&
+                    !refundSendFailure;
+                if (refundExpectedGifts.length && !refundSendFailure) {
                     refundsVerified = await verifySponsorRefundGifts(
                         refundExpectedGifts,
                         giveawayData.host,
