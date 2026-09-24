@@ -50,18 +50,36 @@ jobs:
           print(json.dumps(payload))
           PY
 
-          curl             --fail-with-body             --silent             --show-error             --request PATCH             --header "Accept: application/vnd.github+json"             --header "Authorization: Bearer ${GIST_TOKEN}"             --header "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/gists/${GIST_ID}"             --data-binary @/tmp/gist-payload.json             > /tmp/gist-response.json
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --request PATCH \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GIST_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/gists/${GIST_ID}" \
+            --data-binary @/tmp/gist-payload.json \
+            > /tmp/gist-response.json
 
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
 
+          source = Path(os.environ["SOURCE_FILE"]).read_text(encoding="utf-8")
           response = json.loads(Path("/tmp/gist-response.json").read_text(encoding="utf-8"))
           gist_file = os.environ["GIST_FILE"]
+          published = response.get("files", {}).get(gist_file)
 
-          if gist_file not in response.get("files", {}):
+          if not published:
               raise SystemExit(f"Gist update response does not contain {gist_file!r}")
 
-          print(f"Published {gist_file} to gist {os.environ['GIST_ID']}.")
+          if published.get("truncated"):
+              raise SystemExit("Gist API returned truncated content; refusing an unverified publish")
+
+          if published.get("content") != source:
+              raise SystemExit("Published Gist content does not match the repository userscript")
+
+          print(f"Published and verified {gist_file} in gist {os.environ['GIST_ID']}.")
           PY
