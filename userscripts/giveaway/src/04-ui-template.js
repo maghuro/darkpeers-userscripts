@@ -333,6 +333,21 @@
             >
           </label>`).join('')}
       </div>
+
+      <div class="settings-group" aria-label="Safety and Testing" data-settings-group="safety-testing">
+        <div class="settings-group__header">
+          <p class="settings-group__title">Safety & Testing</p>
+        </div>
+        <label class="settings-row" title="Rehearsal/debug mode suppresses userscript chat output and all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
+          <span class="settings-row__label">Rehearsal / Debug mode</span>
+          <input
+            type="checkbox"
+            id="rehearsalModeToggle"
+            title="No userscript chat output or BON transfers. Changing this setting reloads the page."
+            class="settings-row__toggle"
+          >
+        </label>
+      </div>
     </div>
   </div>
 
@@ -350,7 +365,6 @@
       <li><code>!bon&nbsp;</code>         <span class="desc">Show pot amount</span></li>
       <li><code>!range&nbsp;</code>       <span class="desc">Show valid range</span></li>
       <li><code>!scale&nbsp;</code>      <span class="desc">Show scaling progress</span></li>
-      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">Toggle rigging (fun)</span></li>
       <li><code>!help&nbsp;</code>        <span class="desc">Show this list in chat</span></li>
       <li><code>!stats&nbsp;[user]</code>   <span class="desc">Show saved stats</span></li>
       <li><code>!top&nbsp;[N]</code>       <span class="desc">Top winners (by wins)</span></li>
@@ -358,21 +372,23 @@
       <li><code>!sponsors&nbsp;[N]</code>  <span class="desc">Top sponsors</span></li>
       <li><code>!unlucky&nbsp;[N]</code>   <span class="desc">Most losses</span></li>
 
-      <li class="section-label">Host-Only&nbsp;Commands</li>
+      <li class="section-label">Host or Staff Emergency Commands</li>
       <li class="full-span">
           <code>!time add&nbsp;N&nbsp;/&nbsp;remove&nbsp;N&nbsp;</code>
           <span class="desc">Adjust remaining minutes</span>
       </li>
+      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">Toggle rigging (visual only)</span></li>
+      <li><code>!end&nbsp;[host]</code>   <span class="desc">Host: !end. Staff: !end &lt;host&gt;</span></li>
+      <li><code>!naughty&nbsp;</code>       <span class="desc">list/add/remove a user</span></li>
+      <li class="naughty-alert">
+        ⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************
+      </li>
+
+      <li class="section-label">Host-Only&nbsp;Commands</li>
       <li><code>!reminder&nbsp;</code>    <span class="desc">Send reminder msg</span></li>
       <li><code>!addbon&nbsp;</code>      <span class="desc">Add BON to pot</span></li>
       <li><code>!winners&nbsp;N</code>    <span class="desc">Set number of winners</span></li>
       <li><code>!maxwinners&nbsp;N</code> <span class="desc">Set max scaled winners</span></li>
-      <li><code>!end&nbsp;</code>         <span class="desc">End the giveaway</span></li>
-
-      <li><code>!naughty&nbsp;</code>     <span class="desc">list/add/remove a user</span></li>
-      <li class="naughty-alert">
-        ⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************
-      </li>
     </ul>
   </div>
 
