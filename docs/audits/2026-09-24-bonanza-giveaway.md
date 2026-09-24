@@ -220,8 +220,8 @@ All times below are UTC.
 | 17:31:24 | Sponsor replay bug duplicated the six already counted gifts in the displayed pot |
 | 17:33:56 | weedsmoke entered 42 |
 | 17:34:07 | neuczarny entered 56 |
-| 17:37:17 | Host used `!addtime 5` successfully |
 | 17:37:06 | meindp entered 83 |
+| 17:37:17 | Host used `!addtime 5` successfully |
 | 17:40:00 | Host used `!reminder`; no immediate reminder was sent due to the manual-reminder suppression bug |
 | 17:42:55 | Host added 5 minutes |
 | 17:43:05 | Reminder posted |
@@ -323,6 +323,8 @@ That gap does not affect the financial verification:
 - winner payments and BON Pool settlement are independently persisted.
 
 The public audit intentionally excludes unrelated casual chat and historical DarkPeers transactions outside this giveaway.
+
+Historical BONanza leaderboard counters such as all-time sponsor totals and `biggestSponsor` are not used in pot, winner or settlement calculations. The browser evidence export did not include the separate persistent stats store, so those historical counters are outside the independently verified scope of this settlement audit. The transient `!sponsors` output replayed during the 17:52 restore is therefore not treated as evidence of the final historical-stats state.
 
 ## Final reconciliation
 
