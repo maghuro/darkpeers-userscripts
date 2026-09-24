@@ -202,7 +202,9 @@
 //     Main Chat server timestamps, host lockouts cannot block emergency recovery,
 //     winner-count controls are host-only, dead sponsor chat fallback is removed,
 //     public winner names use the same anti-ping sanitization as other chat output,
-//     restore can remain entry-live while sponsor accounting is unavailable, and a
+//     settlement message checkpoints use the Main Chat cursor while gift diagnostics
+//     use the System cursor, restore can remain entry-live while sponsor accounting is
+//     unavailable, and a
 //     rehearsal mode suppresses every script chat message and BON-moving operation.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
@@ -7796,7 +7798,7 @@ body.host-panel-dragging * {
                 // The previous attempt is authoritatively absent. Any replay is a
                 // new side-effect window, so give it a fresh cursor/timestamp and
                 // durably persist that boundary before sending again.
-                checkpoint.afterMessageId = await getLatestChatMessageId();
+                checkpoint.afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                 checkpoint.startedAt = Date.now();
                 checkpoint.preparedMessage =
                     typeof checkpoint.preparedMessage === "string"
@@ -7812,7 +7814,7 @@ body.host-panel-dragging * {
                 }
                 replayingPendingCheckpoint = true;
             } else {
-                const afterMessageId = await getLatestChatMessageId();
+                const afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                 if (!(await ensureExclusiveTabOwnership())) {
                     giveawayData.__ending = false;
                     return false;
@@ -7939,7 +7941,7 @@ body.host-panel-dragging * {
                             giveawayData.__ending = false;
                             return;
                         } else {
-                            closingCheckpoint.afterMessageId = await getLatestChatMessageId();
+                            closingCheckpoint.afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
                             closingCheckpoint.startedAt = Date.now();
                             closingCheckpoint.preparedMessage =
                                 typeof closingCheckpoint.preparedMessage === "string"
@@ -7961,7 +7963,7 @@ body.host-panel-dragging * {
                         // host-close wording. Preserve that exact payload; only
                         // create a fresh checkpoint when no pending attempt exists.
                         if (closingCheckpoint?.status !== "pending") {
-                            const afterMessageId = await getLatestChatMessageId();
+                            const afterMessageId = await getLatestChatMessageId(DARKPEERS_MAIN_CHATROOM_ID);
 
                             if (!(await ensureExclusiveTabOwnership())) {
                                 giveawayData.__ending = false;
@@ -8652,7 +8654,7 @@ body.host-panel-dragging * {
                 );
                 const refundAfterMessageId = hasSavedRefundCursor
                     ? settlement.refundAfterMessageId
-                    : (sponsorRefunds.length ? await getLatestChatMessageId() : null);
+                    : (sponsorRefunds.length ? await getLatestChatMessageId(DARKPEERS_CHATROOM_ID) : null);
 
                 settlement.refundNotBeforeTs = refundNotBeforeTs;
                 settlement.refundAfterMessageId = refundAfterMessageId;
@@ -9043,7 +9045,7 @@ body.host-panel-dragging * {
             );
             const payoutAfterMessageId = hasSavedPayoutCursor
                 ? settlement.payoutAfterMessageId
-                : await getLatestChatMessageId();
+                : await getLatestChatMessageId(DARKPEERS_CHATROOM_ID);
 
             settlement.payoutNotBeforeTs = payoutNotBeforeTs;
             settlement.payoutAfterMessageId = payoutAfterMessageId;
@@ -9526,9 +9528,11 @@ body.host-panel-dragging * {
         }
     }
 
-    async function getLatestChatMessageId() {
+    async function getLatestChatMessageId(roomId = chatroomId) {
         try {
-            const url = new URL(`/api/chat/messages/${chatroomId}`, location.origin);
+            const targetRoomId = String(roomId || "").trim();
+            if (!targetRoomId) return null;
+            const url = new URL(`/api/chat/messages/${targetRoomId}`, location.origin);
             const res = await fetchWithTimeout(url, { credentials: "include" }, 5000);
             if (!res || !res.ok) return null;
             const payload = await res.json();
