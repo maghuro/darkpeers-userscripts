@@ -1,36 +1,27 @@
 // ==UserScript==
-// @name         BONanza Giveaway — Maghuro Fork
+// @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
-// @description  UNIT3D BON giveaways for DarkPeers and Portugas with verified prizes, sponsorships and BON Pool contributions
-// @version      1.4.3
+// @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
+// @version      1.5.0
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
-// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
-// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/BONanza_Giveaway.user.js
+// @updateURL    https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @downloadURL  https://raw.githubusercontent.com/maghuro/unit3d-userscripts/main/userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+// @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @license      GPL-3.0-or-later
 // @match        https://darkpeers.org/
-// @match        https://*.portugas.org/
 // @run-at document-idle
 // ==/UserScript==
 
-// Generic UNIT3D fork of "Blutopia BON Giveaway" v6.2.2 by Nums (GPL-3.0-or-later).
-// Canonical release path: userscripts/giveaway/BONanza_Giveaway.user.js.
-// The legacy DarkPeers filename may mirror this release temporarily so existing
-// installations can migrate to the canonical update URL without interruption.
-//
+// DarkPeers-only fork of "Blutopia BON Giveaway" v6.2.2 by Nums (GPL-3.0-or-later).
 // Changes in this fork:
-//   - Site-specific behavior is isolated behind adapters. Current profiles:
-//     DarkPeers (English) and Portugas (Portuguese, Portugal).
-//   - Gifts use the tracker's real Send Gift form and are verified against
-//     authenticated Gift History before any chat/SystemBot fallback.
-//   - BON Pool contributions use the site's real page contract and require
-//     independent post-transfer confirmation before success is announced.
-//   - Portugas entry intake uses the authenticated chat API because its live
-//     WebSocket/DOM can lag; DarkPeers keeps the mature DOM observer path.
-//   - All user-visible text is centralized in a bilingual EN / PT-PT catalogue.
+//   - All non-DarkPeers tracker support, the upload.cx extra commands and the
+//     openuserjs update check have been removed.
+//   - A host-selected percentage (0-30%, steps of 5) of the final pot is
+//     contributed directly to the DarkPeers BON Pool (/bon-pool).
 //   - Winning number is drawn with crypto.getRandomValues (Math.random fallback).
 //   - Storage keys and panel IDs are namespaced; if the original script is also
 //     installed on the page, this one stands down; its toolbar button stays but
@@ -186,26 +177,13 @@
 //     Live-result polish: final sponsor-message recaps use a 900-visible-character
 //     website-first limit, exact guesses say "spot on!", and the MESSAGES sentinel
 //     uses canonical IRC 05 + bold instead of extended colour 16 for bridge reliability.
-//   - v1.4.0 generalizes BONanza into a single UNIT3D userscript for DarkPeers
-//     and Portugas, with site adapters, bilingual EN/PT-PT output, page-first gifts,
-//     verified Livewire/form BON Pool contributions, Portugas API-based entry polling,
-//     locale-safe usernames/amounts, and compact podium + remaining-winners results.
-//     The experimental probes and the one-off 1000 BON Pool write test are removed
-//     from the production release.
-//   - v1.4.1 polishes the production generalization: Portugas uses one wildcard
-//     host match, UNIT3D Gift History parses both decimal and locale-grouped BON
-//     amounts safely, and the latest PT-PT wording/result presentation refinements
-//     remain in the stable release.
-//   - v1.4.2 compacts PT-PT configuration labels and donation guidance so the
-//     450 px control panel stays readable without overflowing narrow controls.
-//     The winner-scaling fields also use the available row width more efficiently;
-//     BON Pool contribution choices now run from 0% to 50% in 5% steps.
-//   - v1.4.3 fixes authenticated-user resolution on current UNIT3D top navigation:
-//     DarkPeers now supports both class-on-link and legacy wrapper markup, while
-//     host identity consumers share the same resolver instead of depending on one
-//     tracker-specific .top-nav__username DOM shape.
-//
-//// Originally created as the DarkPeers BONanza fork by T.R.A.V.I.S. for the DarkPeers staff.
+//   - v1.5.0 deliberately restores the proven DarkPeers-only v1.3.26 engine after
+//     the multi-tracker v1.4.x refactor caused live regressions in sponsor detection,
+//     host controls and settlement reliability. Portugas support is removed. The
+//     DarkPeers-specific gift, Gift History, chat and BON Pool flows remain the
+//     known-good implementations, with only the current UNIT3D v9.2 top-nav user
+//     markup compatibility fix rebased on top.
+//// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
 // Original credits (Blutopia BON Giveaway)
@@ -360,1010 +338,8 @@
         throw err;
     }
 
-    // ── UNIT3D site profiles / adapters ─────────────────────────────
-    // The giveaway engine below is site-agnostic. Tracker/version differences live
-    // here and in the narrow transport helpers (chat, gifts, pool).
-    const SITE_PROFILES = Object.freeze({
-        "darkpeers.org": Object.freeze({
-            id: "darkpeers",
-            locale: "en",
-            bridgeMarkers: true,
-            chat: Object.freeze({
-                fallbackRoomId: 2,
-                entrySource: "dom",
-                entryPollMs: 0,
-                obfuscateDisplayNames: true
-            }),
-            gifts: Object.freeze({ allowChatFallback: true }),
-            pool: Object.freeze({
-                mode: "form",
-                path: "/bon-pool",
-                storePath: "/bon-pool/store",
-                totalLabel: "Total contributions:",
-                mineLabel: "Your contribution:"
-            })
-        }),
-        "portugas.org": Object.freeze({
-            id: "portugas",
-            locale: "pt-PT",
-            bridgeMarkers: false,
-            chat: Object.freeze({
-                fallbackRoomId: null,
-                entrySource: "api",
-                entryPollMs: 2000,
-                obfuscateDisplayNames: false
-            }),
-            gifts: Object.freeze({ allowChatFallback: false }),
-            pool: Object.freeze({
-                mode: "livewire",
-                path: "/pool",
-                storePath: null,
-                totalLabel: "Atual:",
-                balanceLabel: "Tens:"
-            })
-        })
-    });
-
-    const SITE_HOST = String(location.hostname || "").toLowerCase().replace(/^www\./, "");
-    const SITE = SITE_PROFILES[SITE_HOST] || null;
-    if (!SITE) {
-        console.warn(`[BONanza] Unsupported tracker host: ${location.hostname}`);
-        return;
-    }
-
-    // Central message catalogue starts here. During the adapter refactor existing
-    // English strings are moved here incrementally; Portugas is not enabled in
-    // metadata until the catalogue/adapter pass is complete.
-    const I18N = Object.freeze({
-        en: Object.freeze({
-            giftRefundNote: "Giveaway refund",
-            giftWinnerSingle: "🎉 You won! Enjoy your {amount} BON!",
-            giftWinnerRanked: "🎉 Congratulations on placing {rank}!",
-            poolManualCheck: "Check the BON Pool manually before retrying anything.",
-
-            durationHourOne: "{n} hour",
-            durationHourMany: "{n} hours",
-            durationMinuteOne: "{n} minute",
-            durationMinuteMany: "{n} minutes",
-            durationSecondOne: "{n} second",
-            durationSecondMany: "{n} seconds",
-
-            winnerWordOne: "winner",
-            winnerWordMany: "winners",
-            possibleWinners: "[b][color=#5DE2E7]{count} possible {word}[/color][/b]",
-            upToWinners: " (up to [b][color=#5DE2E7]{max}[/color][/b])",
-
-            introStandard: "{marker} I am hosting a giveaway for ",
-            introPool: "{marker} 💙 [b][color={poolColor}]{poolNameUpper} CONTRIBUTION GIVEAWAY[/color][/b] 💙\nI am hosting a giveaway for ",
-            introTaxes: "{marker} [b][color=#FF4F9A]RIGGING TAXES: {percent}% TO THE {poolNameUpper}[/color][/b]\nI am hosting a giveaway for ",
-            introOpenFor: "Open for [b][color=#1DDC5D]{duration}[/color][/b]. ",
-            pickNumber: "Pick a number [b]between [color=#DC3D1D]{start} and {end}[/color][/b]. ",
-            giftHostHint: "✨[b][color=#FB4F4F]Gift the host to add to the pot! [color={hintColor}]/gift {host} AMOUNT MESSAGE[/color][/color][/b]✨",
-            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] of the final pot (including sponsor gifts) will be contributed directly to the [b]{poolName}[/b]. Winners receive the remaining {remaining}%.",
-            introTaxAllocation: "\n[b][color=#FF4F9A]{percent}% rigging tax[/color][/b] will be taken from the final pot (including sponsor gifts) and paid directly into the [b]{poolName}[/b]. Winners keep the remaining {remaining}%. Entirely legitimate accounting. 😈",
-            riggedModeIntro: "\n[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] [i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i] 😈",
-            silentModeIntro: "\n[color=#ff3333][b]SILENT MODE ENABLED![/b][/color] [i][color=#B0B0B0]Command replies will be sent privately via /msg.[/color][/i] 🤫",
-
-            reminderTaxes: "🧾 [b][color=#FF4F9A]Rigging taxes: {percent}% to the {poolName}[/color][/b] 🧾\n",
-            reminderPool: "💙 [b][color={poolColor}]{poolName} contribution giveaway ({percent}% to the pool)[/color][/b] 💙\n",
-            reminderMain: "{marker} Ongoing giveaway for [b][color=#ffc00a]{amount} BON[/color][/b] | {winners} | Time left: [b][color=#1DDC5D]{duration}[/color][/b]. Pick a number [b]between [color=#DC3D1D]{start} and {end}[/color][/b]. [b][color=#5DE2E7]{custom}[/color][/b]\n{giftHint}",
-            reminderSilent: "(Silent mode is enabled — command replies are sent via /msg.) 🤫",
-            reminderRigged: "(Rigged mode is currently enabled, but the math is [b]definitely[/b] still legit) 😉",
-
-            sponsorsAddedOne: "{marker} Sponsors just added [color=#DC3D1D][b]{amount} BON[/b][/color] from [b]1 sponsor[/b]! ",
-            sponsorsAddedMany: "{marker} Sponsors just added [color=#DC3D1D][b]{amount} BON[/b][/color] from [b]{count} sponsors[/b]! ",
-            totalPotNow: "Total pot is now [b][color=#ffc00a]{amount} BON[/color][/b].",
-            withMessage: " with the message [i]\"{message}\"[/i]",
-            withMessages: " with the messages {messages}",
-            moreCount: " [i](+{count} more)[/i]",
-            sponsorMessageHeadingOne: "{marker} Sponsor message",
-            sponsorMessageHeadingMany: "{marker} Sponsor messages",
-            finalSponsorThanks: "{marker} Thank you to all the sponsors! Total sponsored: [color=#ffc00a][b]{amount} BON[/b][/color].\n[b]Sponsors:[/b] {sponsors}",
-            finalSponsorMessagesHeading: "{marker} [b]Messages from our sponsors:[/b]",
-
-            scalingIncreased: "[b][color={accent}]Scaling:[/color][/b] [b]Winners increased[/b]: {old} → {new} (+{delta}). Total scaling contributions: {total} BON. Threshold: {threshold} BON/winner.",
-            scalingMaxReached: " [b]Max winners reached[/b] ({cap}).",
-            scalingMaxReachedPlain: "[b][color={accent}]Scaling:[/color][/b] [b]Max winners reached[/b] ({cap}).",
-            scalingMaxReachedSoft: "[b][color={accent}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] ({cap}).[/color][/i]",
-            scalingProgressDetail: "{remaining} BON still needed for winner #{next} (progress: {progress}/{threshold} BON).",
-            scalingProgressPlain: "[b][color={accent}]Scaling:[/color][/b] [b]{detail}[/b]",
-            scalingProgressSoft: "[b][color={accent}]Scaling:[/color][/b] [i][color=#9aa0a6][b]{detail}[/b][/color][/i]",
-
-            winnerSummary: "🏆 {marker} Winning number: [b][color=#1DDC5D]{number}[/color][/b]. Winners drawn: [b][color=#5DE2E7]{winners}[/color][/b]. Total entrants: [b][color=#5DE2E7]{entrants}[/color][/b].",
-            fundingSummary: "Funding - Host-funded: [b][color=#ffc00a]{hostFunded} BON[/color][/b] | Sponsored: [b][color=#00abff]{sponsored} BON[/color][/b] | Total pot: [b][color=#FFC00A]{total} BON[/color][/b].",
-            exactGuess: "[color=#1DDC5D][b]SPOT ON[/b][/color]",
-            offBy: "[color=#FB4F4F]{diff} away from the result[/color]",
-            offByOne: "[color=#FB4F4F]1 number away from the result[/color]",
-            offByMany: "[color=#FB4F4F]{diff} numbers away from the result[/color]",
-            singleWinnerLine: "🥇 Congrats [b][color=#DC3D1D]{user}[/color][/b]! Guess [color=#1DDC5D][b]{guess}[/b][/color] was {accuracy} and wins [b][color=#FFC00A]{prize} BON[/color][/b].{note}",
-            podiumWinnerLine: "{medal} [b][color=#DC3D1D]{user}[/color][/b] — {place} — guess [color=#1DDC5D][b]{guess}[/b][/color], {accuracy} — [color=#FFC00A][b]{prize} BON[/b][/color]",
-            podiumWinnerPlace: "Winner",
-            podiumRankPlace: "{rank} place",
-            remainingWinnersLine: "Remaining winners: {winners}",
-            remainingWinnerItem: "{rank} {user} ({prize})",
-            tieResult: "{marker} We have a tie between {users}! [b][color=#DC3D1D]{winner}[/color][/b] wins the tie-breaker as their entry was submitted first!",
-            amountsAfterPool: "\n[color=#aaaaaa]Amounts shown are after the {percent}% {poolName} donation.[/color]",
-
-            poolConfirmed: "{marker} [b][color={poolColor}]{poolName} contribution confirmed:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨",
-            taxesConfirmed: "{marker} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]{amount} BON[/color][/b] successfully paid directly into the [b]{poolName}[/b]. The taxman is satisfied. 😈",
-            warningRefunds: "[color=#ff4f4f][b]Warning:[/b][/color] Some sponsor refunds could not be confirmed. Please verify manually: {missing}.",
-            warningWinnerGifts: "[color=#ff4f4f][b]Warning:[/b][/color] Some giveaway gifts could not be confirmed. Please manually verify BON for: {missing}.",
-            allSlotsFilled: "All [b][color=#ffc00a]{count}[/color][/b] slot(s) filled! Ending early with [b][color=#1DDC5D]{remaining}[/color][/b] remaining!",
-            alertInvalidAmount: "Please enter a valid numeric giveaway amount.",
-            alertPositiveAmount: "Please enter a giveaway amount greater than zero.",
-            alertMinimumPot: "GIVEAWAY ERROR: {winners} weighted winner(s) need a pot of at least {minimum} BON so every winner receives at least 1 BON.",
-            alertOwnership: "Could not acquire exclusive giveaway ownership. Another tracker tab may already be running a giveaway, or this browser does not provide the Web Locks safety API.",
-            alertChatroom: "GIVEAWAY ERROR: Unable to determine the active UNIT3D chat room.",
-            alertBalanceUnavailable: "GIVEAWAY ERROR: Unable to verify your current BON balance right now. Please try again shortly.",
-            alertBalanceLow: "GIVEAWAY ERROR: The amount entered ({amount}) is above your current BON ({balance}).",
-            alertFinalSponsorSync: "Giveaway warning: final sponsor sync failed after 3 attempts. Settlement will use the last confirmed sponsor total; verify any very recent gifts manually.",
-            alertPoolUnconfirmed: "BON Pool warning: the {amount} BON contribution could not be confirmed. Check {path} manually before retrying anything.",
-            alertPoolZeroUnconfirmed: "BON Pool warning: the zero-entry full-pot contribution of {amount} BON could not be confirmed. Check {path} manually before retrying anything.",
-
-            entryNaughtyBlocked: "[color=#d85e27]{user}[/color], you are on the [b]naughty list[/b] and may not enter the giveaway or use its commands.",
-            entryAlreadyEntered: "🚫 Sorry [color=#d85e27]{user}[/color], but [color=#32cd53]you[/color] already entered with number [color=#DC3D1D][b]{number}[/b][/color]!",
-            entryNumberTaken: "🚫 Sorry [color=#d85e27]{user}[/color], but [color=#32cd53]{other}[/color] already entered with number [color=#DC3D1D][b]{number}[/b][/color]!",
-            entryOutOfRange: "🚫 Sorry [color=#d85e27]{user}[/color], but the number [color=#DC3D1D][b]{number}[/b][/color] is outside of the given range! Enter a number between [color=#DC3D1D][b]{start}[/b] and [b]{end}[/b][/color]!",
-            entryConfirmed: "[color=#d85e27]{user}[/color] has entered with the number [color=#DC3D1D][b]{number}[/b][/color]! Time remaining: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            rigHintEntry: "(entry logged under [b]highly suspicious[/b] conditions) 😈",
-            spamLockout: "[color=red][b]Spamming detected! {user} locked out for {seconds} seconds.[/b][/color]",
-
-            timeLeftReply: "Time left: [b][color=#1DDC5D]{remaining}[/color][/b] {marker}",
-            timeUsage: "[color=red]Usage:[/color] !time add|remove <minutes>",
-            timeUsageExtended: "[color=red]Usage:[/color] !time add|remove <minutes> or !addtime|!removetime <minutes>",
-            timeAdjusted: "{verb} [color=#DC3D1D][b]{minutes}[/b][/color] {minuteWord} {prep} the giveaway. New time left: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeAddedOne: "Added [color=#DC3D1D][b]1[/b][/color] minute to the giveaway. New time left: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeAddedMany: "Added [color=#DC3D1D][b]{minutes}[/b][/color] minutes to the giveaway. New time left: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeRemovedOne: "Removed [color=#DC3D1D][b]1[/b][/color] minute from the giveaway. New time left: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeRemovedMany: "Removed [color=#DC3D1D][b]{minutes}[/b][/color] minutes from the giveaway. New time left: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            wordAdded: "Added",
-            wordRemoved: "Removed",
-            wordTo: "to",
-            wordFrom: "from",
-
-            noEntriesYet: "[b]No entries yet! {total} numbers available.[/b]",
-            entriesSummary: "{marker} Entries – {taken}/{total} [b]([color=#1DDC5D]{free} free[/color][/b]): {list}",
-            noSavedStats: "[b]No saved stats yet for {user}.[/b]",
-            noHistory: "[b]No giveaway history saved yet.[/b]",
-            largestGiveaways: "[b]📈 Largest giveaways: {list}[/b]",
-            giftUsage: "{marker} To send a gift type: /gift {host} amount message",
-            giveawayAmount: "Giveaway Amount: [b][color=#FFB700]{amount} BON[/color][/b]",
-            rangeValid: "Numbers between [color=#DC3D1D]{start} and {end}[/color] inclusive are valid.",
-            noActiveGiveaway: "There is no active giveaway right now.",
-            luckyDisabled: "🚫 Sorry [color=#d85e27]{user}[/color], but [color=#999999]!lucky[/color] has been disabled for this giveaway.",
-            randomDisabled: "🚫 Sorry [color=#d85e27]{user}[/color], but [color=#999999]!random[/color] has been disabled for this giveaway.",
-            noFreeNumbers: "All numbers are taken — no free numbers left!",
-            noFreeNumbersAlt: "There are no free numbers left!",
-            luckyNumber: "The current giveaway lucky number is: [b][color=#1DDC5D]{number}[/color][/b].",
-            luckyeEntered: "[color=#d85e27]{user}[/color] used [color=#999999]!luckye[/color] and entered with lucky number [color=#1DDC5D][b]{number}[/b][/color]! Time remaining: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            randomEntered: "[color=#d85e27]{user}[/color] has entered with the number [color=#DC3D1D][b]{number}[/b][/color]! Time remaining: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            yourNumber: "[color=#d85e27]{user}[/color] your number is [color=#DC3D1D][b]{number}[/b][/color]",
-            notEntered: "[color=#d85e27]{user}[/color] you are not currently in the giveaway.",
-            freeDisabled: "🚫 Sorry [color=#d85e27]{user}[/color], !free disabled",
-            freeNumbers: "Free numbers: {numbers}.",
-            rigHintLucky: "(approved by the Official Rigging Committee™) ✅",
-            rigHintRandom: "(chosen by our [b]totally unbiased[/b] chaos engine)",
-            rigHintFree: "(these are some [b]suspiciously good[/b] numbers, trust me...) 😏",
-            rigHintPot: "(pot size [b]carefully curated[/b] by our rigging department)",
-            rigHintRange: "(this range has been [b]pre-approved[/b] for maximum riggability)",
-
-            rigEnabled: "{marker} [color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] [i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i]",
-            rigAlready: "[color=#FF4F9A][b]RIGGED MODE is already active![/b][/color]",
-            rigDisabled: "{marker} [color=#32cd53][b]Rigged mode disabled.[/b][/color] [i][color=#A0E7AF]Back to boring, fully transparent fairness.[/color][/i]",
-            rigNotEnabled: "[color=#32cd53][b]Rigged mode isn&#39;t enabled.[/b][/color]",
-            rigDenyRig: [
-                "🛑 Nice try {user}. The Rigging Lever™ is behind host-only glass.",
-                "🚨 Unauthorized rig attempt by {user}. Deploying the Fairness Police…",
-                "{user} tried to rig the giveaway. The universe said: “lol, no.”",
-                "Sorry {user} — only the host has a license to operate the Rig-O-Matic™."
-            ],
-            rigDenyUnrig: [
-                "Hold up {user}… you can’t unrig what you never rigged.",
-                "🚫 Access denied, {user}. The “Unrig” button is guarded by a tiny, angry moderator.",
-                "Nice try {user}. Only the host can turn off the Chaos Generator™.",
-                "{user} reached for the unrig switch… and touched nothing but air."
-            ],
-
-            winnersUsage: "[color=red]Usage:[/color] !winners 1‑{max}",
-            winnersInsufficientPot: "[color=red]Cannot set {winners} winners with the current {pot} BON pot. Weighted payouts require at least {minimum} BON.[/color]",
-            hostWinnerAdjustment: "[b][color={accent}]Host adjustment:[/color][/b] [b]Winners {direction}[/b]: [b][color=#5DE2E7]{old} → {new} ({sign}{delta})[/color][/b].",
-            wordIncreased: "increased",
-            wordDecreased: "decreased",
-            scalingCapReset: " [i][color=#9aa0a6]Scaling cap also reset to {count} — use !maxwinners to raise.[/color][/i]",
-            winnersSet: "Number of winners set to [color=#1DDC5D][b]{count}[/b][/color].{capNote}",
-            scalingDisabled: "[color=red]Scaling is not enabled for this giveaway.[/color]",
-            maxWinnersUsage: "[color=red]Usage:[/color] !maxwinners {base}‑{max}",
-            maxWinnersSet: "Max scaled winners set to [color=#1DDC5D][b]{max}[/b][/color]. Current effective winners: [b][color=#5DE2E7]{effective}[/color][/b].",
-            scalingUnavailable: "Winner scaling is not available for this giveaway.",
-
-            naughtyAddUsage: "[color=red]Usage:[/color] !naughty add username",
-            naughtyRemoveUsage: "[color=red]Usage:[/color] !naughty remove username",
-            naughtyUsage: "[color=red]Usage:[/color] !naughty (add|remove|list) username",
-            naughtyHostDenied: "[color=red][b]The host can't be added to the naughty list![/b][/color]",
-            naughtyAdded: "{marker} [color=#FFDE59]{user} added to the naughty list and removed from the giveaway.[/color]",
-            naughtyRemoved: "🥳 [color=#7DDA58]{user} removed from the naughty list![/color]",
-            naughtyList: "[color=#FFDE59]Naughty list: [b]{users}[/b][/color]",
-            naughtyEmpty: "Naughty list is empty.",
-            adminEndUsage: "[color=red]Admins must specify whose giveaway to end. Example: !end {host}[/color]",
-            helpCommands: "Commands are {commands}.",
-
-            hostTopupBusy: "[b][color=#FFDE59]A host BON top-up is already being verified. Please wait a moment.[/color][/b]",
-            hostTopupUsage: "[b][color=red]Invalid usage.[/color] Example: !addbon 100[/b]",
-            hostTopupBalanceUnavailable: "[b][color=red]Unable to verify your current BON balance right now. Please try !addbon again shortly.[/color][/b]",
-            hostTopupInsufficient: "[b][color=red]You only have {balance} BON right now, so you can't increase the pot to {total} BON. Wait for more BON (or sponsor gifts) and try again.[/color][/b]",
-
-            zeroEntryPoolOutcome: "Unfortunately, no one has entered the giveaway, so there are no winners.\n💙 The full pot of [b][color={poolColor}]{amount} BON[/color][/b] will be contributed directly to the [b]{poolName}[/b].",
-            zeroEntryPoolConfirmed: "{marker} [b][color={poolColor}]{poolName} contribution confirmed:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] paid directly into the pool.\nNo entrants — 100% of the pot was contributed. ✨",
-            statsHeader: "[b]{marker} Stats: [color=#d85e27]{user}[/color] - {parts}[/b]",
-            statEntered: "Entered [color=#ffc00a]{value}[/color]",
-            statWins: "Wins [color=#1DDC5D]{value}[/color]",
-            statLosses: "Losses [color=#CE2E30]{value}[/color]",
-            statWR: "WR [color=#1DDC5D]{value}%[/color]",
-            statWon: "Won [color=#ffc00a]{value} BON[/color]",
-            statBest: "Best [color=#ffc00a]{value} BON[/color]",
-            statSponsored: "Sponsored [color=#00abff]{value} BON[/color]",
-            statHosted: "Hosted {value}",
-            statGiven: "Given [color=#ffc00a]{value} BON[/color]",
-            statSponsorsReceived: "Sponsors received [color=#00abff]{value} BON[/color]",
-            statCurrentSponsors: "Current sponsors [color=#00abff]{value} BON[/color]",
-            leaderboardHeader: "[b]{marker} {emoji} {label}: {list}[/b]",
-            leaderboardTopWinners: "Top winners",
-            leaderboardMostBon: "Most BON won",
-            leaderboardTopSponsors: "Top all-time sponsors",
-            leaderboardUnlucky: "Unlucky",
-            noWinnerStats: "[b]No winner stats saved yet.[/b]",
-            noSponsorStats: "[b]No sponsor stats saved yet.[/b]",
-            noUnluckyStats: "[b]No unlucky stats saved yet.[/b]",
-            unluckyEntered: "entered",
-            unknownDate: "unknown date",
-
-            scaleStatus: "[b][color={accent}]Scaling Status:[/color][/b] Winners: [b][color=#5DE2E7]{effective}[/color][/b] (base {base}{extra}, max {cap}). Extra-winner threshold: [b]{threshold} BON[/b] ({mode}). Scaling contributions: [b][color=#ffc00a]{total} BON[/color][/b]. ",
-            scaleExtra: " + {count} from scaling",
-            scaleModeCustom: "custom",
-            scaleModeAuto: "auto",
-            scaleReached: "[b]Max winners reached[/b].",
-            scaleProgress: "Progress to winner #{next}: [b]{progress} / {threshold} BON[/b]. Still needed: [b][color=#FFDE59]{remaining} BON[/color][/b].",
-
-            freeSuggestionNone: " There are no free numbers left!",
-            freeSuggestionList: " Here are some free numbers you can try: [b][color=#1DDC5D]{numbers}[/color][/b].",
-
-            hostTopupAdded: "Host added [color=#DC3D1D][b]{amount} BON[/b][/color].",
-            hostTopupTotal: "Total pot: [b][color=#ffc00a]{amount} BON[/color][/b].",
-            hostTopupScaling: "[b][color={accent}]Scaling:[/color][/b] [b]Winners increased[/b]: [b][color=#5DE2E7]{old} → {new} (+{delta})[/color][/b].",
-
-            rigFinalNote: " (Rigged mode was active, but winners were still chosen [b]fairly[/b]… allegedly.) 👀",
-            settlementScalingIncrease: "[b][color={accent}]Scaling:[/color][/b] [b]Winners increased[/b] by [b][color=#5DE2E7]+{count}[/color][/b] due to sponsorships.",
-            taxesDue: "🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]{amount} BON[/color][/b] ({percent}% of the pot) reserved for direct payment into the [b]{poolName}[/b]. Confirmation follows after settlement.",
-            poolAllocation: "💙 [b][color={poolColor}]{poolName} allocation:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] ({percent}% of the pot) reserved for direct contribution.",
-            grossPrizeTaxes: "\n[color=#aaaaaa](Gross prize: {gross} BON · Taxes: {tax} BON)[/color]",
-            grossPrizePool: "\n[color=#aaaaaa](Gross prize: {gross} BON · {poolName}: {pool} BON)[/color]",
-
-            zeroEntryRefundBase: "Unfortunately, no one has entered the giveaway, so there are no winners.\n{marker} BON Pool is [b]0%[/b]: the host-funded [b][color=#ffc00a]{hostFunded} BON[/color][/b] remains with the host.",
-            zeroEntryRefunds: " Sponsor contributions will be returned in full: {refunds}.",
-            zeroEntryNoRefunds: " There are no sponsor contributions to return.",
-            uiAppTitle: "BONanza Giveaway",
-            uiToolbarLabel: "Giveaway",
-            uiConflictTitle: "Disabled: the original BON Giveaway script is also installed. Remove one of them.",
-            uiConflictToast: "DEACTIVATE THE ORIGINAL GIVEAWAY SCRIPT",
-            uiMinimizePanel: "Minimize panel",
-            uiReset: "Reset",
-            uiSettings: "Settings",
-            uiCommands: "Commands",
-            uiPresets: "— Presets —",
-            uiLoad: "Load",
-            uiSave: "Save",
-            uiLoadPresetTitle: "Load selected preset",
-            uiSavePresetTitle: "Save current form as a preset",
-            uiDeletePresetTitle: "Delete selected preset",
-            uiGiveawayAmount: "Giveaway Amount",
-            uiStartNumber: "Start #",
-            uiEndNumber: "End #",
-            uiTimeMin: "Time (min)",
-            uiReminders: "# Reminders",
-            uiEveryMin: "Every (min)",
-            uiWinners: "# Winners",
-            uiMaxWinners: "Max Winners",
-            uiMaxWinnersTitle: "Hard cap: {max}. Scaling can’t exceed this.",
-            uiScaleBonTitle: "Additional BON required to unlock each extra winner. Leave empty to auto-calculate from the starting pot.",
-            uiScaleBonShortTitle: "Additional BON required to unlock each extra winner.",
-            uiBonPerWinner: "BON/+Winner",
-            uiAuto: "auto",
-            uiMaxChars: "Max 100 chars",
-            uiCustomMessage: "Custom Message",
-            uiPoolDonation: "{poolName} donation",
-            uiPoolDonationTitle: "Share of the final pot (host + sponsors) donated to the {poolName}. 0% runs a standard giveaway.",
-            uiStart: "Start",
-            uiStop: "Stop",
-            uiStopTitle: "This will end the giveaway and send gifts to the winners",
-            uiUser: "User",
-            uiEntryNumber: "Entry #",
-            uiWinner: "Winner",
-            uiPrizeBon: "Prize BON",
-            uiGift: "Gift",
-            uiGiveawayLog: "Giveaway Log",
-            uiNoEvents: "No events yet.",
-            uiCopyLog: "Copy log",
-            uiClearLog: "Clear log",
-            uiStatements: "Giveaway statements",
-            uiStatementsTitle: "The last {count} giveaway statements are kept on this browser.",
-            uiSaveTxt: "Save .txt",
-            uiSaveTxtTitle: "Download the selected statement as a .txt file",
-            uiCopy: "Copy",
-            uiCopyStatementTitle: "Copy the selected statement to the clipboard",
-
-            uiEntryModes: "Entry Modes",
-            uiChatReplies: "Chat & Replies",
-            uiScalingRules: "Scaling & Rules",
-            uiToggleAll: "Toggle all",
-            uiToggleEntryModes: "Toggle all options in Entry Modes only.",
-            uiToggleChatReplies: "Toggle all options in Chat & Replies only.",
-            uiToggleScalingRules: "Toggle all options in Scaling & Rules only.",
-            uiRandom: "Random",
-            uiRandomTip: "Enable !random (enter with a random free number).",
-            uiLucky: "Lucky",
-            uiLuckyTip: "Enable !lucky (show lucky #) and !luckye (enter with lucky #).",
-            uiFree: "Free",
-            uiFreeTip: "Enable !free (show some available numbers).",
-            uiEntryReplies: "Entry Replies",
-            uiEntryRepliesTip: "When enabled, the bot replies when an entry is logged. Disable to reduce chat spam.",
-            uiSilentMode: "Silent Mode",
-            uiSilentModeTip: "When enabled, command replies are sent privately via /msg instead of public chat.",
-            uiScaleWinners: "Scale Winners",
-            uiScaleWinnersTip: "When enabled, winners may increase based on sponsorship BON (up to the max set in the giveaway form).",
-            uiRiggedMode: "Rigged mode (visual only)",
-            uiRiggedModeTip: "Rigged mode is purely cosmetic… allegedly.",
-            uiShowLog: "Show Giveaway Log",
-            uiShowLogTip: "Only controls Giveaway Log panel visibility. Logging still continues in the background.",
-            uiRiggedWatermark: "RIGGED",
-            uiRigOnTitle: "Rigged mode is ON (cosmetic only). Click to disable.",
-            uiRigOffTitle: "Rigged mode is OFF (cosmetic only). Click to enable.",
-
-            uiGeneralCommands: "General Commands",
-            uiStatsCommands: "Stats Commands",
-            uiEntryCommands: "Entry Commands",
-            uiHelp: "Help",
-            uiRiggingCommands: "Rigging Commands",
-            uiBonCommands: "BON Commands",
-            uiHostOnlyCommands: "Host-Only Commands",
-            uiNaughtyList: "Naughty List",
-            uiNaughtyAlert: "⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************",
-            uiHostPanel: "Host Panel",
-            uiDragHostPanel: "Drag to move Host Panel",
-            uiCloseHostPanel: "Close Host Panel",
-
-            uiRequiresGiveaway: "Requires an active giveaway.",
-            uiHostOnly: "Only the host can use this.",
-            uiReminderNotDue: "No reminder is due right now.",
-            uiRequired: "Required.",
-            uiInteger: "Enter an integer.",
-            uiMinimum: "Minimum: {value}.",
-            uiMaximum: "Maximum: {value}.",
-            uiInvalidValue: "Invalid value.",
-            uiFixArguments: "Fix invalid arguments.",
-            uiExample: "Example: {usage}",
-            uiRequiredSuffix: "required",
-            uiOptionalSuffix: "optional",
-            uiPanelInitError: "Host Panel commands unavailable (init error).",
-            uiNoCommands: "No commands found (registry empty). {detail}",
-            uiRegistryEmpty: "{registry} has 0 entries.",
-
-            uiDonationZeroRigged: "Rigged mode is active, but the tax rate is <b>0%</b>. Suspiciously generous. No {poolName} contribution.",
-            uiDonationZeroStandard: "Standard giveaway. No {poolName} contribution.",
-            uiDonationEstimate: " About <b>{estimate} BON</b> of a {pot} BON pot (more if sponsored).",
-            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% rigging taxes</b> will be taken from the final pot (host + sponsors) and paid <b>directly</b> into the {poolName}. Your outlay is unchanged.{estimate}",
-            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> of the final pot (host + sponsors) will be contributed <b>directly</b> to the {poolName}. Comes out of winnings; your outlay is unchanged.{estimate}",
-
-            cmdTime: "Time",
-            cmdTimeDesc: "Show remaining giveaway time.",
-            cmdEntries: "Entries",
-            cmdEntriesDesc: "List current entries.",
-            cmdHelp: "Help",
-            cmdHelpDesc: "Show available commands in chat.",
-            cmdCommands: "Commands",
-            cmdCommandsDesc: "Alias for !help.",
-            cmdStats: "Stats",
-            cmdStatsDesc: "Show saved stats for a user.",
-            cmdTop: "Top",
-            cmdTopDesc: "Top winners leaderboard.",
-            cmdMost: "Most",
-            cmdMostDesc: "Most BON won leaderboard.",
-            cmdSponsors: "Sponsors",
-            cmdSponsorsDesc: "Show top sponsors.",
-            cmdUnlucky: "Unlucky",
-            cmdUnluckyDesc: "Show most losses leaderboard.",
-            cmdLargest: "Largest",
-            cmdLargestDesc: "Show largest giveaways.",
-            cmdGift: "Gift",
-            cmdGiftDesc: "Show giveaway gift status.",
-            cmdBon: "BON",
-            cmdBonDesc: "Show current pot amount.",
-            cmdRange: "Range",
-            cmdRangeDesc: "Show valid entry range.",
-            cmdLucky: "Lucky",
-            cmdLuckyDesc: "Show lucky number.",
-            cmdLuckyEnter: "Lucky Enter",
-            cmdLuckyEnterDesc: "Enter using lucky number.",
-            cmdRig: "Rig",
-            cmdRigDesc: "Fun rig toggle command.",
-            cmdUnrig: "Unrig",
-            cmdUnrigDesc: "Fun rig toggle command.",
-            cmdRandom: "Random",
-            cmdRandomDesc: "Enter with a random number.",
-            cmdNumber: "Number",
-            cmdNumberDesc: "Show your current entry.",
-            cmdFree: "Free",
-            cmdFreeDesc: "Show available entry numbers.",
-            cmdAddBon: "Add BON",
-            cmdAddBonDesc: "Add BON to the pot.",
-            cmdReminder: "Reminder",
-            cmdReminderDesc: "Send reminder now.",
-            cmdWinners: "Winners",
-            cmdWinnersDesc: "Set winner count.",
-            cmdMaxWinners: "Max Winners",
-            cmdMaxWinnersDesc: "Set max scaled winners.",
-            cmdScale: "Scale",
-            cmdScaleDesc: "Show scaling progress.",
-            cmdAddTime: "Add Time",
-            cmdAddTimeDesc: "Add giveaway minutes.",
-            cmdRemoveTime: "Remove Time",
-            cmdRemoveTimeDesc: "Remove giveaway minutes.",
-            cmdNaughty: "Naughty",
-            cmdNaughtyDesc: "Manage naughty list.",
-            cmdEnd: "End",
-            cmdEndDesc: "End the active giveaway.",
-            cmdUser: "User",
-            cmdOptionalUser: "optional username",
-            cmdAmount: "amount",
-            cmdCount: "Count",
-            cmdWinnersPlaceholder: "winners",
-            cmdMax: "Max",
-            cmdMaxPlaceholder: "max",
-            cmdMinutes: "Min",
-            cmdMinutesPlaceholder: "minutes",
-            cmdAction: "Action",
-            cmdActionPlaceholder: "action",
-            cmdActionAdd: "Add",
-            cmdActionRemove: "Remove",
-            cmdActionList: "List",
-            cmdActionHint: "Use add, remove, or list.",
-            cmdUsername: "username",
-            cmdUsernameHint: "Username is required for add/remove.",
-            cmdHost: "Host",
-            cmdOptionalHost: "optional host",
-            uiTimerWholeMinutes: "Please enter a whole number of minutes (no decimals).",
-            uiRigIndicatorAria: "Rigged mode indicator",
-            uiConfirmReset: "Are you sure you want to reset the giveaway? This will clear all entries and cannot be undone.",
-            uiConfirmClose: "A giveaway is currently running. Are you sure you want to close the menu? This will NOT end the giveaway, but you may lose track of its progress.",
-            uiStartTitle: "Start the giveaway",
-            uiRestorePanel: "Restore panel",
-            uiHostPanelToggleTitle: "Open/close host command panel.",
-            uiPresetPrompt: "Name this preset:",
-            uiPresetDefault: "Preset {number}",
-            uiPresetDeleteConfirm: "Delete preset \"{name}\"?",
-            uiPrize: "Prize",
-            uiGiftStatus: "Gift Status",
-            uiSelf: "Self",
-            uiHostSelfGift: "Host winner (no self-gift)",
-            uiCheckingGift: "Checking gift status…",
-            uiDirect: "direct",
-            uiCheckingPool: "Checking BON Pool contribution…",
-            uiRemindersMax: "# Reminders (max {max})",
-            validationLetters: "Letters are not allowed—please enter valid integers.",
-            validationIntegers: "Please enter valid integers (e.g., -5, 0, 10).",
-            validationNumbersOnly: "Please enter numbers only.",
-            validationEndAfterStart: "End # should be greater than or equal to Start #.",
-            validationWinnersRange: "Please choose between 1 and {max} winners.",
-            validationInvalidMaxWinners: "Invalid max winners.",
-            validationMaxRange: "Must be between {min} and {max}.",
-            validationIntegerWithRange: "Enter an integer. {range}",
-            preflightChat: "active chat room could not be resolved",
-            preflightIdentity: "authenticated chat user ID could not be resolved",
-            preflightCsrf: "CSRF token is unavailable",
-            preflightUser: "authenticated user page could not be resolved",
-            preflightGift: "the real Send Gift form could not be validated",
-            preflightPool: "the BON Pool page/contract could not be validated",
-            alertPreflightFailed: "GIVEAWAY ERROR: Tracker compatibility preflight failed: {reason}."
-
-
-
-        }),
-        "pt-PT": Object.freeze({
-            giftRefundNote: "Reembolso do passatempo",
-            giftWinnerSingle: "🎉 Ganhaste! Aproveita os teus {amount} BON!",
-            giftWinnerRanked: "🎉 Parabéns pelo {rank} lugar!",
-            poolManualCheck: "Confirma manualmente a BON Pool antes de tentares novamente.",
-
-            durationHourOne: "{n} hora",
-            durationHourMany: "{n} horas",
-            durationMinuteOne: "{n} minuto",
-            durationMinuteMany: "{n} minutos",
-            durationSecondOne: "{n} segundo",
-            durationSecondMany: "{n} segundos",
-
-            winnerWordOne: "vencedor",
-            winnerWordMany: "vencedores",
-            possibleWinners: "[b][color=#5DE2E7]{count} {word}[/color][/b]",
-            upToWinners: " (até um máximo de [b][color=#5DE2E7]{max}[/color][/b])",
-
-            introStandard: "{marker} Estou a organizar um passatempo de ",
-            introPool: "{marker} 💙 [b][color={poolColor}]PASSATEMPO COM CONTRIBUIÇÃO PARA A {poolNameUpper}[/color][/b] 💙\nEstou a organizar um passatempo de ",
-            introTaxes: "{marker} [b][color=#FF4F9A]IMPOSTO DO MODO VICIADO: {percent}% PARA A {poolNameUpper}[/color][/b]\nEstou a organizar um passatempo de ",
-            introOpenFor: "Aberto durante [b][color=#1DDC5D]{duration}[/color][/b]. ",
-            pickNumber: "Escolhe um número [b]entre [color=#DC3D1D]{start} e {end}[/color][/b]. ",
-            giftHostHint: "✨[b][color=#FB4F4F]Envia uma oferta ao organizador para aumentar o prémio! [color={hintColor}]/gift {host} VALOR MENSAGEM[/color][/color][/b]✨",
-            introPoolAllocation: "\n[b][color={poolColor}]{percent}%[/color][/b] do prémio final (onde se incluem as ofertas dos patrocinadores) será contribuído diretamente para a [b]{poolName}[/b]. Os vencedores recebem os restantes {remaining}%.",
-            introTaxAllocation: "\n[b][color=#FF4F9A]{percent}% de imposto do Modo Viciado[/color][/b] será retirado do prémio final (incluindo as ofertas dos patrocinadores) e enviado diretamente para a [b]{poolName}[/b]. Os vencedores ficam com os restantes {remaining}%. Contabilidade totalmente legítima. 😈",
-            riggedModeIntro: "\n[color=#FF4F9A][b]MODO VICIADO ATIVADO![/b][/color] [i][color=#FF9AE6]É só espetáculo — as contas continuam certas... provavelmente.[/color][/i] 😈",
-            silentModeIntro: "\n[color=#ff3333][b]MODO SILENCIOSO ATIVADO![/b][/color] [i][color=#B0B0B0]As respostas aos comandos serão enviadas em privado por /msg.[/color][/i] 🤫",
-
-            reminderTaxes: "🧾 [b][color=#FF4F9A]Imposto do Modo Viciado: {percent}% para a {poolName}[/color][/b] 🧾\n",
-            reminderPool: "💙 [b][color={poolColor}]Passatempo com contribuição para a {poolName} ({percent}% do prémio)[/color][/b] 💙\n",
-            reminderMain: "{marker} Passatempo a decorrer com [b][color=#ffc00a]{amount} BON[/color][/b] | {winners} | Tempo restante: [b][color=#1DDC5D]{duration}[/color][/b]. Escolhe um número [b]entre [color=#DC3D1D]{start} e {end}[/color][/b]. [b][color=#5DE2E7]{custom}[/color][/b]\n{giftHint}",
-            reminderSilent: "(Modo silencioso ativo — as respostas aos comandos são enviadas por /msg.) 🤫",
-            reminderRigged: "(Modo Viciado ativo — mas as contas continuam [b]certinhas[/b]... alegadamente.) 😉",
-
-            sponsorsAddedOne: "{marker} Um patrocinador acabou de adicionar [color=#DC3D1D][b]{amount} BON[/b][/color]! ",
-            sponsorsAddedMany: "{marker} [b]{count} patrocinadores[/b] acabaram de adicionar [color=#DC3D1D][b]{amount} BON[/b][/color]! ",
-            totalPotNow: "O prémio total é agora [b][color=#ffc00a]{amount} BON[/color][/b].",
-            withMessage: " com a mensagem [i]\"{message}\"[/i]",
-            withMessages: " com as mensagens {messages}",
-            moreCount: " [i](+{count} mais)[/i]",
-            sponsorMessageHeadingOne: "{marker} Mensagem do patrocinador",
-            sponsorMessageHeadingMany: "{marker} Mensagens dos patrocinadores",
-            finalSponsorThanks: "{marker} Obrigado a todos os patrocinadores! Total patrocinado: [color=#ffc00a][b]{amount} BON[/b][/color].\n[b]Patrocinadores:[/b] {sponsors}",
-            finalSponsorMessagesHeading: "{marker} [b]Mensagens dos patrocinadores:[/b]",
-
-            scalingIncreased: "[b][color={accent}]Vencedores adicionais:[/color][/b] [b]Número de vencedores aumentado[/b]: {old} → {new} (+{delta}). Total contabilizado: {total} BON. Limite: {threshold} BON por vencedor extra.",
-            scalingMaxReached: " [b]Máximo de vencedores atingido[/b] ({cap}).",
-            scalingMaxReachedPlain: "[b][color={accent}]Vencedores adicionais:[/color][/b] [b]Limite máximo atingido[/b] ({cap}).",
-            scalingMaxReachedSoft: "[b][color={accent}]Vencedores adicionais:[/color][/b] [i][color=#9aa0a6][b]Limite máximo atingido[/b] ({cap}).[/color][/i]",
-            scalingProgressDetail: "Faltam {remaining} BON para o vencedor #{next} (progresso: {progress}/{threshold} BON).",
-            scalingProgressPlain: "[b][color={accent}]Vencedores adicionais:[/color][/b] [b]{detail}[/b]",
-            scalingProgressSoft: "[b][color={accent}]Vencedores adicionais:[/color][/b] [i][color=#9aa0a6][b]{detail}[/b][/color][/i]",
-
-            winnerSummary: "🏆 {marker} Número vencedor: [b][color=#1DDC5D]{number}[/color][/b]. Vencedores apurados: [b][color=#5DE2E7]{winners}[/color][/b]. Total de participantes: [b][color=#5DE2E7]{entrants}[/color][/b].",
-            fundingSummary: "Financiamento — Organizador: [b][color=#ffc00a]{hostFunded} BON[/color][/b] | Patrocínios: [b][color=#00abff]{sponsored} BON[/color][/b] | Prémio total: [b][color=#FFC00A]{total} BON[/color][/b].",
-            exactGuess: "[color=#1DDC5D][b]acertou EM CHEIO[/b][/color]",
-            offBy: "[color=#FB4F4F]ficou a {diff} números do resultado[/color]",
-            offByOne: "[color=#FB4F4F]ficou a 1 número do resultado[/color]",
-            offByMany: "[color=#FB4F4F]ficou a {diff} números do resultado[/color]",
-            singleWinnerLine: "🥇 Parabéns [b][color=#DC3D1D]{user}[/color][/b]! O palpite [color=#1DDC5D][b]{guess}[/b][/color] {accuracy} e ganha [b][color=#FFC00A]{prize} BON[/color][/b].{note}",
-            podiumWinnerLine: "{medal} [b][color=#DC3D1D]{user}[/color][/b] — {place} — palpite [color=#1DDC5D][b]{guess}[/b][/color], {accuracy} — [color=#FFC00A][b]{prize} BON[/b][/color]",
-            podiumWinnerPlace: "Vencedor",
-            podiumRankPlace: "{rank} lugar",
-            remainingWinnersLine: "Restantes vencedores: {winners}",
-            remainingWinnerItem: "{rank} {user} ({prize})",
-            tieResult: "{marker} Temos um empate entre {users}! [b][color=#DC3D1D]{winner}[/color][/b] vence o desempate porque submeteu a entrada primeiro!",
-            amountsAfterPool: "\n[color=#aaaaaa]Os valores apresentados já são após a contribuição de {percent}% para a {poolName}.[/color]",
-
-            poolConfirmed: "{marker} [b][color={poolColor}]Contribuição para a {poolName} confirmada:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] transferidos diretamente.\nObrigado por apoiares o passatempo! ✨",
-            taxesConfirmed: "{marker} [b][color=#FF4F9A]IMPOSTO PAGO:[/color][/b] [b][color=#FFC00A]{amount} BON[/color][/b] transferidos diretamente para a [b]{poolName}[/b]. O cobrador está satisfeito. 😈",
-            warningRefunds: "[color=#ff4f4f][b]Aviso:[/b][/color] Não foi possível confirmar alguns reembolsos a patrocinadores. Confirma manualmente: {missing}.",
-            warningWinnerGifts: "[color=#ff4f4f][b]Aviso:[/b][/color] Não foi possível confirmar alguns prémios. Confirma manualmente os BON enviados a: {missing}.",
-            allSlotsFilled: "Todos os [b][color=#ffc00a]{count}[/color][/b] números foram preenchidos! A terminar mais cedo, ainda com [b][color=#1DDC5D]{remaining}[/color][/b]!",
-            alertInvalidAmount: "Introduz um valor numérico válido para o passatempo.",
-            alertPositiveAmount: "Introduz um valor de BON superior a zero.",
-            alertMinimumPot: "ERRO DO PASSATEMPO: {winners} vencedor(es) ponderados precisam de um prémio mínimo de {minimum} BON para que todos recebam pelo menos 1 BON.",
-            alertOwnership: "Não foi possível obter controlo exclusivo do passatempo. Outra aba do tracker pode já estar a executar um passatempo, ou este navegador não disponibiliza a API Web Locks.",
-            alertChatroom: "ERRO DO PASSATEMPO: não foi possível determinar a sala de chat UNIT3D ativa.",
-            alertBalanceUnavailable: "ERRO DO PASSATEMPO: não foi possível confirmar o teu saldo BON atual. Tenta novamente dentro de instantes.",
-            alertBalanceLow: "ERRO DO PASSATEMPO: o valor introduzido ({amount}) é superior ao teu saldo BON atual ({balance}).",
-            alertFinalSponsorSync: "Aviso do passatempo: a sincronização final dos patrocínios falhou após 3 tentativas. O encerramento usará o último total confirmado; confirma manualmente ofertas muito recentes.",
-            alertPoolUnconfirmed: "Aviso BON Pool: não foi possível confirmar a contribuição de {amount} BON. Confirma {path} manualmente antes de tentares novamente.",
-            alertPoolZeroUnconfirmed: "Aviso BON Pool: não foi possível confirmar a contribuição integral de {amount} BON sem participantes. Confirma {path} manualmente antes de tentares novamente.",
-
-            entryNaughtyBlocked: "[color=#d85e27]{user}[/color], estás na [b]lista de excluídos[/b] e não podes participar no passatempo nem usar os seus comandos.",
-            entryAlreadyEntered: "🚫 Desculpa [color=#d85e27]{user}[/color], mas [color=#32cd53]já[/color] participaste com o número [color=#DC3D1D][b]{number}[/b][/color]!",
-            entryNumberTaken: "🚫 Desculpa [color=#d85e27]{user}[/color], mas [color=#32cd53]{other}[/color] já escolheu o número [color=#DC3D1D][b]{number}[/b][/color]!",
-            entryOutOfRange: "🚫 Desculpa [color=#d85e27]{user}[/color], mas o número [color=#DC3D1D][b]{number}[/b][/color] está fora do intervalo! Escolhe um número entre [color=#DC3D1D][b]{start}[/b] e [b]{end}[/b][/color]!",
-            entryConfirmed: "[color=#d85e27]{user}[/color] entrou com o número [color=#DC3D1D][b]{number}[/b][/color]! Tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            rigHintEntry: "(entrada registada em condições [b]altamente suspeitas[/b]) 😈",
-            spamLockout: "[color=red][b]Spam detetado! {user} bloqueado durante {seconds} segundos.[/b][/color]",
-
-            timeLeftReply: "Tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b] {marker}",
-            timeUsage: "[color=red]Utilização:[/color] !time add|remove <minutos>",
-            timeUsageExtended: "[color=red]Utilização:[/color] !time add|remove <minutos> ou !addtime|!removetime <minutos>",
-            timeAdjusted: "{verb} [color=#DC3D1D][b]{minutes}[/b][/color] {minuteWord} {prep} o passatempo. Novo tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeAddedOne: "Adicionado [color=#DC3D1D][b]1[/b][/color] minuto ao passatempo. Novo tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeAddedMany: "Adicionados [color=#DC3D1D][b]{minutes}[/b][/color] minutos ao passatempo. Novo tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeRemovedOne: "Retirado [color=#DC3D1D][b]1[/b][/color] minuto ao passatempo. Novo tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            timeRemovedMany: "Retirados [color=#DC3D1D][b]{minutes}[/b][/color] minutos ao passatempo. Novo tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            wordAdded: "Adicionados",
-            wordRemoved: "Removidos",
-            wordTo: "ao",
-            wordFrom: "do",
-
-            noEntriesYet: "[b]Ainda não há entradas! {total} números disponíveis.[/b]",
-            entriesSummary: "{marker} Entradas – {taken}/{total} [b]([color=#1DDC5D]{free} livres[/color][/b]): {list}",
-            noSavedStats: "[b]Ainda não existem estatísticas guardadas para {user}.[/b]",
-            noHistory: "[b]Ainda não existe histórico de passatempos guardado.[/b]",
-            largestGiveaways: "[b]📈 Maiores passatempos: {list}[/b]",
-            giftUsage: "{marker} Para patrocinar o passatempo, escreve: /gift {host} valor mensagem",
-            giveawayAmount: "Valor do passatempo: [b][color=#FFB700]{amount} BON[/color][/b]",
-            rangeValid: "São válidos os números entre [color=#DC3D1D]{start} e {end}[/color], inclusive.",
-            noActiveGiveaway: "Não existe nenhum passatempo ativo neste momento.",
-            luckyDisabled: "🚫 Desculpa [color=#d85e27]{user}[/color], mas o [color=#999999]!lucky[/color] está desativado neste passatempo.",
-            randomDisabled: "🚫 Desculpa [color=#d85e27]{user}[/color], mas o [color=#999999]!random[/color] está desativado neste passatempo.",
-            noFreeNumbers: "Todos os números estão ocupados — não há números livres!",
-            noFreeNumbersAlt: "Não há números livres!",
-            luckyNumber: "O número da sorte deste passatempo é [b][color=#1DDC5D]{number}[/color][/b].",
-            luckyeEntered: "[color=#d85e27]{user}[/color] usou [color=#999999]!luckye[/color] e entrou com o número da sorte [color=#1DDC5D][b]{number}[/b][/color]! Tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            randomEntered: "[color=#d85e27]{user}[/color] entrou com o número [color=#DC3D1D][b]{number}[/b][/color]! Tempo restante: [b][color=#1DDC5D]{remaining}[/color][/b].",
-            yourNumber: "[color=#d85e27]{user}[/color], o teu número é [color=#DC3D1D][b]{number}[/b][/color]",
-            notEntered: "[color=#d85e27]{user}[/color], não estás atualmente no passatempo.",
-            freeDisabled: "🚫 Desculpa [color=#d85e27]{user}[/color], !free desativado",
-            freeNumbers: "Números livres: {numbers}.",
-            rigHintLucky: "(aprovado pelo Comité Oficial do Modo Viciado™) ✅",
-            rigHintRandom: "(escolhido pelo nosso motor de caos [b]totalmente imparcial[/b])",
-            rigHintFree: "(estes são números [b]suspeitosamente bons[/b], confia...) 😏",
-            rigHintPot: "(prémio [b]cuidadosamente afinado[/b] pelo departamento do Modo Viciado)",
-            rigHintRange: "(este intervalo foi [b]pré-aprovado[/b] para máxima suspeição)",
-
-            rigEnabled: "{marker} [color=#FF4F9A][b]MODO VICIADO ATIVADO![/b][/color] [i][color=#FF9AE6]É só espetáculo — as contas continuam certas... provavelmente.[/color][/i]",
-            rigAlready: "[color=#FF4F9A][b]O Modo Viciado já está ativo![/b][/color]",
-            rigDisabled: "{marker} [color=#32cd53][b]Modo Viciado desativado.[/b][/color] [i][color=#A0E7AF]De volta à aborrecida e completamente transparente justiça.[/color][/i]",
-            rigNotEnabled: "[color=#32cd53][b]O Modo Viciado não está ativo.[/b][/color]",
-            rigDenyRig: [
-                "🛑 Boa tentativa, {user}. A Alavanca do Modo Viciado™ está reservada ao organizador.",
-                "🚨 Tentativa de viciar o passatempo por {user}. A chamar a Polícia Judiciária…",
-                "{user} tentou viciar o passatempo. O universo respondeu: “lol, não.”",
-                "Desculpa {user} — só o organizador tem licença para operar o Vicia-O-Matic™."
-            ],
-            rigDenyUnrig: [
-                "Calma, {user}… não podes des-viciar aquilo que nunca viciaste.",
-                "🚫 Acesso negado, {user}. O botão de emergência é guardado por um moderador minúsculo e zangado.",
-                "Boa tentativa, {user}. Só o organizador pode desligar o Gerador de Caos™.",
-                "{user} tentou chegar ao interruptor… e apanhou apenas ar."
-            ],
-
-            winnersUsage: "[color=red]Utilização:[/color] !winners 1‑{max}",
-            winnersInsufficientPot: "[color=red]Não é possível definir {winners} vencedores com o prémio atual de {pot} BON. Os pagamentos ponderados exigem pelo menos {minimum} BON.[/color]",
-            hostWinnerAdjustment: "[b][color={accent}]Ajuste do organizador:[/color][/b] [b]Vencedores {direction}[/b]: [b][color=#5DE2E7]{old} → {new} ({sign}{delta})[/color][/b].",
-            wordIncreased: "aumentados",
-            wordDecreased: "reduzidos",
-            scalingCapReset: " [i][color=#9aa0a6]O limite de vencedores também foi reposto para {count} — usa !maxwinners para o aumentar.[/color][/i]",
-            winnersSet: "Número de vencedores definido para [color=#1DDC5D][b]{count}[/b][/color].{capNote}",
-            scalingDisabled: "[color=red]Os vencedores adicionais não estão ativos neste passatempo.[/color]",
-            maxWinnersUsage: "[color=red]Utilização:[/color] !maxwinners {base}‑{max}",
-            maxWinnersSet: "Limite máximo de vencedores definido para [color=#1DDC5D][b]{max}[/b][/color]. Vencedores atuais: [b][color=#5DE2E7]{effective}[/color][/b].",
-            scalingUnavailable: "A opção de vencedores adicionais não está disponível neste passatempo.",
-
-            naughtyAddUsage: "[color=red]Utilização:[/color] !naughty add utilizador",
-            naughtyRemoveUsage: "[color=red]Utilização:[/color] !naughty remove utilizador",
-            naughtyUsage: "[color=red]Utilização:[/color] !naughty (add|remove|list) utilizador",
-            naughtyHostDenied: "[color=red][b]O organizador não pode ser adicionado à lista de excluídos![/b][/color]",
-            naughtyAdded: "{marker} [color=#FFDE59]{user} foi adicionado à lista de excluídos e removido do passatempo.[/color]",
-            naughtyRemoved: "🥳 [color=#7DDA58]{user} foi removido da lista de excluídos![/color]",
-            naughtyList: "[color=#FFDE59]Lista de excluídos: [b]{users}[/b][/color]",
-            naughtyEmpty: "A lista de excluídos está vazia.",
-            adminEndUsage: "[color=red]Os administradores têm de indicar o organizador do passatempo que querem terminar. Exemplo: !end {host}[/color]",
-            helpCommands: "Os comandos são {commands}.",
-
-            hostTopupBusy: "[b][color=#FFDE59]Já está a ser verificado um reforço de BON do organizador. Aguarda um momento.[/color][/b]",
-            hostTopupUsage: "[b][color=red]Utilização inválida.[/color] Exemplo: !addbon 100[/b]",
-            hostTopupBalanceUnavailable: "[b][color=red]Não foi possível confirmar o teu saldo BON atual. Tenta !addbon novamente dentro de instantes.[/color][/b]",
-            hostTopupInsufficient: "[b][color=red]Neste momento só tens {balance} BON, por isso não podes aumentar o prémio para {total} BON. Espera por mais BON (ou por novos patrocínios) e tenta novamente.[/color][/b]",
-
-            zeroEntryPoolOutcome: "Infelizmente, ninguém participou no passatempo, por isso não há vencedores.\n💙 O prémio total de [b][color={poolColor}]{amount} BON[/color][/b] será contribuído diretamente para a [b]{poolName}[/b].",
-            zeroEntryPoolConfirmed: "{marker} [b][color={poolColor}]Contribuição para a {poolName} confirmada:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] transferidos diretamente.\nSem participantes — 100% do prémio foi contribuído. ✨",
-            statsHeader: "[b]{marker} Estatísticas: [color=#d85e27]{user}[/color] - {parts}[/b]",
-            statEntered: "Participações [color=#ffc00a]{value}[/color]",
-            statWins: "Vitórias [color=#1DDC5D]{value}[/color]",
-            statLosses: "Derrotas [color=#CE2E30]{value}[/color]",
-            statWR: "Taxa de vitória [color=#1DDC5D]{value}%[/color]",
-            statWon: "Ganhou [color=#ffc00a]{value} BON[/color]",
-            statBest: "Melhor [color=#ffc00a]{value} BON[/color]",
-            statSponsored: "Patrocinou [color=#00abff]{value} BON[/color]",
-            statHosted: "Passatempos organizados {value}",
-            statGiven: "BON distribuídos [color=#ffc00a]{value}[/color]",
-            statSponsorsReceived: "Patrocínios recebidos [color=#00abff]{value} BON[/color]",
-            statCurrentSponsors: "Patrocínios neste passatempo [color=#00abff]{value} BON[/color]",
-            leaderboardHeader: "[b]{marker} {emoji} {label}: {list}[/b]",
-            leaderboardTopWinners: "Mais vitórias",
-            leaderboardMostBon: "Mais BON ganhos",
-            leaderboardTopSponsors: "Maiores patrocinadores de sempre",
-            leaderboardUnlucky: "Mais azarados",
-            noWinnerStats: "[b]Ainda não existem estatísticas de vencedores.[/b]",
-            noSponsorStats: "[b]Ainda não existem estatísticas de patrocinadores.[/b]",
-            noUnluckyStats: "[b]Ainda não existem estatísticas de azarados.[/b]",
-            unluckyEntered: "entradas",
-            unknownDate: "data desconhecida",
-
-            scaleStatus: "[b][color={accent}]Vencedores adicionais:[/color][/b] Total atual: [b][color=#5DE2E7]{effective}[/color][/b] (base {base}{extra}, limite {cap}). São necessários [b]{threshold} BON[/b] por vencedor extra ({mode}). Contribuições contabilizadas: [b][color=#ffc00a]{total} BON[/color][/b]. ",
-            scaleExtra: " + {count} adicionais",
-            scaleModeCustom: "definido manualmente",
-            scaleModeAuto: "automático",
-            scaleReached: "[b]Máximo de vencedores atingido[/b].",
-            scaleProgress: "Progresso para o vencedor #{next}: [b]{progress} / {threshold} BON[/b]. Ainda faltam: [b][color=#FFDE59]{remaining} BON[/color][/b].",
-
-            freeSuggestionNone: " Não há números livres!",
-            freeSuggestionList: " Podes tentar estes números livres: [b][color=#1DDC5D]{numbers}[/color][/b].",
-
-            hostTopupAdded: "O organizador adicionou [color=#DC3D1D][b]{amount} BON[/b][/color].",
-            hostTopupTotal: "Prémio total: [b][color=#ffc00a]{amount} BON[/color][/b].",
-            hostTopupScaling: "[b][color={accent}]Vencedores adicionais:[/color][/b] [b]Número de vencedores aumentado[/b]: [b][color=#5DE2E7]{old} → {new} (+{delta})[/color][/b].",
-
-            rigFinalNote: " (O Modo Viciado esteve ativo, mas os vencedores continuaram a ser escolhidos [b]de forma justa[/b]… alegadamente.) 👀",
-            settlementScalingIncrease: "[b][color={accent}]Vencedores adicionais:[/color][/b] [b]Número de vencedores aumentado[/b] em [b][color=#5DE2E7]+{count}[/color][/b] graças aos patrocínios.",
-            taxesDue: "🧾 [b][color=#FF4F9A]Imposto do Modo Viciado:[/color][/b] [b][color=#FFC00A]{amount} BON[/color][/b] ({percent}% do prémio) reservados para envio direto para a [b]{poolName}[/b]. A contribuição será confirmada no fim dos pagamentos.",
-            poolAllocation: "💙 [b][color={poolColor}]Contribuição para a {poolName}:[/color][/b] [b][color={poolColor}]{amount} BON[/color][/b] ({percent}% do prémio) reservados para transferência direta.",
-            grossPrizeTaxes: "\n[color=#aaaaaa](Prémio bruto: {gross} BON · Imposto: {tax} BON)[/color]",
-            grossPrizePool: "\n[color=#aaaaaa](Prémio bruto: {gross} BON · {poolName}: {pool} BON)[/color]",
-
-            zeroEntryRefundBase: "Infelizmente, ninguém participou no passatempo, por isso não há vencedores.\n{marker} A contribuição para a BON Pool é [b]0%[/b]: os [b][color=#ffc00a]{hostFunded} BON[/color][/b] do organizador permanecem com ele.",
-            zeroEntryRefunds: " Os patrocínios serão devolvidos na totalidade: {refunds}.",
-            zeroEntryNoRefunds: " Não existem patrocínios para devolver.",
-            uiAppTitle: "BONanza Giveaway",
-            uiToolbarLabel: "Passatempo",
-            uiConflictTitle: "Desativado: o script BON Giveaway original também está instalado. Remove um deles.",
-            uiConflictToast: "DESATIVA O SCRIPT GIVEAWAY ORIGINAL",
-            uiMinimizePanel: "Minimizar painel",
-            uiReset: "Repor",
-            uiSettings: "Definições",
-            uiCommands: "Comandos",
-            uiPresets: "— Predefinições —",
-            uiLoad: "Carregar",
-            uiSave: "Guardar",
-            uiLoadPresetTitle: "Carregar a predefinição selecionada",
-            uiSavePresetTitle: "Guardar o formulário atual como predefinição",
-            uiDeletePresetTitle: "Eliminar a predefinição selecionada",
-            uiGiveawayAmount: "Prémio",
-            uiStartNumber: "N.º inicial",
-            uiEndNumber: "N.º final",
-            uiTimeMin: "Tempo (min)",
-            uiReminders: "Lembretes",
-            uiEveryMin: "Intervalo (min)",
-            uiWinners: "Vencedores",
-            uiMaxWinners: "Máx. vencedores",
-            uiMaxWinnersTitle: "Limite absoluto: {max}. O número de vencedores nunca pode ultrapassá-lo.",
-            uiScaleBonTitle: "BON adicionais necessários para desbloquear cada vencedor extra. Deixa vazio para calcular automaticamente a partir do prémio inicial.",
-            uiScaleBonShortTitle: "BON adicionais necessários para desbloquear cada vencedor extra.",
-            uiBonPerWinner: "BON/vencedor extra",
-            uiAuto: "automático",
-            uiMaxChars: "Máx. 100 caracteres",
-            uiCustomMessage: "Mensagem personalizada",
-            uiPoolDonation: "{poolName} (%)",
-            uiPoolDonationTitle: "Percentagem do prémio final (organizador + patrocínios) contribuída para a {poolName}. Com 0%, não há contribuição.",
-            uiStart: "Iniciar",
-            uiStop: "Terminar",
-            uiStopTitle: "Isto termina o passatempo e envia os prémios aos vencedores",
-            uiUser: "Utilizador",
-            uiEntryNumber: "Número",
-            uiWinner: "Vencedor",
-            uiPrizeBon: "Prémio BON",
-            uiGift: "Envio",
-            uiGiveawayLog: "Registo do passatempo",
-            uiNoEvents: "Ainda não há eventos.",
-            uiCopyLog: "Copiar registo",
-            uiClearLog: "Limpar registo",
-            uiStatements: "Relatórios do passatempo",
-            uiStatementsTitle: "Os últimos {count} relatórios do passatempo são guardados neste navegador.",
-            uiSaveTxt: "Guardar .txt",
-            uiSaveTxtTitle: "Descarregar o relatório selecionado como ficheiro .txt",
-            uiCopy: "Copiar",
-            uiCopyStatementTitle: "Copiar o relatório selecionado para a área de transferência",
-
-            uiEntryModes: "Formas de participar",
-            uiChatReplies: "Chat e respostas",
-            uiScalingRules: "Vencedores e regras",
-            uiToggleAll: "Ativar/desativar todos",
-            uiToggleEntryModes: "Ativar/desativar todas as opções de participação.",
-            uiToggleChatReplies: "Ativar/desativar todas as opções de chat e respostas.",
-            uiToggleScalingRules: "Ativar/desativar todas as opções de vencedores e regras.",
-            uiRandom: "Aleatório",
-            uiRandomTip: "Ativar !random (entrar com um número livre aleatório).",
-            uiLucky: "N.º da sorte",
-            uiLuckyTip: "Ativar !lucky (mostrar o número da sorte) e !luckye (entrar com esse número).",
-            uiFree: "Livres",
-            uiFreeTip: "Ativar !free (mostrar alguns números disponíveis).",
-            uiEntryReplies: "Respostas às entradas",
-            uiEntryRepliesTip: "Quando ativo, o bot responde quando uma entrada é registada. Desativa para reduzir spam no chat.",
-            uiSilentMode: "Modo silencioso",
-            uiSilentModeTip: "Quando ativo, as respostas aos comandos são enviadas em privado por /msg em vez do chat público.",
-            uiScaleWinners: "Vencedores adicionais",
-            uiScaleWinnersTip: "Quando ativo, os patrocínios podem aumentar o número de vencedores, até ao limite definido no formulário.",
-            uiRiggedMode: "Modo Viciado (apenas visual)",
-            uiRiggedModeTip: "O Modo Viciado é apenas visual… alegadamente.",
-            uiShowLog: "Mostrar registo",
-            uiShowLogTip: "Controla apenas a visibilidade do painel de registo. O registo continua em segundo plano.",
-            uiRiggedWatermark: "VICIADO",
-            uiRigOnTitle: "Modo Viciado ATIVO (apenas visual). Clica para desativar.",
-            uiRigOffTitle: "Modo Viciado DESATIVADO (apenas visual). Clica para ativar.",
-
-            uiGeneralCommands: "Comandos gerais",
-            uiStatsCommands: "Comandos de estatísticas",
-            uiEntryCommands: "Comandos de participação",
-            uiHelp: "Ajuda",
-            uiRiggingCommands: "Comandos do Modo Viciado",
-            uiBonCommands: "Comandos do prémio",
-            uiHostOnlyCommands: "Comandos do organizador",
-            uiNaughtyList: "Lista de excluídos",
-            uiNaughtyAlert: "⚠⚠ !naughty exclui totalmente utilizadores do passatempo ⚠⚠ ************************USA COM RESPONSABILIDADE************************",
-            uiHostPanel: "Painel do organizador",
-            uiDragHostPanel: "Arrasta para mover o painel do organizador",
-            uiCloseHostPanel: "Fechar painel do organizador",
-
-            uiRequiresGiveaway: "Requer um passatempo ativo.",
-            uiHostOnly: "Apenas o organizador pode usar isto.",
-            uiReminderNotDue: "Ainda não é altura de enviar um lembrete.",
-            uiRequired: "Obrigatório.",
-            uiInteger: "Introduz um número inteiro.",
-            uiMinimum: "Mínimo: {value}.",
-            uiMaximum: "Máximo: {value}.",
-            uiInvalidValue: "Valor inválido.",
-            uiFixArguments: "Corrige os argumentos inválidos.",
-            uiExample: "Exemplo: {usage}",
-            uiRequiredSuffix: "obrigatório",
-            uiOptionalSuffix: "opcional",
-            uiPanelInitError: "Comandos do painel do organizador indisponíveis (erro de inicialização).",
-            uiNoCommands: "Não foram encontrados comandos (registo vazio). {detail}",
-            uiRegistryEmpty: "{registry} tem 0 entradas.",
-
-            uiDonationZeroRigged: "O Modo Viciado está ativo, mas o imposto é <b>0%</b>. Suspeitosamente generoso. Sem contribuição para a {poolName}.",
-            uiDonationZeroStandard: "Passatempo normal. Sem contribuição para a {poolName}.",
-            uiDonationEstimate: " ≈ <b>{estimate} BON</b> num prémio de {pot} BON (mais com patrocínios).",
-            uiDonationRigged: "🧾 <b style=\"color:#FF4F9A;\">{percent}% de imposto</b> do prémio final (organizador + patrocínios) vai para a {poolName}. O teu custo não muda.{estimate}",
-            uiDonationStandard: "<b style=\"color:{color};\">{percent}%</b> do prémio final (organizador + patrocínios) vai para a {poolName}. Sai dos prémios; o teu custo não muda.{estimate}",
-
-            cmdTime: "Tempo",
-            cmdTimeDesc: "Mostrar o tempo restante do passatempo.",
-            cmdEntries: "Entradas",
-            cmdEntriesDesc: "Listar as entradas atuais.",
-            cmdHelp: "Ajuda",
-            cmdHelpDesc: "Mostrar os comandos disponíveis no chat.",
-            cmdCommands: "Comandos",
-            cmdCommandsDesc: "Equivale a !help.",
-            cmdStats: "Estatísticas",
-            cmdStatsDesc: "Mostrar estatísticas guardadas de um utilizador.",
-            cmdTop: "Mais vitórias",
-            cmdTopDesc: "Mostrar quem tem mais vitórias.",
-            cmdMost: "Mais BON ganhos",
-            cmdMostDesc: "Mostrar quem ganhou mais BON.",
-            cmdSponsors: "Patrocinadores",
-            cmdSponsorsDesc: "Mostrar os maiores patrocinadores.",
-            cmdUnlucky: "Mais azarados",
-            cmdUnluckyDesc: "Mostrar quem acumulou mais derrotas.",
-            cmdLargest: "Maiores prémios",
-            cmdLargestDesc: "Mostrar os passatempos com os maiores prémios.",
-            cmdGift: "Patrocinar",
-            cmdGiftDesc: "Mostrar como patrocinar o passatempo.",
-            cmdBon: "BON",
-            cmdBonDesc: "Mostrar o valor atual do prémio.",
-            cmdRange: "Intervalo",
-            cmdRangeDesc: "Mostrar o intervalo válido de entradas.",
-            cmdLucky: "Número da sorte",
-            cmdLuckyDesc: "Mostrar o número da sorte.",
-            cmdLuckyEnter: "Entrar com nº da sorte",
-            cmdLuckyEnterDesc: "Entrar usando o número da sorte.",
-            cmdRig: "Ativar Modo Viciado",
-            cmdRigDesc: "Ativar o Modo Viciado.",
-            cmdUnrig: "Desativar Modo Viciado",
-            cmdUnrigDesc: "Desativar o Modo Viciado.",
-            cmdRandom: "Aleatório",
-            cmdRandomDesc: "Entrar com um número aleatório.",
-            cmdNumber: "Número",
-            cmdNumberDesc: "Mostrar a tua entrada atual.",
-            cmdFree: "Livres",
-            cmdFreeDesc: "Mostrar números disponíveis.",
-            cmdAddBon: "Adicionar BON",
-            cmdAddBonDesc: "Adicionar BON ao prémio.",
-            cmdReminder: "Lembrete",
-            cmdReminderDesc: "Enviar um lembrete agora.",
-            cmdWinners: "Vencedores",
-            cmdWinnersDesc: "Definir o número de vencedores.",
-            cmdMaxWinners: "Limite de vencedores",
-            cmdMaxWinnersDesc: "Definir o número máximo de vencedores.",
-            cmdScale: "Vencedores adicionais",
-            cmdScaleDesc: "Mostrar o progresso para desbloquear vencedores adicionais.",
-            cmdAddTime: "Adicionar tempo",
-            cmdAddTimeDesc: "Adicionar minutos ao passatempo.",
-            cmdRemoveTime: "Remover tempo",
-            cmdRemoveTimeDesc: "Remover minutos ao passatempo.",
-            cmdNaughty: "Excluídos",
-            cmdNaughtyDesc: "Gerir a lista de excluídos.",
-            cmdEnd: "Terminar",
-            cmdEndDesc: "Terminar o passatempo ativo.",
-            cmdUser: "Utilizador",
-            cmdOptionalUser: "utilizador opcional",
-            cmdAmount: "valor",
-            cmdCount: "N.º",
-            cmdWinnersPlaceholder: "vencedores",
-            cmdMax: "Limite",
-            cmdMaxPlaceholder: "máx.",
-            cmdMinutes: "Min",
-            cmdMinutesPlaceholder: "minutos",
-            cmdAction: "Ação",
-            cmdActionPlaceholder: "ação",
-            cmdActionAdd: "Adicionar",
-            cmdActionRemove: "Remover",
-            cmdActionList: "Listar",
-            cmdActionHint: "Usa adicionar, remover ou listar.",
-            cmdUsername: "utilizador",
-            cmdUsernameHint: "É necessário indicar o utilizador para adicionar/remover.",
-            cmdHost: "Organizador",
-            cmdOptionalHost: "organizador opcional",
-            uiTimerWholeMinutes: "Introduz um número inteiro de minutos (sem casas decimais).",
-            uiRigIndicatorAria: "Indicador do Modo Viciado",
-            uiConfirmReset: "Tens a certeza de que queres repor o passatempo? Isto apaga todas as entradas e não pode ser desfeito.",
-            uiConfirmClose: "Está a decorrer um passatempo. Tens a certeza de que queres fechar o menu? Isto NÃO termina o passatempo, mas podes deixar de acompanhar o progresso.",
-            uiStartTitle: "Iniciar o passatempo",
-            uiRestorePanel: "Restaurar painel",
-            uiHostPanelToggleTitle: "Abrir/fechar o painel de comandos do organizador.",
-            uiPresetPrompt: "Nome desta predefinição:",
-            uiPresetDefault: "Predefinição {number}",
-            uiPresetDeleteConfirm: "Eliminar a predefinição \"{name}\"?",
-            uiPrize: "Prémio",
-            uiGiftStatus: "Estado do envio",
-            uiSelf: "Próprio",
-            uiHostSelfGift: "Organizador vencedor (sem envio para si próprio)",
-            uiCheckingGift: "A confirmar o envio do prémio…",
-            uiDirect: "direto",
-            uiCheckingPool: "A verificar a contribuição para a BON Pool…",
-            uiRemindersMax: "# Lembretes (máx. {max})",
-            validationLetters: "Não são permitidas letras — introduz números inteiros válidos.",
-            validationIntegers: "Introduz números inteiros válidos (ex.: -5, 0, 10).",
-            validationNumbersOnly: "Introduz apenas números.",
-            validationEndAfterStart: "O n.º final deve ser maior ou igual ao n.º inicial.",
-            validationWinnersRange: "Escolhe entre 1 e {max} vencedores.",
-            validationInvalidMaxWinners: "Máximo de vencedores inválido.",
-            validationMaxRange: "Tem de estar entre {min} e {max}.",
-            validationIntegerWithRange: "Introduz um número inteiro. {range}",
-            preflightChat: "não foi possível determinar a sala de chat ativa",
-            preflightIdentity: "não foi possível determinar o ID do utilizador autenticado no chat",
-            preflightCsrf: "o token CSRF não está disponível",
-            preflightUser: "não foi possível determinar a página do utilizador autenticado",
-            preflightGift: "não foi possível validar o formulário de envio de BON",
-            preflightPool: "não foi possível validar a página/contrato da BON Pool",
-            alertPreflightFailed: "ERRO DO PASSATEMPO: a verificação de compatibilidade do tracker falhou: {reason}."
-
-
-
-        })
-    });
-
-    function t(key, vars = {}, locale = SITE.locale) {
-        const table = I18N[locale] || I18N.en;
-        const template = String(table?.[key] ?? I18N.en?.[key] ?? key);
-        return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, name) =>
-            Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : `{${name}}`
-        );
-    }
-
-    function tp(oneKey, manyKey, count, vars = {}, locale = SITE.locale) {
-        return t(Number(count) === 1 ? oneKey : manyKey, { ...vars, count }, locale);
-    }
-
-    function formatRank(n, locale = SITE.locale) {
-        const value = Math.max(1, Math.floor(Number(n) || 1));
-        if (locale === "pt-PT") return `${value}.º`;
-        const rem100 = value % 100;
-        if (rem100 >= 11 && rem100 <= 13) return `${value}th`;
-        switch (value % 10) {
-            case 1: return `${value}st`;
-            case 2: return `${value}nd`;
-            case 3: return `${value}rd`;
-            default: return `${value}th`;
-        }
-    }
-
-    function ta(key, locale = SITE.locale) {
-        const table = I18N[locale] || I18N.en;
-        const value = table?.[key] ?? I18N.en?.[key];
-        return Array.isArray(value) ? value : [];
-    }
-
-    function validateI18nCatalog() {
-        const base = new Set(Object.keys(I18N.en));
-        const localized = new Set(Object.keys(I18N["pt-PT"]));
-        const missingPt = [...base].filter(key => !localized.has(key));
-        const extraPt = [...localized].filter(key => !base.has(key));
-        if (missingPt.length || extraPt.length) {
-            console.error("[BONanza] I18N catalogue mismatch", { missingPt, extraPt });
-            return false;
-        }
-        return true;
-    }
-    validateI18nCatalog();
+    // ── DarkPeers site constants (this fork runs on darkpeers.org only) ──
+    const DARKPEERS_CHATROOM_ID = '2';
 
     function getMessageContentElement(messageNode) {
         if (!messageNode || messageNode.nodeType !== 1) return null;
@@ -1378,84 +354,11 @@
         return `/users/${encodeURIComponent(decoded)}/gifts`;
     }
 
-    function formDataFromParsedForm(form) {
-        const data = new FormData();
-        if (!form) return data;
-        form.querySelectorAll("input, select, textarea").forEach(el => {
-            if (!el.name || el.disabled) return;
-            const type = String(el.type || "").toLowerCase();
-            if ((type === "checkbox" || type === "radio") && !el.checked) return;
-            if (type === "submit" || type === "button" || type === "reset" || type === "file") return;
-            data.append(el.name, el.value ?? "");
-        });
-        return data;
-    }
-
-    function findGiftFormContract(doc, pageUrl) {
-        const forms = Array.from(doc?.querySelectorAll?.("form") || []);
-        for (const form of forms) {
-            const names = new Set(
-                Array.from(form.querySelectorAll("input[name], textarea[name], select[name]"))
-                    .map(el => String(el.name || ""))
-            );
-            if (!names.has("recipient_username") || !names.has("bon") || !names.has("message")) continue;
-            let action;
-            try {
-                action = new URL(form.getAttribute("action") || pageUrl || location.href, location.origin);
-            } catch {
-                continue;
-            }
-            if (action.origin !== location.origin) continue;
-            const method = String(form.getAttribute("method") || "GET").toUpperCase();
-            if (method !== "POST") continue;
-            return {
-                action: action.href,
-                method,
-                formData: formDataFromParsedForm(form),
-                sourceUrl: String(pageUrl || "")
-            };
-        }
-        return null;
-    }
-
-    async function fetchGiftFormContract(senderSlug) {
-        const endpointPath = getGiftEndpointPath(senderSlug);
-        if (!endpointPath) return null;
-
-        // Page-first policy on every tracker: use the form the tracker itself
-        // exposes instead of guessing endpoint fields.
-        const candidates = [
-            `${endpointPath}/create`,
-            endpointPath
-        ];
-
-        for (const candidate of candidates) {
-            try {
-                const url = new URL(candidate, location.origin);
-                url.searchParams.set("_bonanza", String(Date.now()));
-                const res = await fetchWithTimeout(url, {
-                    method: "GET",
-                    credentials: "same-origin",
-                    cache: "no-store",
-                    headers: { "Accept": "text/html" }
-                }, 7000);
-                if (!res.ok) continue;
-                const html = await res.text();
-                const doc = new DOMParser().parseFromString(html, "text/html");
-                const contract = findGiftFormContract(doc, res.url || url.href);
-                if (contract) return contract;
-            } catch {
-                // Try the next real page before considering the emergency chat path.
-            }
-        }
-        return null;
-    }
-
     function getTopNavUserLink(root = document) {
         const scope = root && typeof root.querySelector === "function" ? root : document;
         return scope.querySelector([
-            'a.top-nav__username[href*="/users/"]',
             'a.top-nav__username--highresolution[href*="/users/"]',
+            'a.top-nav__username[href*="/users/"]',
             '.top-nav__username a[href*="/users/"]'
         ].join(", "));
     }
@@ -1475,13 +378,13 @@
         return username ? encodeURIComponent(username) : "";
     }
 
-    // ── BON Pool adapter configuration ─────────────────────────────
+    // ── DarkPeers BON Pool ──────────────────────────────────────
     const BONANZA = Object.freeze({
         FUND_NAME: "BON Pool",
-        POOL_PATH: SITE.pool.path,
-        POOL_STORE_PATH: SITE.pool.storePath,
-        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]),
-        MAX_PERCENT: 50,
+        POOL_PATH: "/bon-pool",
+        POOL_STORE_PATH: "/bon-pool/store",
+        PERCENT_OPTIONS: Object.freeze([0, 5, 10, 15, 20, 25, 30]),
+        MAX_PERCENT: 30,
         ACCENT_COLOR: "#4FAFFF",
         GIVEAWAY_COLOR: "#4FAFFF",
         VERIFY_ATTEMPTS: 6,
@@ -1564,9 +467,6 @@
         const safeKind = String(kind || "").replace(/[^a-z0-9-]/gi, "").toLowerCase();
         const markerColor = BRIDGE_SENTINEL_COLORS[safeKind];
         const safeVisible = String(visible ?? "");
-
-        // The DP->IRC->The Lounge sentinel contract is DarkPeers-specific.
-        if (!SITE.bridgeMarkers) return safeVisible;
 
         // Unknown marker kinds must fail visibly-safe: keep the human-facing emoji/text,
         // but never fall back to a public implementation URL.
@@ -1762,147 +662,18 @@
     GENERAL_SETTINGS.silent_mode = readStoredBooleanSetting(LS_SILENT, false, true);
     GENERAL_SETTINGS.show_giveaway_log = readStoredBooleanSetting(LS_SHOW_GIVEAWAY_LOG, false, true);
 
-    let chatroomId = Number(SITE.chat.fallbackRoomId || 0) || null;
+    const chatroomId = DARKPEERS_CHATROOM_ID;
     const chatboxId = "chatbox__messages-create";
 
-    function getActiveChatroomNameFromDom() {
-        const active = document.querySelector("#chatbox_tabs .chatbox__tab.panel__tab--active, #chatbox_tabs .panel__tab--active");
-        return String(active?.textContent || "").replace(/\s+/g, " ").trim();
-    }
-
-    async function fetchChatroomsReadOnly() {
-        try {
-            const res = await fetchWithTimeout("/api/chat/rooms", {
-                method: "GET",
-                credentials: "include",
-                cache: "no-store",
-                headers: { "Accept": "application/json" }
-            }, 7000);
-            if (!res.ok) return [];
-            const payload = await res.json();
-            return Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload) ? payload : []);
-        } catch {
-            return [];
-        }
-    }
-
-    async function refreshChatContextFromPage() {
-        try {
-            const res = await fetchWithTimeout(new URL("/", location.origin), {
-                method: "GET",
-                credentials: "include",
-                cache: "no-store",
-                headers: { "Accept": "text/html" }
-            }, 7000);
-            if (!res.ok) return null;
-            const html = await res.text();
-            const doc = new DOMParser().parseFromString(html, "text/html");
-            const mount = doc.querySelector("chatbox");
-            const raw = mount?.getAttribute(":user") || mount?.getAttribute("user") || "";
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (Number.isFinite(Number(parsed?.id))) OT_USER_ID = Number(parsed.id);
-            if (Number.isFinite(Number(parsed?.chatroom?.id))) OT_CHATROOM_ID = Number(parsed.chatroom.id);
-            return parsed;
-        } catch {
-            return null;
-        }
-    }
-
-    async function resolveActiveChatroomId({ allowFallback = true } = {}) {
-        // Vue-based UNIT3D exposes the authenticated user in the server-rendered
-        // <chatbox :user> mount. Resolve it before selecting the live DOM room so
-        // the chat API never receives user_id=0.
-        if (!OT_USER_ID) await refreshChatContextFromPage();
-
-        // Prefer the room the user actually has selected in the rendered chat.
-        const activeName = getActiveChatroomNameFromDom();
-        const rooms = await fetchChatroomsReadOnly();
-        if (activeName && rooms.length) {
-            const match = rooms.find(room =>
-                String(room?.name || "").trim().toLocaleLowerCase() === activeName.toLocaleLowerCase()
-            );
-            if (Number.isFinite(Number(match?.id))) {
-                chatroomId = Number(match.id);
-                OT_CHATROOM_ID = chatroomId;
-                return chatroomId;
-            }
-        }
-
-        // Then use the authenticated chat state exposed by the page.
-        if (!OT_CHATROOM_ID) await refreshChatContextFromPage();
-        if (Number.isFinite(Number(OT_CHATROOM_ID)) && Number(OT_CHATROOM_ID) > 0) {
-            chatroomId = Number(OT_CHATROOM_ID);
-            return chatroomId;
-        }
-
-        if (
-            allowFallback &&
-            Number.isFinite(Number(SITE.chat.fallbackRoomId)) &&
-            Number(SITE.chat.fallbackRoomId) > 0
-        ) {
-            chatroomId = Number(SITE.chat.fallbackRoomId);
-            OT_CHATROOM_ID = chatroomId;
-            return chatroomId;
-        }
-        return null;
-    }
-
-    async function preflightSiteCapabilitiesForStart({ donationPercent = 0 } = {}) {
-        cacheChatContext();
-
-        const roomId = await resolveActiveChatroomId({
-            allowFallback: SITE.id === "darkpeers"
-        });
-        if (!roomId) return { ok: false, reason: t("preflightChat") };
-
-        if (!OT_USER_ID) await refreshChatContextFromPage();
-        if (!Number.isFinite(Number(OT_USER_ID)) || Number(OT_USER_ID) <= 0) {
-            return { ok: false, reason: t("preflightIdentity") };
-        }
-
-        if (!OT_CSRF_TOKEN) cacheChatContext();
-        if (!OT_CSRF_TOKEN) return { ok: false, reason: t("preflightCsrf") };
-
-        const senderSlug = getAuthenticatedUserSlug();
-        if (!senderSlug) return { ok: false, reason: t("preflightUser") };
-
-        const giftContract = await fetchGiftFormContract(senderSlug);
-        if (!giftContract?.action || !giftContract?.formData) {
-            return { ok: false, reason: t("preflightGift") };
-        }
-
-        if (normalizeDonationPercent(donationPercent) > 0) {
-            try {
-                await fetchBonPoolPage();
-            } catch (e) {
-                logEvent("BON Pool preflight failed", String(e?.message || e));
-                return { ok: false, reason: t("preflightPool") };
-            }
-        }
-
-        return {
-            ok: true,
-            roomId,
-            userId: Number(OT_USER_ID),
-            giftAction: (() => {
-                try { return new URL(giftContract.action, location.origin).pathname; }
-                catch { return ""; }
-            })(),
-            poolChecked: normalizeDonationPercent(donationPercent) > 0,
-            poolMode: SITE.pool.mode
-        };
-    }
-
     const COMMAND_PANEL_SECTIONS = Object.freeze({
-        giveaway: t("uiGeneralCommands"),
-        stats: t("uiStatsCommands"),
-        entry: t("uiEntryCommands"),
-        help: t("uiHelp"),
-        rigging: t("uiRiggingCommands"),
-        pot: t("uiBonCommands")
+        giveaway: "General Commands",
+        stats: "Stats Commands",
+        entry: "Entry Commands",
+        help: "Help",
+        rigging: "Rigging Commands",
+        pot: "BON Commands"
     });
-    const HOST_PANEL_NAUGHTY_SECTION_TITLE = t("uiNaughtyList");
+    const HOST_PANEL_NAUGHTY_SECTION_TITLE = "Naughty List";
     const HOST_PANEL_END_COMMAND_DENYLIST = Object.freeze(["end", "endgiveaway", "giveawayend", "stop", "stopgiveaway"]);
     const HOST_PANEL_INTERNAL_COMMAND_DENYLIST = Object.freeze(["commands"]);
     const HOST_PANEL_SECTION_ORDER = Object.freeze(["giveaway", "stats", "pot", "entry", "rigging", "help"]);
@@ -1937,110 +708,59 @@
         rigging: Object.freeze(["rig", "unrig"])
     });
 
+    // only run the cooldown/spam‑detection logic on available commands
     const baseCommands = ["time", "entries", "help", "commands", "bon", "range", "gift","random", "number", "free", "lucky", "luckye", "rig", "unrig", "stats", "top", "most", "sponsors", "unlucky", "largest", "scale"];
     const hostCommands = ["addtime", "removetime", "reminder", "addbon", "end", "winners", "maxwinners", "naughty"];
-    const validCommands = new Set([...baseCommands, ...hostCommands]);
-
+    const validCommands = new Set([
+        ...baseCommands,
+        ...hostCommands
+    ]);
     const HOST_PANEL_COMMAND_METADATA = Object.freeze({
-        time: { label: t("cmdTime"), section: "giveaway", description: t("cmdTimeDesc"), usage: "!time", requiresGiveaway: true },
-        entries: { label: t("cmdEntries"), section: "info", description: t("cmdEntriesDesc"), usage: "!entries", requiresGiveaway: true },
-        help: { label: t("cmdHelp"), section: "info", description: t("cmdHelpDesc"), usage: "!help", requiresGiveaway: false },
-        commands: { label: t("cmdCommands"), section: "info", description: t("cmdCommandsDesc"), usage: "!commands", requiresGiveaway: false },
-        stats: {
-            label: t("cmdStats"), section: "info", description: t("cmdStatsDesc"),
-            usage: "!stats [username]", requiresGiveaway: false,
-            args: [{ name: "username", label: t("cmdUser"), type: "username", required: false, placeholder: t("cmdOptionalUser") }]
-        },
-        top: {
-            label: t("cmdTop"), section: "info", description: t("cmdTopDesc"),
-            usage: "!top [N]", requiresGiveaway: false,
-            args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }]
-        },
-        most: {
-            label: t("cmdMost"), section: "info", description: t("cmdMostDesc"),
-            usage: "!most [N]", requiresGiveaway: false,
-            args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }]
-        },
-        sponsors: {
-            label: t("cmdSponsors"), section: "pot", description: t("cmdSponsorsDesc"),
-            usage: "!sponsors [N]", requiresGiveaway: false,
-            args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }]
-        },
-        unlucky: {
-            label: t("cmdUnlucky"), section: "info", description: t("cmdUnluckyDesc"),
-            usage: "!unlucky [N]", requiresGiveaway: false,
-            args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }]
-        },
-        largest: {
-            label: t("cmdLargest"), section: "info", description: t("cmdLargestDesc"),
-            usage: "!largest [N]", requiresGiveaway: false,
-            args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }]
-        },
-        gift: { label: t("cmdGift"), section: "pot", description: t("cmdGiftDesc"), usage: "!gift", requiresGiveaway: true },
-        bon: { label: t("cmdBon"), section: "pot", description: t("cmdBonDesc"), usage: "!bon", requiresGiveaway: true },
-        range: { label: t("cmdRange"), section: "entry", description: t("cmdRangeDesc"), usage: "!range", requiresGiveaway: true },
-        lucky: { label: t("cmdLucky"), section: "entry", description: t("cmdLuckyDesc"), usage: "!lucky", requiresGiveaway: true },
-        luckye: { label: t("cmdLuckyEnter"), section: "entry", description: t("cmdLuckyEnterDesc"), usage: "!luckye", requiresGiveaway: true },
-        rig: { label: t("cmdRig"), section: "entry", description: t("cmdRigDesc"), usage: "!rig", requiresGiveaway: true },
-        unrig: { label: t("cmdUnrig"), section: "entry", description: t("cmdUnrigDesc"), usage: "!unrig", requiresGiveaway: true },
-        random: { label: t("cmdRandom"), section: "entry", description: t("cmdRandomDesc"), usage: "!random", requiresGiveaway: true },
-        number: { label: t("cmdNumber"), section: "entry", description: t("cmdNumberDesc"), usage: "!number", requiresGiveaway: true },
-        free: { label: t("cmdFree"), section: "entry", description: t("cmdFreeDesc"), usage: "!free", requiresGiveaway: true },
-        addbon: {
-            label: t("cmdAddBon"), section: "pot", description: t("cmdAddBonDesc"),
-            usage: "!addbon <amount>", requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "amount", label: "BON", type: "int", required: true, min: 1, placeholder: t("cmdAmount") }]
-        },
-        reminder: { label: t("cmdReminder"), section: "giveaway", description: t("cmdReminderDesc"), usage: "!reminder", requiresGiveaway: true, hostOnly: true },
-        winners: {
-            label: t("cmdWinners"), section: "giveaway", description: t("cmdWinnersDesc"),
-            usage: `!winners 1-${MAX_WINNERS}`, requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "count", label: t("cmdCount"), type: "int", required: true, min: 1, max: MAX_WINNERS, placeholder: t("cmdWinnersPlaceholder") }]
-        },
-        maxwinners: {
-            label: t("cmdMaxWinners"), section: "giveaway", description: t("cmdMaxWinnersDesc"),
-            usage: `!maxwinners 1-${MAX_WINNERS}`, requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "count", label: t("cmdMax"), type: "int", required: true, min: 1, max: MAX_WINNERS, placeholder: t("cmdMaxPlaceholder") }]
-        },
-        scale: { label: t("cmdScale"), section: "info", description: t("cmdScaleDesc"), usage: "!scale", requiresGiveaway: true },
-        addtime: {
-            label: t("cmdAddTime"), section: "giveaway", description: t("cmdAddTimeDesc"),
-            usage: "!addtime <minutes>", requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "minutes", label: t("cmdMinutes"), type: "int", required: true, min: 1, placeholder: t("cmdMinutesPlaceholder") }]
-        },
-        removetime: {
-            label: t("cmdRemoveTime"), section: "giveaway", description: t("cmdRemoveTimeDesc"),
-            usage: "!removetime <minutes>", requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "minutes", label: t("cmdMinutes"), type: "int", required: true, min: 1, placeholder: t("cmdMinutesPlaceholder") }]
-        },
-        naughty: {
-            label: t("cmdNaughty"), section: "giveaway", description: t("cmdNaughtyDesc"),
-            usage: "!naughty (add|remove|list) [username]", requiresGiveaway: true, hostOnly: true,
-            args: [
-                {
-                    name: "action", label: t("cmdAction"), type: "select", required: true,
-                    placeholder: t("cmdActionPlaceholder"),
-                    options: [
-                        { label: t("cmdActionAdd"), value: "add" },
-                        { label: t("cmdActionRemove"), value: "remove" },
-                        { label: t("cmdActionList"), value: "list" }
-                    ],
-                    validate: (v) => /^(add|remove|list)$/i.test(String(v || "").trim()),
-                    hint: t("cmdActionHint")
-                },
-                {
-                    name: "username", label: t("cmdUser"), type: "username", required: false,
-                    placeholder: t("cmdUsername"),
-                    requiredWhen: (all) => /^(add|remove)$/i.test(String(all.action || "").trim()),
-                    hint: t("cmdUsernameHint")
-                }
-            ]
-        },
-        end: {
-            label: t("cmdEnd"), section: "giveaway", description: t("cmdEndDesc"),
-            usage: "!end [host]", requiresGiveaway: true, hostOnly: true,
-            args: [{ name: "host", label: t("cmdHost"), type: "username", required: false, placeholder: t("cmdOptionalHost") }]
-        }
+        time: { label: "Time", section: "giveaway", description: "Show remaining giveaway time.", usage: "!time", requiresGiveaway: true },
+        entries: { label: "Entries", section: "info", description: "List current entries.", usage: "!entries", requiresGiveaway: true },
+        help: { label: "Help", section: "info", description: "Show available commands in chat.", usage: "!help", requiresGiveaway: false },
+        commands: { label: "Commands", section: "info", description: "Alias for !help.", usage: "!commands", requiresGiveaway: false },
+        stats: { label: "Stats", section: "info", description: "Show saved stats for a user.", usage: "!stats [username]", requiresGiveaway: false,
+                args: [{ name: "username", label: "User", type: "username", required: false, placeholder: "optional username" }] },
+        top: { label: "Top", section: "info", description: "Top winners leaderboard.", usage: "!top [N]", requiresGiveaway: false,
+              args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }] },
+        most: { label: "Most", section: "info", description: "Most BON won leaderboard.", usage: "!most [N]", requiresGiveaway: false,
+               args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }] },
+        sponsors: { label: "Sponsors", section: "pot", description: "Show top sponsors.", usage: "!sponsors [N]", requiresGiveaway: false,
+                   args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }] },
+        unlucky: { label: "Unlucky", section: "info", description: "Show most losses leaderboard.", usage: "!unlucky [N]", requiresGiveaway: false,
+                  args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }] },
+        largest: { label: "Largest", section: "info", description: "Show largest giveaways.", usage: "!largest [N]", requiresGiveaway: false,
+                  args: [{ name: "count", label: "N", type: "int", required: false, min: 1, max: STATS_MAX_TOP_N, placeholder: String(STATS_DEFAULT_TOP_N) }] },
+        gift: { label: "Gift", section: "pot", description: "Show giveaway gift status.", usage: "!gift", requiresGiveaway: true },
+        bon: { label: "BON", section: "pot", description: "Show current pot amount.", usage: "!bon", requiresGiveaway: true },
+        range: { label: "Range", section: "entry", description: "Show valid entry range.", usage: "!range", requiresGiveaway: true },
+        lucky: { label: "Lucky", section: "entry", description: "Show lucky number.", usage: "!lucky", requiresGiveaway: true },
+        luckye: { label: "Lucky Enter", section: "entry", description: "Enter using lucky number.", usage: "!luckye", requiresGiveaway: true },
+        rig: { label: "Rig", section: "entry", description: "Fun rig toggle command.", usage: "!rig", requiresGiveaway: true },
+        unrig: { label: "Unrig", section: "entry", description: "Fun rig toggle command.", usage: "!unrig", requiresGiveaway: true },
+        random: { label: "Random", section: "entry", description: "Enter with a random number.", usage: "!random", requiresGiveaway: true },
+        number: { label: "Number", section: "entry", description: "Show your current entry.", usage: "!number", requiresGiveaway: true },
+        free: { label: "Free", section: "entry", description: "Show available entry numbers.", usage: "!free", requiresGiveaway: true },
+        addbon: { label: "Add BON", section: "pot", description: "Add BON to the pot.", usage: "!addbon <amount>", requiresGiveaway: true, hostOnly: true,
+                 args: [{ name: "amount", label: "BON", type: "int", required: true, min: 1, placeholder: "amount" }] },
+        reminder: { label: "Reminder", section: "giveaway", description: "Send reminder now.", usage: "!reminder", requiresGiveaway: true, hostOnly: true },
+        winners: { label: "Winners", section: "giveaway", description: "Set winner count.", usage: `!winners 1-${MAX_WINNERS}`, requiresGiveaway: true, hostOnly: true,
+                  args: [{ name: "count", label: "Count", type: "int", required: true, min: 1, max: MAX_WINNERS, placeholder: "winners" }] },
+        maxwinners: { label: "Max Winners", section: "giveaway", description: "Set max scaled winners.", usage: `!maxwinners 1-${MAX_WINNERS}`, requiresGiveaway: true, hostOnly: true,
+                     args: [{ name: "count", label: "Max", type: "int", required: true, min: 1, max: MAX_WINNERS, placeholder: "max" }] },
+        scale: { label: "Scale", section: "info", description: "Show scaling progress.", usage: "!scale", requiresGiveaway: true },
+        addtime: { label: "Add Time", section: "giveaway", description: "Add giveaway minutes.", usage: "!addtime <minutes>", requiresGiveaway: true, hostOnly: true,
+                  args: [{ name: "minutes", label: "Min", type: "int", required: true, min: 1, placeholder: "minutes" }] },
+        removetime: { label: "Remove Time", section: "giveaway", description: "Remove giveaway minutes.", usage: "!removetime <minutes>", requiresGiveaway: true, hostOnly: true,
+                     args: [{ name: "minutes", label: "Min", type: "int", required: true, min: 1, placeholder: "minutes" }] },
+        naughty: { label: "Naughty", section: "giveaway", description: "Manage naughty list.", usage: "!naughty (add|remove|list) [username]", requiresGiveaway: true, hostOnly: true,
+                  args: [
+                      { name: "action", label: "Action", type: "select", required: true, placeholder: "action", options: [{ label: "Add", value: "add" }, { label: "Remove", value: "remove" }, { label: "List", value: "list" }], validate: (v) => /^(add|remove|list)$/i.test(String(v || "").trim()), hint: "Use add, remove, or list." },
+                      { name: "username", label: "User", type: "username", required: false, placeholder: "username", requiredWhen: (all) => /^(add|remove)$/i.test(String(all.action || "").trim()), hint: "Username is required for add/remove." }
+                  ] },
+        end: { label: "End", section: "giveaway", description: "End the active giveaway.", usage: "!end [host]", requiresGiveaway: true, hostOnly: true,
+              args: [{ name: "host", label: "Host", type: "username", required: false, placeholder: "optional host" }] },
     });
 
     // Declared early so UI init paths can safely reference this object before command handlers are populated.
@@ -2052,8 +772,6 @@
     let giveawayStartTime;
     let sponsorsInterval;
     let observer;
-    let entryChatPollInterval = null;
-    let entryChatPollInFlight = null;
     let giveawayData;
     let chatbox = null;
     let reminderRetryTimeout = null;
@@ -2139,8 +857,8 @@
     giveawayBTN.type = "button";
     giveawayBTN.setAttribute("class", "bonanza-btn fx-94");
     giveawayBTN.id = "bonanzaGiveawayBtn";
-    giveawayBTN.title = t("uiAppTitle");
-    giveawayBTN.innerHTML = `${ROBOT_SVG}<span class="btn-label">${t("uiToolbarLabel")}</span>`;
+    giveawayBTN.title = "DarkPeers BONanza Giveaway";
+    giveawayBTN.innerHTML = `${ROBOT_SVG}<span class="btn-label">Giveaway</span>`;
     giveawayBTN.onclick = toggleMenu;
 
     // ───────────────────────────────────────────────────────────
@@ -2166,12 +884,12 @@
             };
 
             return {
-                name:        fetch("name") || "BONanza Giveaway",
+                name:        fetch("name") || "DarkPeers BONanza Giveaway",
                 version:     fetch("version") || "0.0.0"
             };
         } catch (e) {
             /* Last-ditch – never crash the script */
-            return { name:"BONanza Giveaway", version:"0.0.0" };
+            return { name:"DarkPeers BONanza Giveaway", version:"0.0.0" };
         }
     })();
 
@@ -2201,7 +919,7 @@
         </h4>
       </div>
       <div class="button-right giveaway-header-actions">
-        <button id="minimizeButton" class="form__button form__button--text giveaway-btn" style="background-color:#4e595f;" title="${t("uiMinimizePanel")}">
+        <button id="minimizeButton" class="form__button form__button--text giveaway-btn" style="background-color:#4e595f;" title="Minimize panel">
           <i class="fa-solid fa-window-minimize"></i>
         </button>
         <button id="closeButton" class="form__button form__button--text giveaway-btn" style="background-color:#4e595f;">
@@ -2211,13 +929,13 @@
     </div>
     <div class="giveaway-header-actions__menu-row no-drag" data-no-drag="1">
       <button id="resetButton" class="form__button form__button--text giveaway-btn no-drag" data-no-drag="1" style="background-color:#b32525;">
-        <i class="fa-solid fa-rotate-right"></i> ${t("uiReset")} 
+        <i class="fa-solid fa-rotate-right"></i> Reset
       </button>
       <button id="giveawaySettingsBtn" class="form__button form__button--text giveaway-btn no-drag" data-no-drag="1" style="background-color:#ff6400;">
-        <i class="fa-solid fa-gear"></i> ${t("uiSettings")} 
+        <i class="fa-solid fa-gear"></i> Settings
       </button>
       <button id="commandsButton" class="form__button form__button--text giveaway-btn no-drag" data-no-drag="1" style="background-color:#ff9600;">
-        <i class="fa-solid fa-list"></i> ${t("uiCommands")} 
+        <i class="fa-solid fa-list"></i> Commands
       </button>
     </div>
   </header>
@@ -2228,15 +946,15 @@
     <!-- Presets -->
     <div class="giveaway-presets-row" style="display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; margin:0;">
       <select id="presetSelect" class="form__text" style="width:auto; min-width:120px; max-width:180px; padding:3px 6px; font-size:12px;">
-        <option value="">${t("uiPresets")}</option>
+        <option value="">— Presets —</option>
       </select>
-      <button type="button" id="presetLoadBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#2a7acc; font-size:11px; padding:3px 8px;" title="${t("uiLoadPresetTitle")}">
-        <i class="fa-solid fa-folder-open"></i> ${t("uiLoad")} 
+      <button type="button" id="presetLoadBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#2a7acc; font-size:11px; padding:3px 8px;" title="Load selected preset">
+        <i class="fa-solid fa-folder-open"></i> Load
       </button>
-      <button type="button" id="presetSaveBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#02B008; font-size:11px; padding:3px 8px;" title="${t("uiSavePresetTitle")}">
-        <i class="fa-solid fa-floppy-disk"></i> ${t("uiSave")} 
+      <button type="button" id="presetSaveBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#02B008; font-size:11px; padding:3px 8px;" title="Save current form as a preset">
+        <i class="fa-solid fa-floppy-disk"></i> Save
       </button>
-      <button type="button" id="presetDeleteBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#b32525; font-size:11px; padding:3px 8px;" title="${t("uiDeletePresetTitle")}">
+      <button type="button" id="presetDeleteBtn" class="form__button form__button--text giveaway-btn no-drag" style="background-color:#b32525; font-size:11px; padding:3px 8px;" title="Delete selected preset">
         <i class="fa-solid fa-trash"></i>
       </button>
     </div>
@@ -2254,7 +972,7 @@
 >
 
         <label class="form__label form__label--floating" for="giveawayAmount">
-          ${t("uiGiveawayAmount")}
+          Giveaway Amount
         </label>
       </p>
 
@@ -2278,7 +996,7 @@
                   maxlength="9"
                 >
                 <label class="form__label form__label--floating" for="${id}">
-                  ${id === 'startNum' ? t("uiStartNumber") : t("uiEndNumber")}
+                  ${id === 'startNum' ? 'Start #' : 'End #'}
                 </label>
               </p>`
     )
@@ -2301,19 +1019,19 @@
             value="5"
             autocomplete="off"
           >
-          <label class="form__label form__label--floating" for="timerNum">${t("uiTimeMin")}</label>
+          <label class="form__label form__label--floating" for="timerNum">Time&nbsp;(min)</label>
         </p>
 
         <!-- reminders -->
         <p class="form__group" style="width:28%;">
           <input class="form__text" id="reminderNum" type="number" min="0" step="1" value="0" autocomplete="off">
-          <label class="form__label form__label--floating">${t("uiReminders")}</label>
+          <label class="form__label form__label--floating"># Reminders</label>
         </p>
 
         <!-- cadence label -->
         <p class="form__group" style="width:28%;">
           <input class="form__text" id="reminderEvery" readonly tabindex="-1" style="cursor:default;">
-          <label class="form__label form__label--floating">${t("uiEveryMin")}</label>
+          <label class="form__label form__label--floating">Every (min)</label>
         </p>
       </div>
 
@@ -2329,21 +1047,21 @@
             step="1"
             value="1"
           >
-          <label class="form__label form__label--floating" for="winnersNum">${t("uiWinners")}</label>
+          <label class="form__label form__label--floating" for="winnersNum"># Winners</label>
         </p>
         <p class="form__group giveaway-number-col" id="maxScaledWinnersGroup" style="display:none;">
           <input
             class="form__text"
             type="number"
             id="maxScaledWinnersNum"
-            title="${t("uiMaxWinnersTitle", { max: MAX_WINNERS })}"
+            title="Hard cap: ${MAX_WINNERS}. Scaling can’t exceed this."
             min="1"
             max="${MAX_WINNERS}"
             step="1"
             value="1"
             disabled
           >
-          <label class="form__label form__label--floating" for="maxScaledWinnersNum" title="${t("uiMaxWinnersTitle", { max: MAX_WINNERS })}">${t("uiMaxWinners")}</label>
+          <label class="form__label form__label--floating" for="maxScaledWinnersNum" title="Hard cap: ${MAX_WINNERS}. Scaling can’t exceed this.">Max Winners</label>
           <small id="maxScaledWinnersError" class="giveaway-inline-error" aria-live="polite"></small>
         </p>
         <p class="form__group giveaway-number-col" id="scaleBonPerWinnerGroup" style="display:none;">
@@ -2351,13 +1069,13 @@
             class="form__text"
             type="number"
             id="scaleBonPerWinnerNum"
-            title="${t("uiScaleBonTitle")}"
+            title="Additional BON required to unlock each extra winner. Leave empty to auto-calculate from the starting pot."
             min="1"
             step="1"
-            placeholder="${t("uiAuto")}"
+            placeholder="auto"
             disabled
           >
-          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="${t("uiScaleBonShortTitle")}">${t("uiBonPerWinner")}</label>
+          <label class="form__label form__label--floating" for="scaleBonPerWinnerNum" title="Additional BON required to unlock each extra winner.">BON/+Winner</label>
         </p>
       </div>
 
@@ -2368,11 +1086,11 @@
             id="customMessage"
             type="text"
             maxlength="100"
-            placeholder="${t("uiMaxChars")}"
+            placeholder="Max 100 chars"
             value="${DEFAULT_CUSTOM_MESSAGE}"
           >
           <label class="form__label form__label--floating" for="customMessage">
-            ${t("uiCustomMessage")}
+            Custom Message
           </label>
         </p>
       </div>
@@ -2380,10 +1098,10 @@
       <!-- BON Pool contribution row -->
       <div class="panel__body giveaway-donation-row" style="display:flex;justify-content:center;align-items:center;gap:14px;width:100%;flex-wrap:wrap;">
         <p class="form__group" style="width:38%;margin:0;">
-          <select class="form__select" id="donationPercent" title="${t("uiPoolDonationTitle", { poolName: BONANZA.FUND_NAME })}">
+          <select class="form__select" id="donationPercent" title="Share of the final pot (host + sponsors) donated to the ${BONANZA.FUND_NAME}. 0% runs a standard giveaway.">
             ${BONANZA.PERCENT_OPTIONS.map(p => `<option value="${p}">${p}%</option>`).join('')}
           </select>
-          <label class="form__label form__label--floating" for="donationPercent">${t("uiPoolDonation", { poolName: BONANZA.FUND_NAME })}</label>
+          <label class="form__label form__label--floating" for="donationPercent">${BONANZA.FUND_NAME} donation</label>
         </p>
         <small id="donationHint" style="flex:1;min-width:180px;color:#bbb;font-size:12px;line-height:1.3;"></small>
       </div>
@@ -2395,7 +1113,7 @@
     class="form__button form__button--filled"
     style="background-color:#02B008;"
   >
-    ${t("uiStart")}
+    Start
   </button>
 </p>
     </form>
@@ -2409,7 +1127,7 @@
     <div id="entriesWrapper" class="data-table-wrapper" hidden
          style="width:100%; overflow-x:auto; margin-top:10px;">
       <table id="entriesTable" class="data-table" style="width:100%; border-collapse:collapse; table-layout:fixed;">
-        <thead><tr><th>${t("uiUser")}</th><th>${t("uiEntryNumber")}</th></tr></thead>
+        <thead><tr><th>User</th><th>Entry #</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -2420,9 +1138,9 @@
       <table id="winnersTable" class="data-table" style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <thead>
           <tr>
-            <th>${t("uiWinner")}</th>
-            <th>${t("uiPrizeBon")}</th>
-            <th>${t("uiGift")}</th>
+            <th>Winner</th>
+            <th>Prize BON</th>
+            <th>Gift</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -2430,37 +1148,37 @@
     </div>
 
     <div id="giveawayLogPanel" class="data-table-wrapper" style="width:100%; margin-top:10px; display:none;">
-      <h3 style="margin:0 0 6px 0; color:#ddd; font-size:14px;">${t("uiGiveawayLog")}</h3>
-      <pre id="giveawayLogContent" style="margin:0; max-height:160px; overflow:auto; background:#1f1f1f; color:#cfcfcf; border:1px solid #444; border-radius:4px; padding:8px; white-space:pre-wrap; word-break:break-word;">${t("uiNoEvents")}</pre>
+      <h3 style="margin:0 0 6px 0; color:#ddd; font-size:14px;">Giveaway Log</h3>
+      <pre id="giveawayLogContent" style="margin:0; max-height:160px; overflow:auto; background:#1f1f1f; color:#cfcfcf; border:1px solid #444; border-radius:4px; padding:8px; white-space:pre-wrap; word-break:break-word;">No events yet.</pre>
       <div style="display:flex; gap:8px; margin-top:8px;">
-        <button type="button" id="copyGiveawayLogButton" class="form__button form__button--filled">${t("uiCopyLog")}</button>
-        <button type="button" id="clearGiveawayLogButton" class="form__button form__button--filled" style="background:#7d3333;">${t("uiClearLog")}</button>
+        <button type="button" id="copyGiveawayLogButton" class="form__button form__button--filled">Copy log</button>
+        <button type="button" id="clearGiveawayLogButton" class="form__button form__button--filled" style="background:#7d3333;">Clear log</button>
       </div>
     </div>
   </div>
 
     <!-- End-of-giveaway statements -->
     <div id="bonanzaStatementRow" class="data-table-wrapper" style="width:100%; margin-top:10px; display:none;">
-      <h3 style="margin:0 0 6px 0; color:#ddd; font-size:14px;">${t("uiStatements")}</h3>
+      <h3 style="margin:0 0 6px 0; color:#ddd; font-size:14px;">Giveaway statements</h3>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <select id="bonanzaStatementSelect" class="form__select" style="flex:1; min-width:200px;" title="${t("uiStatementsTitle", { count: STATEMENTS_KEEP })}"></select>
-        <button type="button" id="bonanzaSaveStatementBtn" class="form__button form__button--filled" title="${t("uiSaveTxtTitle")}">${t("uiSaveTxt")}</button>
-        <button type="button" id="bonanzaCopyStatementBtn" class="form__button form__button--filled" style="background:#4e595f;" title="${t("uiCopyStatementTitle")}">${t("uiCopy")}</button>
+        <select id="bonanzaStatementSelect" class="form__select" style="flex:1; min-width:200px;" title="The last ${STATEMENTS_KEEP} giveaway statements are kept on this browser."></select>
+        <button type="button" id="bonanzaSaveStatementBtn" class="form__button form__button--filled" title="Download the selected statement as a .txt file">Save .txt</button>
+        <button type="button" id="bonanzaCopyStatementBtn" class="form__button form__button--filled" style="background:#4e595f;" title="Copy the selected statement to the clipboard">Copy</button>
       </div>
     </div>
 
   <!-- SETTINGS MENU -->
   <div id="giveaway_settings_menu" class="giveaway_settings_menu" style="display:none">
     <div class="settings-menu-content">
-      <div class="settings-group" aria-label="${t("uiEntryModes")}" data-settings-group="entry-modes" data-toggle-ids="randomToggle,luckyToggle,freeToggle">
+      <div class="settings-group" aria-label="Entry Modes" data-settings-group="entry-modes" data-toggle-ids="randomToggle,luckyToggle,freeToggle">
         <div class="settings-group__header">
-          <p class="settings-group__title">${t("uiEntryModes")}</p>
-          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="entry-modes" title="${t("uiToggleEntryModes")}">${t("uiToggleAll")}</button>
+          <p class="settings-group__title">Entry Modes</p>
+          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="entry-modes" title="Toggle all options in Entry Modes only.">Toggle all</button>
         </div>
         ${[
-            { label: t('uiRandom'), id: 'randomToggle', tip: t('uiRandomTip') },
-            { label: t('uiLucky'), id: 'luckyToggle', tip: t('uiLuckyTip') },
-            { label: t('uiFree'), id: 'freeToggle', tip: t('uiFreeTip') }
+            { label: 'Random', id: 'randomToggle', tip: 'Enable !random (enter with a random free number).' },
+            { label: 'Lucky', id: 'luckyToggle', tip: 'Enable !lucky (show lucky #) and !luckye (enter with lucky #).' },
+            { label: 'Free', id: 'freeToggle', tip: 'Enable !free (show some available numbers).' }
         ].map(({ label, id, tip }) => `
           <label class="settings-row" title="${tip}" for="${id}">
             <span class="settings-row__label">${label}</span>
@@ -2474,14 +1192,14 @@
           </label>`).join('')}
       </div>
 
-      <div class="settings-group" aria-label="${t("uiChatReplies")}" data-settings-group="chat-replies" data-toggle-ids="entryrepliesToggle,silentmodeToggle">
+      <div class="settings-group" aria-label="Chat and Replies" data-settings-group="chat-replies" data-toggle-ids="entryrepliesToggle,silentmodeToggle">
         <div class="settings-group__header">
-          <p class="settings-group__title">${t("uiChatReplies")}</p>
-          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="chat-replies" title="${t("uiToggleChatReplies")}">${t("uiToggleAll")}</button>
+          <p class="settings-group__title">Chat & Replies</p>
+          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="chat-replies" title="Toggle all options in Chat & Replies only.">Toggle all</button>
         </div>
         ${[
-            { label: t('uiEntryReplies'), id: 'entryrepliesToggle', tip: t('uiEntryRepliesTip') },
-            { label: t('uiSilentMode'), id: 'silentmodeToggle', tip: t('uiSilentModeTip') }
+            { label: 'Entry Replies', id: 'entryrepliesToggle', tip: 'When enabled, the bot replies when an entry is logged. Disable to reduce chat spam.' },
+            { label: 'Silent Mode', id: 'silentmodeToggle', tip: 'When enabled, command replies are sent privately via /msg instead of public chat.' }
         ].map(({ label, id, tip }) => `
           <label class="settings-row" title="${tip}" for="${id}">
             <span class="settings-row__label">${label}</span>
@@ -2495,15 +1213,15 @@
           </label>`).join('')}
       </div>
 
-      <div class="settings-group" aria-label="${t("uiScalingRules")}" data-settings-group="scaling-rules" data-toggle-ids="scaleWinnersToggle,rigModeToggle,showgiveawaylogToggle">
+      <div class="settings-group" aria-label="Scaling and Rules" data-settings-group="scaling-rules" data-toggle-ids="scaleWinnersToggle,rigModeToggle,showgiveawaylogToggle">
         <div class="settings-group__header">
-          <p class="settings-group__title">${t("uiScalingRules")}</p>
-          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="scaling-rules" title="${t("uiToggleScalingRules")}">${t("uiToggleAll")}</button>
+          <p class="settings-group__title">Scaling & Rules</p>
+          <button type="button" class="form__button form__button--filled settings-section-toggle" data-settings-toggle="scaling-rules" title="Toggle all options in Scaling & Rules only.">Toggle all</button>
         </div>
         ${[
-            { label: t('uiScaleWinners'), id: 'scaleWinnersToggle', tip: t('uiScaleWinnersTip') },
-            { label: t('uiRiggedMode'), id: 'rigModeToggle', tip: t('uiRiggedModeTip') },
-            { label: t('uiShowLog'), id: 'showgiveawaylogToggle', tip: t('uiShowLogTip') }
+            { label: 'Scale Winners', id: 'scaleWinnersToggle', tip: 'When enabled, winners may increase based on sponsorship BON (up to the max set in the giveaway form).' },
+            { label: 'Rigged mode (visual only)', id: 'rigModeToggle', tip: 'Rigged mode is purely cosmetic… allegedly.' },
+            { label: 'Show Giveaway Log', id: 'showgiveawaylogToggle', tip: 'Only controls Giveaway Log panel visibility. Logging still continues in the background.' }
         ].map(({ label, id, tip }) => `
           <label class="settings-row" title="${tip}" for="${id}">
             <span class="settings-row__label">${label}</span>
@@ -2522,54 +1240,54 @@
   <!-- COMMANDS MENU -->
   <div id="giveaway_commands_menu" class="commands-menu" style="display:none">
     <ul class="commands-list">
-      <li class="section-label">${t("uiGeneralCommands")}</li>
-      <li><code>!time&nbsp;</code>        <span class="desc">${t("cmdTimeDesc")}</span></li>
-      <li><code>!entries&nbsp;</code>     <span class="desc">${t("cmdEntriesDesc")}</span></li>
-      <li><code>!free&nbsp;</code>        <span class="desc">${t("cmdFreeDesc")}</span></li>
-      <li><code>!number&nbsp;</code>      <span class="desc">${t("cmdNumberDesc")}</span></li>
-      <li><code>!random&nbsp;</code>      <span class="desc">${t("cmdRandomDesc")}</span></li>
-      <li><code>!lucky&nbsp;</code>       <span class="desc">${t("cmdLuckyDesc")}</span></li>
-      <li><code>!luckye&nbsp;</code>      <span class="desc">${t("cmdLuckyEnterDesc")}</span></li>
-      <li><code>!bon&nbsp;</code>         <span class="desc">${t("cmdBonDesc")}</span></li>
-      <li><code>!range&nbsp;</code>       <span class="desc">${t("cmdRangeDesc")}</span></li>
-      <li><code>!scale&nbsp;</code>      <span class="desc">${t("cmdScaleDesc")}</span></li>
-      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">${t("cmdRigDesc")}</span></li>
-      <li><code>!help&nbsp;</code>        <span class="desc">${t("cmdHelpDesc")}</span></li>
-      <li><code>!stats&nbsp;[user]</code>   <span class="desc">${t("cmdStatsDesc")}</span></li>
-      <li><code>!top&nbsp;[N]</code>       <span class="desc">${t("cmdTopDesc")}</span></li>
-      <li><code>!most&nbsp;[N]</code>      <span class="desc">${t("cmdMostDesc")}</span></li>
-      <li><code>!sponsors&nbsp;[N]</code>  <span class="desc">${t("cmdSponsorsDesc")}</span></li>
-      <li><code>!unlucky&nbsp;[N]</code>   <span class="desc">${t("cmdUnluckyDesc")}</span></li>
+      <li class="section-label">General&nbsp;Commands</li>
+      <li><code>!time&nbsp;</code>        <span class="desc">Show remaining time</span></li>
+      <li><code>!entries&nbsp;</code>     <span class="desc">List all entries</span></li>
+      <li><code>!free&nbsp;</code>        <span class="desc">Show free numbers</span></li>
+      <li><code>!number&nbsp;</code>      <span class="desc">Show your entry</span></li>
+      <li><code>!random&nbsp;</code>      <span class="desc">Enter with a random #</span></li>
+      <li><code>!lucky&nbsp;</code>       <span class="desc">Show lucky number</span></li>
+      <li><code>!luckye&nbsp;</code>      <span class="desc">Enter with lucky #</span></li>
+      <li><code>!bon&nbsp;</code>         <span class="desc">Show pot amount</span></li>
+      <li><code>!range&nbsp;</code>       <span class="desc">Show valid range</span></li>
+      <li><code>!scale&nbsp;</code>      <span class="desc">Show scaling progress</span></li>
+      <li><code>!rig/!unrig&nbsp;</code>  <span class="desc">Toggle rigging (fun)</span></li>
+      <li><code>!help&nbsp;</code>        <span class="desc">Show this list in chat</span></li>
+      <li><code>!stats&nbsp;[user]</code>   <span class="desc">Show saved stats</span></li>
+      <li><code>!top&nbsp;[N]</code>       <span class="desc">Top winners (by wins)</span></li>
+      <li><code>!most&nbsp;[N]</code>      <span class="desc">Most BON won (total)</span></li>
+      <li><code>!sponsors&nbsp;[N]</code>  <span class="desc">Top sponsors</span></li>
+      <li><code>!unlucky&nbsp;[N]</code>   <span class="desc">Most losses</span></li>
 
-      <li class="section-label">${t("uiHostOnlyCommands")}</li>
+      <li class="section-label">Host-Only&nbsp;Commands</li>
       <li class="full-span">
           <code>!time add&nbsp;N&nbsp;/&nbsp;remove&nbsp;N&nbsp;</code>
-          <span class="desc">${t("cmdAddTimeDesc")}</span>
+          <span class="desc">Adjust remaining minutes</span>
       </li>
-      <li><code>!reminder&nbsp;</code>    <span class="desc">${t("cmdReminderDesc")}</span></li>
-      <li><code>!addbon&nbsp;</code>      <span class="desc">${t("cmdAddBonDesc")}</span></li>
-      <li><code>!winners&nbsp;N</code>    <span class="desc">${t("cmdWinnersDesc")}</span></li>
-      <li><code>!maxwinners&nbsp;N</code> <span class="desc">${t("cmdMaxWinnersDesc")}</span></li>
-      <li><code>!end&nbsp;</code>         <span class="desc">${t("cmdEndDesc")}</span></li>
+      <li><code>!reminder&nbsp;</code>    <span class="desc">Send reminder msg</span></li>
+      <li><code>!addbon&nbsp;</code>      <span class="desc">Add BON to pot</span></li>
+      <li><code>!winners&nbsp;N</code>    <span class="desc">Set number of winners</span></li>
+      <li><code>!maxwinners&nbsp;N</code> <span class="desc">Set max scaled winners</span></li>
+      <li><code>!end&nbsp;</code>         <span class="desc">End the giveaway</span></li>
 
-      <li><code>!naughty&nbsp;</code>     <span class="desc">${t("cmdNaughtyDesc")}</span></li>
+      <li><code>!naughty&nbsp;</code>     <span class="desc">list/add/remove a user</span></li>
       <li class="naughty-alert">
-        ${t("uiNaughtyAlert")}
+        ⚠⚠ !naughty excludes users from the giveaway entirely ⚠⚠ ************************USE RESPONSIBLY************************
       </li>
     </ul>
   </div>
 
 
   <!-- RIGGED WATERMARK (only visible in rigged mode) -->
-  <div class="rigged-watermark">${t("uiRiggedWatermark")}</div>
+  <div class="rigged-watermark">RIGGED</div>
 </section>
 `;
 
     const hostPanelHTML = `
 <aside id="hostCommandPanel" class="host-command-panel" aria-hidden="true">
-  <div id="hostCommandPanelHandle" class="host-command-panel__handle" title="${t("uiDragHostPanel")}">
-    <span class="host-command-panel__handle-title">${t("uiHostPanel")}</span>
-    <button id="hostPanelCloseBtn" type="button" class="form__button form__button--text host-command-panel__close" title="${t("uiCloseHostPanel")}" aria-label="${t("uiCloseHostPanel")}">×</button>
+  <div id="hostCommandPanelHandle" class="host-command-panel__handle" title="Drag to move Host Panel">
+    <span class="host-command-panel__handle-title">Host Panel</span>
+    <button id="hostPanelCloseBtn" type="button" class="form__button form__button--text host-command-panel__close" title="Close Host Panel" aria-label="Close Host Panel">×</button>
   </div>
   <div id="hostCommandPanelBody" class="host-command-panel__body"></div>
 </aside>
@@ -2940,7 +1658,7 @@ body.host-panel-dragging * {
             toast.setAttribute("role", "alert");
             document.body.appendChild(toast);
         }
-        toast.textContent = t("uiConflictToast");
+        toast.textContent = "DEACTIVATE THE ORIGINAL GIVEAWAY SCRIPT";
         requestAnimationFrame(() => toast.classList.add("show"));
         if (conflictToastTimer) clearTimeout(conflictToastTimer);
         conflictToastTimer = setTimeout(() => {
@@ -2981,7 +1699,7 @@ body.host-panel-dragging * {
         try { releaseTabLock(); } catch {}
 
         giveawayBTN.classList.add("bonanza-btn--conflict");
-        giveawayBTN.title = t("uiConflictTitle");
+        giveawayBTN.title = "Disabled: the original BON Giveaway script is also installed. Remove one of them.";
         giveawayBTN.setAttribute("aria-disabled", "true");
         giveawayBTN.onclick = onConflictButtonClick;
         if (!giveawayBTN.isConnected) {
@@ -2995,7 +1713,7 @@ body.host-panel-dragging * {
         const orig = findOriginalGiveawayButton();
         if (orig) orig.classList.add("bonanza-orig-btn");
 
-        console.warn("[BONanza Giveaway] Disabled: the original BON Giveaway script is also installed.");
+        console.warn("[DarkPeers BONanza Giveaway] Disabled: the original BON Giveaway script is also installed.");
     }
 
     async function injectMenu() {
@@ -3085,10 +1803,9 @@ body.host-panel-dragging * {
 }
 
 #bonanzaGiveawayFrame .giveaway-number-col {
-  flex: 1 1 0;
-  width: auto;
-  min-width: 0;
-  max-width: 135px;
+  width: 28%;
+  min-width: 70px;
+  max-width: 120px;
 }
 
 #bonanzaGiveawayFrame .giveaway-winners-row {
@@ -3428,7 +2145,7 @@ body.host-panel-dragging * {
                     }
                 }
 
-                timerInput.setCustomValidity(t("uiTimerWholeMinutes"));
+                timerInput.setCustomValidity("Please enter a whole number of minutes (no decimals).");
                 timerInput.value = lastValid;
             });
         })();
@@ -3443,9 +2160,9 @@ body.host-panel-dragging * {
         if (versionSmall) {
             rigBadge = document.createElement('span');
             rigBadge.id = 'riggedBadge';
-            rigBadge.textContent = t("uiRiggedWatermark");
-            rigBadge.title = t("uiRiggedModeTip");
-            rigBadge.setAttribute("aria-label", t("uiRigIndicatorAria"));
+            rigBadge.textContent = 'RIGGED';
+            rigBadge.title = "Rigged mode is purely cosmetic… allegedly.";
+            rigBadge.setAttribute("aria-label", "Rigged mode indicator");
             rigBadge.style.cssText = `
 
       margin-left: 8px;
@@ -3494,7 +2211,7 @@ body.host-panel-dragging * {
         resetButton = document.getElementById("resetButton");
         resetButton.onclick = function () {
             if (giveawayData && giveawayData.timeLeft > 0) {
-                if (window.confirm(t("uiConfirmReset"))) {
+                if (window.confirm("Are you sure you want to reset the giveaway? This will clear all entries and cannot be undone.")) {
                     resetGiveaway();
                 }
             } else {
@@ -3506,7 +2223,7 @@ body.host-panel-dragging * {
         closeButton.onclick = function () {
             // Check if a giveaway is active
             if (giveawayData && giveawayData.timeLeft > 0) {
-                if (window.confirm(t("uiConfirmClose"))) {
+                if (window.confirm("A giveaway is currently running. Are you sure you want to close the menu? This will NOT end the giveaway, but you may lose track of its progress.")) {
                     toggleMenu();
                 }
             } else {
@@ -3646,8 +2363,7 @@ body.host-panel-dragging * {
         startButton = document.getElementById("startButton");
 
         startButton.onclick = startGiveaway;
-        startButton.title = t("uiStartTitle");
-        startButton.dataset.mode = "start";
+        startButton.title = "Start the giveaway";
 
         // Presets
         bindPresetButtons();
@@ -3723,8 +2439,8 @@ body.host-panel-dragging * {
         let toggle = actionsRow.querySelector('#hostPanelToggle');
         if (!toggle) {
             actionsRow.insertAdjacentHTML('beforeend', `
-      <button id="hostPanelToggle" class="form__button form__button--text giveaway-btn no-drag" data-no-drag="1" style="background-color:#ff9600;" title="${t("uiHostPanelToggleTitle")}">
-        <i class="fa-solid fa-sliders"></i> ${t("uiHostPanel")}
+      <button id="hostPanelToggle" class="form__button form__button--text giveaway-btn no-drag" data-no-drag="1" style="background-color:#ff9600;" title="Open/close host command panel.">
+        <i class="fa-solid fa-sliders"></i> Host Panel
       </button>`);
             toggle = actionsRow.querySelector('#hostPanelToggle');
         }
@@ -3745,11 +2461,11 @@ body.host-panel-dragging * {
         if (minimized) {
             bonanzaGiveawayFrame.classList.add("minimized");
             if (icon) { icon.className = "fa-solid fa-window-maximize"; }
-            if (minimizeButton) minimizeButton.title = t("uiRestorePanel");
+            if (minimizeButton) minimizeButton.title = "Restore panel";
         } else {
             bonanzaGiveawayFrame.classList.remove("minimized");
             if (icon) { icon.className = "fa-solid fa-window-minimize"; }
-            if (minimizeButton) minimizeButton.title = t("uiMinimizePanel");
+            if (minimizeButton) minimizeButton.title = "Minimize panel";
         }
         localStorage.setItem(LS_MINIMIZED, String(minimized));
     }
@@ -3831,11 +2547,11 @@ body.host-panel-dragging * {
 
         // Preserve current selection if possible
         const prevVal = select.value;
-        select.innerHTML = `<option value="">${t("uiPresets")}</option>`;
+        select.innerHTML = '<option value="">— Presets —</option>';
         presets.forEach((p, i) => {
             const opt = document.createElement("option");
             opt.value = String(i);
-            opt.textContent = p.name || t("uiPresetDefault", { number: i + 1 });
+            opt.textContent = p.name || `Preset ${i + 1}`;
             select.appendChild(opt);
         });
 
@@ -3852,7 +2568,7 @@ body.host-panel-dragging * {
         const select = document.getElementById("presetSelect");
 
         if (saveBtn) saveBtn.addEventListener("click", () => {
-            const name = window.prompt(t("uiPresetPrompt"));
+            const name = window.prompt("Name this preset:");
             if (!name || !name.trim()) return;
             const presets = loadPresetList();
             presets.push({ name: name.trim(), ...captureFormPreset() });
@@ -3874,7 +2590,7 @@ body.host-panel-dragging * {
             const idx = parseInt(select.value, 10);
             const preset = presets[idx];
             if (!preset) return;
-            if (!window.confirm(t("uiPresetDeleteConfirm", { name: preset.name || t("uiPresetDefault", { number: idx + 1 }) }))) return;
+            if (!window.confirm(`Delete preset "${preset.name || "Preset " + (idx + 1)}"?`)) return;
             presets.splice(idx, 1);
             savePresetList(presets);
             refreshPresetDropdown();
@@ -4165,10 +2881,6 @@ body.host-panel-dragging * {
                     customMessage: giveawayData.customMessage,
                     donationPercent: giveawayData.donationPercent,
                     hostAdded: giveawayData.hostAdded,
-                    chatroomId: giveawayData.chatroomId,
-                    entryChatCursor: Number.isFinite(Number(giveawayData.entryChatCursor))
-                        ? Math.max(0, Math.floor(Number(giveawayData.entryChatCursor)))
-                        : null,
                     initialPotVerifiedAtStart: giveawayData.initialPotVerifiedAtStart,
                     reminderSchedule: giveawayData.reminderSchedule,
                     reminderNum: giveawayData.reminderNum,
@@ -4436,29 +3148,10 @@ body.host-panel-dragging * {
                 chatbox = document.querySelector(`#${chatboxId}`);
             }
             cacheChatContext();
-            chatroomId = Number(giveawayData.chatroomId) || await resolveActiveChatroomId();
-            if (!chatroomId) {
-                console.error("[BONanza] Restore aborted: active chatroom could not be resolved.");
-                return false;
-            }
-            giveawayData.chatroomId = chatroomId;
-            OT_CHATROOM_ID = chatroomId;
 
-            // 8) Re-start the site's participant input source while entries are open.
-            stopEntryInputSource();
-            if (!expiredOnRestore) {
-                if (
-                    SITE.chat.entrySource === "api" &&
-                    (
-                        giveawayData.entryChatCursor === null ||
-                        giveawayData.entryChatCursor === undefined ||
-                        !Number.isFinite(Number(giveawayData.entryChatCursor))
-                    )
-                ) {
-                    await bootstrapEntryChatCursor();
-                }
-                startEntryInputSource();
-            }
+            // 8) Re-start observer only while entries are still open.
+            if (observer) { observer.disconnect(); observer = null; }
+            if (!expiredOnRestore) addObserver(giveawayData);
 
             // 9) Re-start sponsor tracker
             if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
@@ -4532,10 +3225,9 @@ body.host-panel-dragging * {
             };
 
             // 13) Wire stop button
-            startButton.textContent = t("uiStop");
-            startButton.dataset.mode = "stop";
+            startButton.textContent = "Stop";
             startButton.style.backgroundColor = "#b32525";
-            startButton.title = t("uiStopTitle");
+            startButton.title = "This will end the giveaway and send gifts to the winners";
             startButton.onclick = () => {
                 logEvent("Giveaway stop requested", "Requested from UI Stop button.");
                 endGiveaway();
@@ -4649,49 +3341,40 @@ body.host-panel-dragging * {
         const rawAmount = coinInput.value;
         const cleanValue = rawAmount.replace(/[^0-9]/g, '');
         if (!cleanValue) {
-            window.alert(t("alertInvalidAmount"));
+            window.alert("Please enter a valid numeric giveaway amount.");
             return;
         }
         const amountInt = parseInt(cleanValue, 10);
         if (!Number.isFinite(amountInt) || amountInt <= 0) {
-            window.alert(t("alertPositiveAmount"));
+            window.alert("Please enter a giveaway amount greater than zero.");
             return;
         }
 
         const requestedWinners = Math.max(1, Math.min(MAX_WINNERS, parseInt(winnersInput.value, 10) || 1));
         const minimumPotForRequestedWinners = minimumPotForWeightedWinners(requestedWinners);
         if (amountInt < minimumPotForRequestedWinners) {
-            window.alert(t("alertMinimumPot", {
-                winners: fmtBON(requestedWinners),
-                minimum: fmtBONCurrency(minimumPotForRequestedWinners)
-            }));
+            window.alert(
+                `GIVEAWAY ERROR: ${fmtBON(requestedWinners)} weighted winner(s) need a pot of at least ` +
+                `${fmtBONCurrency(minimumPotForRequestedWinners)} BON so every winner receives at least 1 BON.`
+            );
             return;
         }
 
         // Claim ownership BEFORE mutating UI/state. Never steal a fresh lock from
         // another tab: that is the primary cross-tab double-payout defence.
         if (!await acquireTabLock()) {
-            window.alert(t("alertOwnership"));
+            window.alert("Could not acquire exclusive giveaway ownership. Another DarkPeers tab may already be running a giveaway, or this browser does not provide the Web Locks safety API.");
             return;
         }
 
         if (sponsorsInterval) { clearInterval(sponsorsInterval); sponsorsInterval = null; }
-        stopEntryInputSource();
+        if (observer) { observer.disconnect(); observer = null; }
 
         if (chatbox == null) {
             chatbox = document.querySelector(`#${chatboxId}`);
         }
 
-        const sitePreflight = await preflightSiteCapabilitiesForStart({
-            donationPercent: donationPercentInput ? donationPercentInput.value : 0
-        });
-        if (!sitePreflight.ok) {
-            logEvent("Start aborted (site preflight)", sitePreflight.reason);
-            window.alert(t("alertPreflightFailed", { reason: sitePreflight.reason }));
-            return;
-        }
-        chatroomId = sitePreflight.roomId;
-        OT_CHATROOM_ID = chatroomId;
+        cacheChatContext();
 
         startButton.disabled = true;
         coinInput.disabled = true;
@@ -4737,7 +3420,6 @@ body.host-panel-dragging * {
 
         giveawayData = {
             host: getLoggedInUsername(),
-            chatroomId,
             amount: amountInt,
             startNum: parseInt(startInput.value, 10),
             endNum: parseInt(endInput.value, 10),
@@ -4772,7 +3454,9 @@ body.host-panel-dragging * {
         if (currentBon == null) {
             const startErr = "Unable to verify current BON balance.";
             logEvent("Start aborted", startErr);
-            window.alert(t("alertBalanceUnavailable"));
+            window.alert(
+                "GIVEAWAY ERROR: Unable to verify your current BON balance right now. Please try again shortly."
+            );
             resetGiveaway();
             return;
         }
@@ -4780,7 +3464,9 @@ body.host-panel-dragging * {
         if (currentBon < giveawayData.amount) {
             const startErr = `Entered amount ${fmtBONCurrency(giveawayData.amount)} exceeds current BON ${fmtBONCurrency(currentBon)}.`;
             logEvent("Start aborted", startErr);
-            window.alert(t("alertBalanceLow", { amount: giveawayData.amount, balance: currentBon }));
+            window.alert(
+                `GIVEAWAY ERROR: The amount entered (${giveawayData.amount}), is above your current BON (${currentBon}).`
+            );
             resetGiveaway();
             return;
         }
@@ -4810,32 +3496,34 @@ body.host-panel-dragging * {
             const startMarker = donationPct > 0
                 ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
                 : BRIDGE_MARKERS.START;
-            const introVars = {
-                marker: bridgeMarker(startMarker, "🎁"),
-                percent: donationPct,
-                remaining: 100 - donationPct,
-                poolName: BONANZA.FUND_NAME,
-                poolNameUpper: BONANZA.FUND_NAME.toUpperCase(),
-                poolColor: BONANZA.GIVEAWAY_COLOR
-            };
             const introHeader = donationPct > 0
-                ? (riggedMode ? t("introTaxes", introVars) : t("introPool", introVars))
-                : t("introStandard", introVars);
+                ? (riggedMode
+                    ? `${bridgeMarker(startMarker, "🎁")} [b][color=#FF4F9A]RIGGING TAXES: ${donationPct}% TO THE ${BONANZA.FUND_NAME.toUpperCase()}[/color][/b]\nI am hosting a giveaway for `
+                    : `${bridgeMarker(startMarker, "🎁")} 💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME.toUpperCase()} CONTRIBUTION GIVEAWAY[/color][/b] 💙\nI am hosting a giveaway for `)
+                : `${bridgeMarker(startMarker, "🎁")} I am hosting a giveaway for `;
             const donationIntroLine = donationPct > 0
-                ? (riggedMode ? t("introTaxAllocation", introVars) : t("introPoolAllocation", introVars))
+                ? (riggedMode
+                    ? `\n[b][color=#FF4F9A]${donationPct}% rigging tax[/color][/b] will be taken from the final pot (including sponsor gifts) and paid directly into the [b]${BONANZA.FUND_NAME}[/b]. Winners keep the remaining ${100 - donationPct}%. Entirely legitimate accounting. 😈`
+                    : `\n[b][color=${BONANZA.GIVEAWAY_COLOR}]${donationPct}%[/color][/b] of the final pot (including sponsor gifts) will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b]. Winners receive the remaining ${100 - donationPct}%.`)
                 : "";
 
-            let introMessage =
-                `${introHeader}[b][color=#ffc00a]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b] | ` +
+            let introMessage = `${introHeader}[b][color=#ffc00a]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b] | ` +
                 `${buildWinnersAnnouncementLine(giveawayData)} | ` +
-                t("introOpenFor", { duration: parseTime(totalTimeMs) }) +
-                t("pickNumber", { start: giveawayData.startNum, end: giveawayData.endNum }) +
+                `Open for [b][color=#1DDC5D]${parseTime(totalTimeMs)}[/color][/b]. ` +
+                `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
                 `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]` +
-                donationIntroLine + "\n" +
-                t("giftHostHint", { hintColor: GIFT_HINT_COLOR, host: getGiftSyntaxHostName() });
+                donationIntroLine + `\n` +
+                `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨`;
 
-            if (riggedMode) introMessage += t("riggedModeIntro");
-            if (GENERAL_SETTINGS.silent_mode) introMessage += t("silentModeIntro");
+            if (riggedMode) {
+                introMessage += `\n[color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
+                    `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i] 😈`;
+            }
+
+            if (GENERAL_SETTINGS.silent_mode) {
+                introMessage += `\n[color=#ff3333][b]SILENT MODE ENABLED![/b][/color] ` +
+                    `[i][color=#B0B0B0]Command replies will be sent privately via /msg.[/color][/i] 🤫`;
+            }
 
             if (window.__activeTracker) window.__activeTracker = null;
             let tracker = new SponsorTracker({
@@ -4845,14 +3533,7 @@ body.host-panel-dragging * {
             });
             await tracker.bootstrapGiftHistory();
 
-            // Establish the API-entry cursor before the public opening message.
-            // Timestamp filtering below prevents pre-opening chat from becoming
-            // entries, while this avoids losing a very fast post-intro entry.
-            if (SITE.chat.entrySource === "api") {
-                await bootstrapEntryChatCursor();
-            }
-
-            await sendMessage(introMessage, { kind: "intro" });
+            await sendMessage(introMessage);
 
             // Public opening is the temporal boundary. The pre-opening Gift History
             // snapshot means every subsequently appearing received gift is new.
@@ -4870,7 +3551,11 @@ body.host-panel-dragging * {
                 SPONSOR_GIFT_HISTORY_POLL_MS
             );
 
-            startEntryInputSource();
+            if (observer) {
+                startObserver();
+            } else {
+                addObserver(giveawayData);
+            }
 
             giveawayData.countdownTimerID = countdownTimer(countdownHeader, giveawayData);
 
@@ -4883,10 +3568,9 @@ body.host-panel-dragging * {
         }
 
         // ** TOGGLE BUTTON TO STOP **
-        startButton.textContent = t("uiStop");
-            startButton.dataset.mode = "stop";
+        startButton.textContent = "Stop";
         startButton.style.backgroundColor = "#b32525"; // red to indicate Stop
-        startButton.title = t("uiStopTitle");
+        startButton.title = "This will end the giveaway and send gifts to the winners";
         startButton.disabled = false;
         startButton.onclick = () => {
             logEvent("Giveaway stop requested", "Requested from UI Stop button.");
@@ -4945,10 +3629,9 @@ body.host-panel-dragging * {
 
 
         // ** RESET BUTTON TO START **
-        startButton.textContent = t("uiStart");
-        startButton.dataset.mode = "start";
+        startButton.textContent = "Start";
         startButton.style.backgroundColor = "#02B008"; // green for Start
-        startButton.title = t("uiStartTitle");
+        startButton.title = "Start the giveaway";
         startButton.onclick = startGiveaway;
         startButton.disabled = false;
 
@@ -4973,7 +3656,7 @@ body.host-panel-dragging * {
         }
         if (window.__activeTracker) window.__activeTracker = null;
 
-        stopEntryInputSource();
+        if (observer) { observer.disconnect(); observer = null; }
 
         if (reminderRetryTimeout) { clearTimeout(reminderRetryTimeout); reminderRetryTimeout = null; }
 
@@ -5069,212 +3752,6 @@ body.host-panel-dragging * {
         for (const msg of messages) {
             parseMessage(msg);
         }
-    }
-
-    function chatApiUserRoleText(user) {
-        const group = user?.group || {};
-        return [
-            group?.name,
-            group?.slug,
-            group?.title,
-            user?.title
-        ].map(v => String(v || "").trim()).filter(Boolean).join(" ");
-    }
-
-    function buildFancyNameFromChatApiUser(user) {
-        const username = String(user?.username || "").trim();
-        if (!username) return "";
-
-        const role = chatApiUserRoleText(user);
-        const rawColor = String(user?.group?.color || "").trim();
-        const color = /^#?[0-9a-f]{6}$/i.test(rawColor)
-            ? (rawColor.startsWith("#") ? rawColor : `#${rawColor}`)
-            : "";
-        const style = color ? ` style="color:${escapeHTML(color)};"` : "";
-        const title = role ? ` title="${escapeHTML(role)}"` : "";
-
-        return `<address class="user-tag"><a href="/users/${encodeURIComponent(username)}"${title} class="user-tag__link"${style}>${escapeHTML(username)}</a></address>`;
-    }
-
-    async function fetchEntryChatApiMessages(roomId) {
-        const url = new URL(`/api/chat/messages/${roomId}`, location.origin);
-        const cursor = Math.max(0, Math.floor(Number(giveawayData?.entryChatCursor) || 0));
-        if (cursor) url.searchParams.set("after_id", String(cursor));
-
-        const res = await fetchWithTimeout(url, {
-            method: "GET",
-            credentials: "include",
-            cache: "no-store",
-            headers: { "Accept": "application/json" }
-        }, 7000);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const payload = await res.json();
-        return sortChatMessagesChronologically(
-            Array.isArray(payload?.data) ? payload.data : []
-        );
-    }
-
-    async function _pollEntryChatApi(options = {}) {
-        if (!giveawayData) return false;
-
-        const allowEnding = !!options.allowEnding;
-        if (allowEnding) {
-            if (!ownsTabLock()) return false;
-        } else {
-            if (giveawayData.__ending || !canMutateActiveGiveaway()) return false;
-        }
-
-        const roomId = Number(giveawayData.chatroomId || chatroomId);
-        if (!Number.isFinite(roomId) || roomId <= 0) return false;
-
-        const cursorAtStart = Math.max(
-            0,
-            Math.floor(Number(giveawayData.entryChatCursor) || 0)
-        );
-        let maxCreatedAtTs = optionalFiniteNumber(options.maxCreatedAtTs);
-        const scheduledEndTs = optionalFiniteNumber(giveawayData?.endTs);
-        if (scheduledEndTs !== null) {
-            maxCreatedAtTs = maxCreatedAtTs === null
-                ? scheduledEndTs
-                : Math.min(maxCreatedAtTs, scheduledEndTs);
-        }
-
-        const startTs = Number(giveawayStartTime?.getTime?.()) ||
-            Number(giveawayData?.startedAt) ||
-            0;
-
-        let messages;
-        try {
-            messages = await fetchEntryChatApiMessages(roomId);
-        } catch (e) {
-            logEvent("Entry chat API poll failed", String(e?.message || e));
-            return false;
-        }
-
-        if (!giveawayData) return false;
-        if (!allowEnding && (giveawayData.__ending || !canMutateActiveGiveaway())) return false;
-        if (allowEnding && !ownsTabLock()) return false;
-
-        let maxSeenId = cursorAtStart;
-        let processedRelevant = 0;
-
-        for (const m of messages) {
-            const id = Math.floor(Number(m?.id));
-            if (!Number.isFinite(id) || id <= cursorAtStart) continue;
-
-            // Always advance over every ordinary API row we inspected. If the
-            // endpoint ignores after_id, local cursor correctness still holds.
-            if (id > maxSeenId) maxSeenId = id;
-
-            if (m?.bot) continue;
-
-            const createdAtTs = Date.parse(m?.created_at || "");
-            const resolutionMs = unit3dTimestampResolutionMs(m?.created_at);
-
-            if (
-                startTs > 0 &&
-                Number.isFinite(createdAtTs) &&
-                (createdAtTs + resolutionMs) <= startTs
-            ) continue;
-
-            if (
-                maxCreatedAtTs !== null &&
-                Number.isFinite(createdAtTs) &&
-                (createdAtTs + resolutionMs) > (maxCreatedAtTs + 1)
-            ) {
-                if (options.allowEnding && DEBUG_SETTINGS.log_chat_messages) {
-                    console.debug(
-                        `[BONanza] Deferred/rejected boundary chat message id=${id}: timestamp interval does not fit before cutoff.`
-                    );
-                }
-                continue;
-            }
-
-            const author = String(m?.user?.username || "").trim();
-            if (!author) continue;
-
-            const text = normalizeChatApiText(m?.message);
-            if (!text) continue;
-
-            const fancyName = buildFancyNameFromChatApiUser(m?.user);
-            if (processSemanticChatMessage(author, text, fancyName, {
-                entriesOnly: !!options.entriesOnly,
-                suppressReply: !!options.suppressReply
-            })) {
-                processedRelevant += 1;
-            }
-        }
-
-        if (maxSeenId > cursorAtStart) {
-            giveawayData.entryChatCursor = maxSeenId;
-            if (!allowEnding) snapshotGiveaway();
-        }
-
-        if (processedRelevant && DEBUG_SETTINGS.log_chat_messages) {
-            console.debug(
-                `[BONanza] Entry API poll processed ${processedRelevant} relevant message(s); cursor=${maxSeenId}`
-            );
-        }
-
-        return true;
-    }
-
-    async function pollEntryChatApi(options = {}) {
-        const dedicated = !!(
-            options.allowEnding ||
-            options.entriesOnly ||
-            optionalFiniteNumber(options.maxCreatedAtTs) !== null
-        );
-
-        if (entryChatPollInFlight) {
-            if (!dedicated) return entryChatPollInFlight;
-            try { await entryChatPollInFlight; } catch {}
-        }
-
-        const run = _pollEntryChatApi(options);
-        entryChatPollInFlight = run;
-        try {
-            return await run;
-        } finally {
-            if (entryChatPollInFlight === run) entryChatPollInFlight = null;
-        }
-    }
-
-    async function bootstrapEntryChatCursor() {
-        const latest = await getLatestChatMessageId();
-        const cursor = Number.isFinite(Number(latest))
-            ? Math.max(0, Math.floor(Number(latest)))
-            : 0;
-        if (giveawayData) giveawayData.entryChatCursor = cursor;
-        return cursor;
-    }
-
-    function stopEntryInputSource() {
-        if (entryChatPollInterval) {
-            clearInterval(entryChatPollInterval);
-            entryChatPollInterval = null;
-        }
-        if (observer) {
-            observer.disconnect();
-            observer = null;
-        }
-    }
-
-    function startEntryInputSource() {
-        stopEntryInputSource();
-
-        if (SITE.chat.entrySource === "api") {
-            const pollMs = Math.max(1000, Number(SITE.chat.entryPollMs) || 2000);
-            entryChatPollInterval = setInterval(
-                () => { void pollEntryChatApi(); },
-                pollMs
-            );
-            void pollEntryChatApi();
-            return;
-        }
-
-        addObserver(giveawayData);
     }
 
     function addObserver(giveawayData) {
@@ -5373,32 +3850,6 @@ body.host-panel-dragging * {
         }
     }
 
-    function processSemanticChatMessage(author, messageContent, fancyName = "", options = {}) {
-        const text = String(messageContent || "").trim();
-        const user = String(author || "")
-            .replace(/[\u200B\u200C\u200D\u2063\uFEFF]/g, "")
-            .trim();
-        if (!text || !user || !giveawayData) return false;
-
-        const isEntry = regNum.test(text);
-        const isCommand = text.startsWith("!");
-        if (!isEntry && !isCommand) return false;
-        if (options.entriesOnly && !isEntry) return false;
-
-        if (isEntry) {
-            handleEntryMessage(
-                parseInt(text, 10),
-                user,
-                fancyName,
-                giveawayData,
-                { suppressReply: !!options.suppressReply }
-            );
-        } else {
-            handleGiveawayCommands(user, text, fancyName, giveawayData);
-        }
-        return true;
-    }
-
     function parseMessage(messageNode) {
         const perfStart = PERF ? performance.now() : 0;
         const messageContentElement = getMessageContentElement(messageNode);
@@ -5410,18 +3861,27 @@ body.host-panel-dragging * {
         } catch (e) {
             messageContent = "";
         }
+
         if (!messageContent) return;
 
+        // Fast ignore: we only care about entries (numbers) and commands (!...)
+        const isEntry = regNum.test(messageContent);
+        const isCommand = messageContent.startsWith("!");
+        if (!isEntry && !isCommand) return;
+
         const author = getAuthor(messageNode);
-        if (!author) return;
+        if (!author) return; // could not resolve username from DOM — skip silently
 
-        // Avoid expensive style extraction for irrelevant chat lines.
-        const isRelevant = regNum.test(messageContent) || messageContent.startsWith("!");
-        if (!isRelevant) return;
-
+        // Pull fancyName only for relevant messages (entries/commands). We capture a stable tag that
+        // always includes the username text (some sites hydrate it after insertion).
         const fancyName = captureFancyNameTag(messageNode, author);
-        processSemanticChatMessage(author, messageContent, fancyName);
 
+
+        if (isEntry) {
+            handleEntryMessage(parseInt(messageContent, 10), author, fancyName, giveawayData);
+        } else {
+            handleGiveawayCommands(author, messageContent, fancyName, giveawayData);
+        }
         if (PERF) perfMeasure('message_parse', perfStart);
     }
 
@@ -5470,15 +3930,17 @@ body.host-panel-dragging * {
 
         const naughtyKey = normalizeUserKey(author);
         if (!naughtyWarned.has(naughtyKey)) {
-            sendCommandResponse(author, t("entryNaughtyBlocked", {
-                user: sanitizeNick(author)
-            }));
+            sendCommandResponse(author,
+                                `[color=#d85e27]${sanitizeNick(author)}[/color], ` +
+                                `you are on the [b]naughty list[/b] and may not ` +
+                                `enter the giveaway or use its commands.`
+                               );
             naughtyWarned.add(naughtyKey);
         }
         return true;
     }
 
-    function handleEntryMessage(number, author, fancyName, giveawayData, options = {}) {
+    function handleEntryMessage(number, author, fancyName, giveawayData) {
         // Safety: no active giveaway
         if (!giveawayData) return;
 
@@ -5507,10 +3969,8 @@ body.host-panel-dragging * {
         // Fast duplicate checks (O(1)) using Maps instead of scanning all entries
         const existing = numberEntries.get(author);
         if (existing !== undefined) {
-            const repeatMessage = t("entryAlreadyEntered", {
-                user: safeAuthor,
-                number: existing
-            });
+            const repeatMessage =
+                  `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]you[/color] already entered with number [color=#DC3D1D][b]${existing}[/b][/color]!`;
             if (canSendUserFeedback(author, "entry-repeat")) sendCommandResponse(author, repeatMessage);
             return;
         }
@@ -5518,22 +3978,16 @@ body.host-panel-dragging * {
         const otherAuthor = numberTakenBy.get(number);
         if (otherAuthor && otherAuthor !== author) {
             const safeOther = sanitizeNick(otherAuthor);
-            const repeatMessage = t("entryNumberTaken", {
-                user: safeAuthor,
-                other: safeOther,
-                number
-            }) + suggestion;
+            const repeatMessage =
+                  `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]${safeOther}[/color] already entered with number [color=#DC3D1D][b]${number}[/b][/color]!` +
+                  suggestion;
             if (canSendUserFeedback(author, "entry-repeat")) sendCommandResponse(author, repeatMessage);
             return;
         }
 
         if (number < giveawayData.startNum || number > giveawayData.endNum) {
-            const outOfBoundsMessage = t("entryOutOfRange", {
-                user: safeAuthor,
-                number,
-                start: giveawayData.startNum,
-                end: giveawayData.endNum
-            });
+            const outOfBoundsMessage =
+                  `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but the number [color=#DC3D1D][b]${number}[/b][/color] is outside of the given range! Enter a number between [color=#DC3D1D][b]${giveawayData.startNum}[/b] and [b]${giveawayData.endNum}[/b][/color]!`;
             if (canSendUserFeedback(author, "entry-range")) sendCommandResponse(author, outOfBoundsMessage);
             return;
         }
@@ -5543,14 +3997,15 @@ body.host-panel-dragging * {
             addNewEntry(author, fancyName, number);
         }
 
-        if (!GENERAL_SETTINGS.suppress_entry_replies && !options.suppressReply) {
+        if (!GENERAL_SETTINGS.suppress_entry_replies) {
             const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
-            const rigHint = rigNote(t("rigHintEntry"));
-            const msg = t("entryConfirmed", {
-                user: safeAuthor,
-                number,
-                remaining: timeLeftStr
-            }) + rigHint;
+            const rigHint = rigNote("(entry logged under [b]highly suspicious[/b] conditions) 😈");
+
+            const msg =
+                  `[color=#d85e27]${safeAuthor}[/color] has entered with ` +
+                  `the number [color=#DC3D1D][b]${number}[/b][/color]! ` +
+                  `Time remaining: [b][color=#1DDC5D]${timeLeftStr}[/color][/b].` +
+                  rigHint;
             sendCommandResponse(author, msg);
         }
     }
@@ -5759,38 +4214,6 @@ body.host-panel-dragging * {
         return String(cell.textContent || "").trim();
     }
 
-    function parseUnit3dBonAmount(value) {
-        const raw = String(value || "")
-            .replace(/\u00a0/g, " ")
-            .trim();
-        if (!raw) return NaN;
-
-        // UNIT3D installations use a mixture of raw decimal currency
-        // ("140000.00", "999.00") and locale/grouped formatting
-        // ("1,500,000.00", "1.500.000,00", "1 500 000,00").
-        // A final separator followed by exactly two digits is treated as the
-        // decimal separator. Everything else is grouping and is discarded.
-        const compact = raw.replace(/\s+/g, "");
-        const decimalMatch = compact.match(/([.,])(\d{2})$/);
-
-        let integerPart = compact;
-        let fractionalPart = "";
-        if (decimalMatch) {
-            integerPart = compact.slice(0, -3);
-            fractionalPart = decimalMatch[2];
-        }
-
-        const integerDigits = integerPart.replace(/[^0-9]/g, "");
-        if (!integerDigits) return NaN;
-
-        const whole = Number(integerDigits);
-        if (!Number.isFinite(whole)) return NaN;
-
-        if (!fractionalPart) return whole;
-        const fraction = Number(fractionalPart) / 100;
-        return Number.isFinite(fraction) ? whole + fraction : whole;
-    }
-
     function parseUnit3dTimestamp(value) {
         const raw = String(value || "").trim();
         if (!raw) return NaN;
@@ -5832,7 +4255,11 @@ body.host-panel-dragging * {
                 const cells = row.querySelectorAll("td");
                 if (cells.length < 5) return null;
 
-                const amount = parseUnit3dBonAmount(cells[2].textContent);
+                const amountText = String(cells[2].textContent || "")
+                    .replace(/[\s\u00A0]+/g, "")
+                    .replace(/,/g, "");
+                const amountMatch = amountText.match(/[0-9]+(?:\.[0-9]+)?/);
+                const amount = amountMatch ? Number(amountMatch[0]) : NaN;
 
                 const timeEl = cells[4].querySelector("time");
                 const rawTimestamp = timeEl?.getAttribute("datetime") || "";
@@ -5843,7 +4270,7 @@ body.host-panel-dragging * {
                 const rawMessage = String(cells[3].textContent || "")
                     .replace(/\s+/g, " ")
                     .trim();
-                const message = /^(?:no note|sem nota|sem mensagem)$/i.test(rawMessage) ? "" : rawMessage;
+                const message = /^no note$/i.test(rawMessage) ? "" : rawMessage;
 
                 return {
                     sender: giftHistoryUsernameFromCell(cells[0]),
@@ -5893,7 +4320,7 @@ body.host-panel-dragging * {
                 if (Math.abs(titleAmount - bodyAmount) > 0.001) return null;
 
                 const rawNote = String(bodyMatch[3] || "").replace(/\s+/g, " ").trim();
-                const message = /^(?:no note|sem nota|sem mensagem)$/i.test(rawNote) ? "" : rawNote;
+                const message = /^no note$/i.test(rawNote) ? "" : rawNote;
 
                 return {
                     sender,
@@ -6940,18 +5367,14 @@ body.host-panel-dragging * {
             const totalContribForScaling = getTotalContribForScaling(data);
             const threshold = getScalingBonPerWinner(data);
 
-            let message = t("scalingIncreased", {
-                accent: SCALING_ACCENT_COLOR,
-                old: oldWinners,
-                new: newWinners,
-                delta,
-                total: fmtBONCurrency(totalContribForScaling),
-                threshold: fmtBONCurrency(threshold)
-            });
+            let message =
+                `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b]: ${oldWinners} → ${newWinners} (+${delta}). ` +
+                `Total scaling contributions: ${fmtBONCurrency(totalContribForScaling)} BON. ` +
+                `Threshold: ${fmtBONCurrency(threshold)} BON/winner.`;
 
             const reachedCap = newWinners >= cap;
             if (reachedCap) {
-                message += t("scalingMaxReached", { cap });
+                message += ` [b]Max winners reached[/b] (${cap}).`;
             }
 
             logEvent("Scaled winners increased", `${oldWinners} -> ${newWinners} (+${delta})${reachedCap ? ` | cap reached=${fmtBON(cap)}` : ""}`);
@@ -7044,11 +5467,11 @@ body.host-panel-dragging * {
             const minPerUser = Math.max(0, Number(SPONSOR_ANNOUNCE.show_min_per_user) || 0);
 
             const nextWinnerLine = getSponsorshipNextWinnerLine(this.data);
-            const prefix = tp("sponsorsAddedOne", "sponsorsAddedMany", sponsorCount, {
-                marker: bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨"),
-                amount: deltaTotal
-            });
-            const suffix = t("totalPotNow", { amount: potTotal }) +
+            const prefix =
+                `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
+                `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
+            const suffix =
+                `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].` +
                 (nextWinnerLine ? ` ${nextWinnerLine}` : "");
 
             const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
@@ -7078,11 +5501,12 @@ body.host-panel-dragging * {
 
                 let detailedPart = basePart;
                 if (notes.length === 1) {
-                    detailedPart += t("withMessage", { message: notes[0] });
+                    detailedPart += ` with the message [i]"${notes[0]}"[/i]`;
                 } else if (notes.length > 1) {
-                    detailedPart += t("withMessages", { messages: notes.map(note => `[i]"${note}"[/i]`).join(", ") });
+                    detailedPart += ` with the messages ` +
+                        notes.map(note => `[i]"${note}"[/i]`).join(", ");
                     if (e.messages.length > notes.length) {
-                        detailedPart += t("moreCount", { count: e.messages.length - notes.length });
+                        detailedPart += ` [i](+${e.messages.length - notes.length} more)[/i]`;
                     }
                 }
 
@@ -7140,13 +5564,13 @@ body.host-panel-dragging * {
                     noteParts.push(noteText);
                 }
 
-                const continuationMarker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
+                const continuationPrefix = `${bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬")} Sponsor message`;
                 let currentParts = [];
 
                 const flushNoteChunk = () => {
                     if (!currentParts.length) return;
                     noteContinuationMessages.push(
-                        tp("sponsorMessageHeadingOne", "sponsorMessageHeadingMany", currentParts.length, { marker: continuationMarker }) + ": " +
+                        `${continuationPrefix}${currentParts.length === 1 ? "" : "s"}: ` +
                         currentParts.join(" | ") + "."
                     );
                     currentParts = [];
@@ -7155,7 +5579,7 @@ body.host-panel-dragging * {
                 for (const part of noteParts) {
                     const candidateParts = currentParts.concat(part);
                     const candidate =
-                        tp("sponsorMessageHeadingOne", "sponsorMessageHeadingMany", candidateParts.length, { marker: continuationMarker }) + ": " +
+                        `${continuationPrefix}${candidateParts.length === 1 ? "" : "s"}: ` +
                         candidateParts.join(" | ") + ".";
 
                     if (currentParts.length && visibleChatLength(candidate) > maxVisible) {
@@ -7343,7 +5767,7 @@ body.host-panel-dragging * {
             userCommandLog.delete(authorKey);
 
             if (canSendUserFeedback(rawAuthor, "spam-lockout", 60_000)) {
-                sendCommandResponse(rawAuthor, t("spamLockout", { user: sanitizeNick(rawAuthor), seconds: penaltySec }));
+                sendCommandResponse(rawAuthor, `[color=red][b]Spamming detected! ${sanitizeNick(rawAuthor)} locked out for ${penaltySec} seconds.[/b][/color]`);
             }
             return true;
         }
@@ -7392,7 +5816,7 @@ body.host-panel-dragging * {
                 return;
             }
             const out = rows.map((u, i) => format(u, i, ctx));
-            reply(t("leaderboardHeader", { marker: bridgeMarker(BRIDGE_MARKERS.STATS, "📊"), emoji, label, list: out.join(" | ") }));
+            reply(`[b]${bridgeMarker(BRIDGE_MARKERS.STATS, "📊")} ${emoji} ${label}: ${out.join(" | ")}[/b]`);
         };
     }
 
@@ -7407,7 +5831,9 @@ body.host-panel-dragging * {
             // no args  → show countdown
             if (args.length === 0) {
                 reply(
-                    t("timeLeftReply", { remaining: parseTime(giveawayData.timeLeft * 1000), marker: bridgeMarker(BRIDGE_MARKERS.TIME, "⏳") })
+                    `Time left: [b][color=#1DDC5D]${parseTime(
+                        giveawayData.timeLeft * 1000
+                    )}[/color][/b] ${bridgeMarker(BRIDGE_MARKERS.TIME, "⏳")}`
                 );
                 return;
             }
@@ -7419,12 +5845,12 @@ body.host-panel-dragging * {
             if (!isPriv) return; // silently ignore non-host/non-admin
 
             if (action !== "add" && action !== "remove") {
-                reply(t("timeUsage"));
+                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 
             if (isNaN(minutes) || minutes <= 0) {
-                reply(t("timeUsage"));
+                reply("[color=red]Usage:[/color] !time add|remove <minutes>");
                 return;
             }
 
@@ -7444,7 +5870,7 @@ body.host-panel-dragging * {
             const free = total - taken;
 
             if (taken === 0) {
-                reply(t("noEntriesYet", { total }));
+                reply(`[b]No entries yet! ${total} numbers available.[/b]`);
                 return;
             }
 
@@ -7456,7 +5882,8 @@ body.host-panel-dragging * {
                 );
 
             reply(
-                t("entriesSummary", { marker: bridgeMarker(BRIDGE_MARKERS.ENTRIES, "📋"), taken, total, free, list: list.join(", ") })
+                `${bridgeMarker(BRIDGE_MARKERS.ENTRIES, "📋")} Entries – ${taken}/${total} ` +
+                `[b]([color=#1DDC5D]${free} free[/color][/b]): ${list.join(", ")}`
             );
         },
 
@@ -7471,7 +5898,7 @@ body.host-panel-dragging * {
             const rec = key && stats.users ? stats.users[key] : null;
 
             if (!rec) {
-                reply(t("noSavedStats", { user: safeNameForChat(target) }));
+                reply(`[b]No saved stats yet for ${safeNameForChat(target)}.[/b]`);
                 return;
             }
 
@@ -7491,32 +5918,32 @@ body.host-panel-dragging * {
             const isSelfQuery = !ctx.args[0] || normUserKey(target) === normUserKey(ctx.author);
 
             const parts = [
-                t("statEntered", { value: fmtBON(enteredAll) }),
-                t("statWins", { value: fmtBON(wins) }),
-                t("statLosses", { value: fmtBON(losses) }),
-                t("statWR", { value: wr })
+                `Entered [color=#ffc00a]${fmtBON(enteredAll)}[/color]`,
+                `Wins [color=#1DDC5D]${fmtBON(wins)}[/color]`,
+                `Losses [color=#CE2E30]${fmtBON(losses)}[/color]`,
+                `WR [color=#1DDC5D]${wr}%[/color]`
             ];
 
-            if (rec.totalWon) parts.push(t("statWon", { value: fmtBONCurrency(rec.totalWon) }));
-            if (rec.biggestWin) parts.push(t("statBest", { value: fmtBONCurrency(rec.biggestWin) }));
-            if (rec.sponsoredTotal) parts.push(t("statSponsored", { value: fmtBONCurrency(rec.sponsoredTotal) }));
-            if (rec.hosted) parts.push(t("statHosted", { value: fmtBON(rec.hosted) }));
+            if (rec.totalWon) parts.push(`Won [color=#ffc00a]${fmtBONCurrency(rec.totalWon)} BON[/color]`);
+            if (rec.biggestWin) parts.push(`Best [color=#ffc00a]${fmtBONCurrency(rec.biggestWin)} BON[/color]`);
+            if (rec.sponsoredTotal) parts.push(`Sponsored [color=#00abff]${fmtBONCurrency(rec.sponsoredTotal)} BON[/color]`);
+            if (rec.hosted) parts.push(`Hosted ${fmtBON(rec.hosted)}`);
 
             if (isHostCaller && isSelfQuery) {
-                parts.push(t("statGiven", { value: fmtBONCurrency(rec.hostedTotal || 0) }));
-                parts.push(t("statSponsorsReceived", { value: fmtBONCurrency(rec.sponsorReceivedTotal || 0) }));
+                parts.push(`Given [color=#ffc00a]${fmtBONCurrency(rec.hostedTotal || 0)} BON[/color]`);
+                parts.push(`Sponsors received [color=#00abff]${fmtBONCurrency(rec.sponsorReceivedTotal || 0)} BON[/color]`);
                 const thisSponsor = sumSponsorContribs(ctx.giveawayData?.sponsorContribs, ctx.giveawayData?.host);
                 if (thisSponsor > 0) {
-                    parts.push(t("statCurrentSponsors", { value: fmtBONCurrency(thisSponsor) }));
+                    parts.push(`Current sponsors [color=#00abff]${fmtBONCurrency(thisSponsor)} BON[/color]`);
                 }
             }
 
-            reply(t("statsHeader", { marker: bridgeMarker(BRIDGE_MARKERS.STATS, "📊"), user: safeNameForChat(rec.name || target), parts: parts.join(" • ") }));
+            reply(`[b]${bridgeMarker(BRIDGE_MARKERS.STATS, "📊")} Stats: [color=#d85e27]${safeNameForChat(rec.name || target)}[/color] - ${parts.join(" • ")}[/b]`);
         },
 
         // Leaderboards — table-driven to reduce repetition
         top:      makeLeaderboardCommand({
-            emoji: "🏆", label: t("leaderboardTopWinners"), emptyMsg: t("noWinnerStats"),
+            emoji: "🏆", label: "Top winners", emptyMsg: "[b]No winner stats saved yet.[/b]",
             sort:   (a, b) => (b.wins - a.wins) || (b.totalWon - a.totalWon) || (b.entered - a.entered),
             filter: u => (u.wins || 0) > 0,
             format: (u, i) =>
@@ -7526,7 +5953,7 @@ body.host-panel-dragging * {
         }),
 
         most:     makeLeaderboardCommand({
-            emoji: "💰", label: t("leaderboardMostBon"), emptyMsg: t("noWinnerStats"),
+            emoji: "💰", label: "Most BON won", emptyMsg: "[b]No winner stats saved yet.[/b]",
             sort:   (a, b) => (b.totalWon - a.totalWon) || (b.wins - a.wins) || (b.entered - a.entered),
             filter: u => (u.totalWon || 0) > 0,
             format: (u, i) =>
@@ -7536,7 +5963,7 @@ body.host-panel-dragging * {
         }),
 
         sponsors: makeLeaderboardCommand({
-            emoji: "💸", label: t("leaderboardTopSponsors"), emptyMsg: t("noSponsorStats"),
+            emoji: "💸", label: "Top all-time sponsors", emptyMsg: "[b]No sponsor stats saved yet.[/b]",
             sort:   (a, b) => (b.sponsoredTotal - a.sponsoredTotal) || (b.sponsorCount - a.sponsorCount),
             filter: u => (u.sponsoredTotal || 0) > 0,
             format: (u, i) =>
@@ -7546,7 +5973,7 @@ body.host-panel-dragging * {
         }),
 
         unlucky:  makeLeaderboardCommand({
-            emoji: "😵", label: t("leaderboardUnlucky"), emptyMsg: t("noUnluckyStats"),
+            emoji: "😵", label: "Unlucky", emptyMsg: "[b]No unlucky stats saved yet.[/b]",
             sort:   (a, b) => (b.losses - a.losses) || (b.entered - a.entered) || (a.wins - b.wins),
             filter: u => (u.losses || 0) > 0,
             format: (u, i, ctx) => {
@@ -7564,7 +5991,7 @@ body.host-panel-dragging * {
 
                 return `${i + 1}) [color=#d85e27]${safeNameForChat(u.name)}[/color] - ` +
                     `[color=#CE2E30]${fmtBON(losses)} L[/color] ` +
-                    `/ [color=#ffc00a]${fmtBON(entered)} ${t("unluckyEntered")}[/color] ` +
+                    `/ [color=#ffc00a]${fmtBON(entered)} entered[/color] ` +
                     `• [color=#1DDC5D]WR ${wr}%[/color]`;
             }
         }),
@@ -7577,7 +6004,7 @@ body.host-panel-dragging * {
             const all = Array.isArray(stats.giveaways) ? stats.giveaways.slice() : [];
 
             if (!all.length) {
-                reply(t("noHistory"));
+                reply("[b]No giveaway history saved yet.[/b]");
                 return;
             }
 
@@ -7591,7 +6018,7 @@ body.host-panel-dragging * {
                 if (t) {
                     try { return new Date(t).toLocaleDateString("en-CA"); } catch (e) { /* ignore */ }
                 }
-                return t("unknownDate");
+                return "unknown date";
             };
 
 
@@ -7601,7 +6028,7 @@ body.host-panel-dragging * {
             .slice(0, n);
 
             if (!top.length) {
-                reply(t("noHistory"));
+                reply("[b]No giveaway history saved yet.[/b]");
                 return;
             }
 
@@ -7611,27 +6038,27 @@ body.host-panel-dragging * {
                 return `${i + 1}) [color=#ffc00a]${amt} BON[/color] [color=#9aa0a6](${d})[/color]`;
             });
 
-            reply(t("largestGiveaways", { list: out.join(" | ") }));
+            reply(`[b]📈 Largest giveaways: ${out.join(" | ")}[/b]`);
 
         },
 
         gift({ giveawayData, reply }) {
             const giftHost = getGiftSyntaxHostName();
-            reply(t("giftUsage", { marker: bridgeMarker(BRIDGE_MARKERS.GIFT, "✨"), host: giftHost }));
+            reply(`${bridgeMarker(BRIDGE_MARKERS.GIFT, "✨")} To send a gift type: /gift ${giftHost} amount message`);
         },
 
         bon({ giveawayData , reply}) {
-            const rigTag = rigNote(t("rigHintPot"));
+            const rigTag = rigNote("(pot size [b]carefully curated[/b] by our rigging department)");
             reply(
-                t("giveawayAmount", { amount: fmtBONCurrency(giveawayData.amount) }) +
+                `Giveaway Amount: [b][color=#FFB700]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b]` +
                 rigTag
             );
         },
 
         range({ giveawayData , reply}) {
-            const rigTag = rigNote(t("rigHintRange"));
+            const rigTag = rigNote("(this range has been [b]pre-approved[/b] for maximum riggability)");
             reply(
-                t("rangeValid", { start: giveawayData.startNum, end: giveawayData.endNum }) +
+                `Numbers between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color] inclusive are valid.` +
                 rigTag
             );
         },
@@ -7639,26 +6066,29 @@ body.host-panel-dragging * {
         lucky({ safeAuthor, giveawayData , reply}) {
             // Safety: no active giveaway
             if (!giveawayData) {
-                reply(t("noActiveGiveaway"));
+                reply("There is no active giveaway right now.");
                 return;
             }
 
             if (GENERAL_SETTINGS.disable_lucky) {
                 reply(
-                    t("luckyDisabled", { user: safeAuthor })
+                    `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], ` +
+                    `[color=#999999]!lucky[/color] has been disabled for this giveaway.`
                 );
                 return;
             }
 
             const luckyNum = getLuckyNumber(giveawayData);
             if (luckyNum === null || luckyNum === undefined) {
-                reply(t("noFreeNumbers"));
+                reply("All numbers are taken — no free numbers left!");
                 return;
             }
-            const rigHint = rigNote(t("rigHintLucky"));
+            const rigHint = rigNote("(approved by the Official Rigging Committee™) ✅");
 
             reply(
-                t("luckyNumber", { number: luckyNum }) + rigHint
+                `The current giveaway lucky number is: ` +
+                `[b][color=#1DDC5D]${luckyNum}[/color][/b].` +
+                rigHint
             );
         },
 
@@ -7667,7 +6097,7 @@ body.host-panel-dragging * {
 
             // Safety: no active giveaway
             if (!giveawayData) {
-                reply(t("noActiveGiveaway"));
+                reply("There is no active giveaway right now.");
                 return;
             }
 
@@ -7682,24 +6112,28 @@ body.host-panel-dragging * {
             const userNumber = numberEntries.get(author);
             if (userNumber !== undefined) {
                 reply(
-                    t("entryAlreadyEntered", { user: safeAuthor, number: userNumber })
+                    `🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]you[/color] already entered with number ` +
+                    `[color=#DC3D1D][b]${userNumber}[/b][/color]!`
                 );
                 return;
             }
 
             const luckyNum = getLuckyNumber(giveawayData);
             if (luckyNum === null || luckyNum === undefined) {
-                reply(t("noFreeNumbers"));
+                reply("All numbers are taken — no free numbers left!");
                 return;
             }
 
             addNewEntry(author, fancyName, luckyNum);
 
             const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
-            const rigHint = rigNote(t("rigHintLucky"));
+            const rigHint = rigNote("(approved by the Official Rigging Committee™) ✅");
 
             reply(
-                t("luckyeEntered", { user: safeAuthor, number: luckyNum, remaining: timeLeftStr }) + rigHint
+                `[color=#d85e27]${safeAuthor}[/color] used [color=#999999]!luckye[/color] and entered with ` +
+                `lucky number [color=#1DDC5D][b]${luckyNum}[/b][/color]! ` +
+                `Time remaining: [b][color=#1DDC5D]${timeLeftStr}[/color][/b].` +
+                rigHint
             );
         },
 
@@ -7730,13 +6164,14 @@ body.host-panel-dragging * {
                 // Only announce in chat if a giveaway is actually running
                 if (hasActiveGiveaway) {
                     reply(
-                        t("rigEnabled", { marker: bridgeMarker(BRIDGE_MARKERS.RIGGED, "😈") })
+                        `${bridgeMarker(BRIDGE_MARKERS.RIGGED, "😈")} [color=#FF4F9A][b]RIGGED MODE ENGAGED![/b][/color] ` +
+                        `[i][color=#FF9AE6]Visual flair only — the math is still fair... probably.[/color][/i]`
                     );
                 }
             } else {
                 if (hasActiveGiveaway) {
                     reply(
-                        t("rigAlready")
+                        `[color=#FF4F9A][b]RIGGED MODE is already active![/b][/color]`
                     );
                 }
             }
@@ -7766,13 +6201,14 @@ body.host-panel-dragging * {
 
                 if (hasActiveGiveaway) {
                     reply(
-                        t("rigDisabled", { marker: bridgeMarker(BRIDGE_MARKERS.UNRIGGED, "😒") })
+                        `${bridgeMarker(BRIDGE_MARKERS.UNRIGGED, "😒")} [color=#32cd53][b]Rigged mode disabled.[/b][/color] ` +
+                        `[i][color=#A0E7AF]Back to boring, fully transparent fairness.[/color][/i]`
                     );
                 }
             } else {
                 if (hasActiveGiveaway) {
                     reply(
-                        t("rigNotEnabled")
+                        `[color=#32cd53][b]Rigged mode isn&#39;t enabled.[/b][/color]`
                     );
                 }
             }
@@ -7782,53 +6218,56 @@ body.host-panel-dragging * {
             const { author, safeAuthor, fancyName, giveawayData, reply } = ctx;
 
             if (GENERAL_SETTINGS.disable_random) {
-                reply(t("randomDisabled", { user: safeAuthor }));
+                reply(`🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#999999]!random[/color] has been disabled for this giveaway.`);
                 return;
             }
             const userNumber = numberEntries.get(author);
             if (userNumber !== undefined) {
-                reply(t("entryAlreadyEntered", { user: safeAuthor, number: userNumber }));
+                reply(`🚫 Sorry [color=#d85e27]${safeAuthor}[/color], but [color=#32cd53]you[/color] already entered with number [color=#DC3D1D][b]${userNumber}[/b][/color]!`);
                 return;
             }
 
             const randomNum = pickRandomFreeNumber(giveawayData);
             if (randomNum === null) {
-                reply(t("noFreeNumbers"));
+                reply("All numbers are taken — no free numbers left!");
                 return;
             }
 
             addNewEntry(author, fancyName, randomNum);
             const timeLeftStr = parseTime(giveawayData.timeLeft * 1000);
-            const rigHint = rigNote(t("rigHintRandom"));
+            const rigHint = rigNote("(chosen by our [b]totally unbiased[/b] chaos engine)");
             reply(
-                t("randomEntered", { user: safeAuthor, number: randomNum, remaining: timeLeftStr }) + rigHint
+                `[color=#d85e27]${safeAuthor}[/color] has entered with the number ` +
+                `[color=#DC3D1D][b]${randomNum}[/b][/color]! Time remaining: ` +
+                `[b][color=#1DDC5D]${timeLeftStr}[/color][/b].` +
+                rigHint
             );
         },
 
         number({ author, safeAuthor , reply}) {
             const userNumber = numberEntries.get(author);
             if (userNumber !== undefined) {
-                reply(t("yourNumber", { user: safeAuthor, number: userNumber }));
+                reply(`[color=#d85e27]${safeAuthor}[/color] your number is [color=#DC3D1D][b]${userNumber}[/b][/color]`);
             } else {
-                reply(t("notEntered", { user: safeAuthor }));
+                reply(`[color=#d85e27]${safeAuthor}[/color] you are not currently in the giveaway.`);
             }
         },
 
         free({ safeAuthor, giveawayData , reply}) {
             if (GENERAL_SETTINGS.disable_free) {
-                reply(t("freeDisabled", { user: safeAuthor }));
+                reply(`🚫 Sorry [color=#d85e27]${safeAuthor}[/color], !free disabled`);
                 return;
             }
 
             const sample = getFreeNumberSample(giveawayData, 5);
 
             if (!sample.length) {
-                reply(t("noFreeNumbersAlt"));
+                reply("There are no free numbers left!");
                 return;
             }
 
-            const rigHint = rigNote(t("rigHintFree"));
-            reply(t("freeNumbers", { numbers: sample.join(", ") }) + rigHint);
+            const rigHint = rigNote("(these are some [b]suspiciously good[/b] numbers, trust me...) 😏");
+            reply(`Free numbers: ${sample.join(", ")}.` + rigHint);
         },
 
 
@@ -7846,17 +6285,16 @@ body.host-panel-dragging * {
             if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
             const newCount = parseInt(ctx.args[0], 10);
             if (isNaN(newCount) || newCount < 1 || newCount > MAX_WINNERS) {
-                reply(t("winnersUsage", { max: MAX_WINNERS }));
+                reply(`[color=red]Usage:[/color] !winners 1‑${MAX_WINNERS}`);
                 return;
             }
 
             const minimumPot = minimumPotForWeightedWinners(newCount);
             if (Math.floor(Number(giveawayData.amount) || 0) < minimumPot) {
-                reply(t("winnersInsufficientPot", {
-                    winners: fmtBON(newCount),
-                    pot: fmtBONCurrency(giveawayData.amount),
-                    minimum: fmtBONCurrency(minimumPot)
-                }));
+                reply(
+                    `[color=red]Cannot set ${fmtBON(newCount)} winners with the current ${fmtBONCurrency(giveawayData.amount)} BON pot. ` +
+                    `Weighted payouts require at least ${fmtBONCurrency(minimumPot)} BON.[/color]`
+                );
                 return;
             }
 
@@ -7897,26 +6335,21 @@ body.host-panel-dragging * {
             // Public chat announcement when the effective winner count actually changed.
             // Symmetric to the "Winners increased" message scaling sends on its own.
             if (newCount !== prevEffective) {
-                const direction = t(newCount > prevEffective ? "wordIncreased" : "wordDecreased");
+                const direction = newCount > prevEffective ? "increased" : "decreased";
                 const delta = Math.abs(newCount - prevEffective);
                 const sign = newCount > prevEffective ? "+" : "−";
-                const announcement = t("hostWinnerAdjustment", {
-                    accent: SCALING_ACCENT_COLOR,
-                    direction,
-                    old: prevEffective,
-                    new: newCount,
-                    sign,
-                    delta
-                });
+                const announcement =
+                    `[b][color=${SCALING_ACCENT_COLOR}]Host adjustment:[/color][/b] ` +
+                    `[b]Winners ${direction}[/b]: [b][color=#5DE2E7]${prevEffective} → ${newCount} (${sign}${delta})[/color][/b].`;
                 sendMessage(announcement);
                 flashWinnersUI();
                 logEvent("Host adjusted winners", `${prevEffective} -> ${newCount} (${sign}${delta})`);
             }
 
             const capNote = capWasReset
-                ? t("scalingCapReset", { count: newCount })
+                ? ` [i][color=#9aa0a6]Scaling cap also reset to ${newCount} — use !maxwinners to raise.[/color][/i]`
                 : "";
-            reply(t("winnersSet", { count: newCount, capNote }));
+            reply(`Number of winners set to [color=#1DDC5D][b]${newCount}[/b][/color].${capNote}`);
             snapshotGiveaway();
         },
 
@@ -7924,61 +6357,60 @@ body.host-panel-dragging * {
             const { author, fancyName, args, giveawayData, reply } = ctx;
             if (!isHostOrAdmin(author, fancyName, giveawayData.host)) return;
             if (!giveawayData.scaleWinnersWithSponsors) {
-                reply(t("scalingDisabled"));
+                reply(`[color=red]Scaling is not enabled for this giveaway.[/color]`);
                 return;
             }
             const newMax = parseInt(args[0], 10);
             const baseWinners = Math.max(1, Math.floor(Number(giveawayData.baseWinnersAtStart || giveawayData.winnersNum) || 1));
             if (isNaN(newMax) || newMax < baseWinners || newMax > MAX_WINNERS) {
-                reply(t("maxWinnersUsage", { base: baseWinners, max: MAX_WINNERS }));
+                reply(`[color=red]Usage:[/color] !maxwinners ${baseWinners}‑${MAX_WINNERS}`);
                 return;
             }
             giveawayData.hostMaxScaledWinners = newMax;
             if (maxScaledWinnersInput) maxScaledWinnersInput.value = String(newMax);
             const effective = recomputeEffectiveWinners(giveawayData);
             initializeScaledWinnersAnnouncementState(giveawayData);
-            reply(t("maxWinnersSet", { max: newMax, effective }));
+            reply(
+                `Max scaled winners set to [color=#1DDC5D][b]${newMax}[/b][/color]. ` +
+                `Current effective winners: [b][color=#5DE2E7]${effective}[/color][/b].`
+            );
             snapshotGiveaway();
         },
 
         scale(ctx) {
             const { giveawayData, reply } = ctx;
             if (!giveawayData) {
-                reply(t("noActiveGiveaway"));
+                reply("There is no active giveaway right now.");
                 return;
             }
             if (!giveawayData.scaleWinnersWithSponsors) {
-                reply(t("scalingDisabled"));
+                reply("Winner scaling is not enabled for this giveaway.");
                 return;
             }
 
             const state = getScalingProgressState(giveawayData);
             if (!state) {
-                reply(t("scalingUnavailable"));
+                reply("Winner scaling is not available for this giveaway.");
                 return;
             }
 
             const extraWinners = state.effectiveWinners - state.baseWinners;
-            let msg = t("scaleStatus", {
-                accent: SCALING_ACCENT_COLOR,
-                effective: state.effectiveWinners,
-                base: state.baseWinners,
-                extra: extraWinners > 0 ? t("scaleExtra", { count: extraWinners }) : "",
-                cap: state.cap,
-                threshold: fmtBONCurrency(state.threshold),
-                mode: t(state.isCustomThreshold ? "scaleModeCustom" : "scaleModeAuto"),
-                total: fmtBONCurrency(state.totalContrib)
-            });
+            let msg = `[b][color=${SCALING_ACCENT_COLOR}]Scaling Status:[/color][/b] ` +
+                `Winners: [b][color=#5DE2E7]${state.effectiveWinners}[/color][/b] ` +
+                `(base ${state.baseWinners}` +
+                (extraWinners > 0 ? ` + ${extraWinners} from scaling` : ``) +
+                `, max ${state.cap}). ` +
+                `Extra-winner threshold: [b]${fmtBONCurrency(state.threshold)} BON[/b] ` +
+                `(${state.isCustomThreshold ? "custom" : "auto"}). ` +
+                `Scaling contributions: [b][color=#ffc00a]${fmtBONCurrency(state.totalContrib)} BON[/color][/b]. `;
 
             if (state.effectiveWinners >= state.cap) {
-                msg += t("scaleReached");
+                msg += `[b]Max winners reached[/b].`;
             } else {
-                msg += t("scaleProgress", {
-                    next: state.nextWinner,
-                    progress: fmtBONCurrency(state.progress),
-                    threshold: fmtBONCurrency(state.threshold),
-                    remaining: fmtBONCurrency(state.remaining)
-                });
+                msg +=
+                    `Progress to winner #${state.nextWinner}: ` +
+                    `[b]${fmtBONCurrency(state.progress)} / ${fmtBONCurrency(state.threshold)} BON[/b]. ` +
+                    `Still needed: [b][color=#FFDE59]${fmtBONCurrency(state.remaining)} BON[/color][/b].`;
             }
 
             reply(msg);
@@ -7998,10 +6430,12 @@ body.host-panel-dragging * {
 
             switch (sub) {
                 case "add": {
-                    if (!key) { reply(t("naughtyAddUsage")); return; }
+                    if (!key) { reply("[color=red]Usage:[/color] !naughty add username"); return; }
 
                     if (key === normalizeUserKey(giveawayData.host)) {
-                        reply(t("naughtyHostDenied"));
+                        reply(
+                            `[color=red][b]The host can't be added to the naughty list![/b][/color]`
+                        );
                         return;
                     }
                     naughtySet.add(key); // save in LS
@@ -8033,23 +6467,25 @@ body.host-panel-dragging * {
 
                     if (removed) { updateEntries(); snapshotGiveaway(); }
 
-                    reply(t("naughtyAdded", { marker: bridgeMarker(BRIDGE_MARKERS.NAUGHTY, "👮"), user: fmtUserList([target]) }));
+                    reply(`${bridgeMarker(BRIDGE_MARKERS.NAUGHTY, "👮")} [color=#FFDE59]${fmtUserList([target])} added to the naughty list and removed from the giveaway.[/color]`);
                     break;
                 }
 
 
                 case "remove":
-                    if (!key) { reply(t("naughtyRemoveUsage")); return; }
+                    if (!key) { reply("[color=red]Usage:[/color] !naughty remove username"); return; }
                     naughtySet.delete(key); saveNaughty();
-                    reply(t("naughtyRemoved", { user: fmtUserList([target]) }));
+                    reply(`🥳 [color=#7DDA58]${fmtUserList([target])} removed from the naughty list![/color]`);
                     break;
 
                 case "list":
-                    reply(naughtySet.size ? t("naughtyList", { users: fmtUserList([...naughtySet]) }) : t("naughtyEmpty"));
+                    reply(naughtySet.size
+                          ? `[color=#FFDE59]Naughty list: [b]${fmtUserList([...naughtySet])}[/b][/color]`
+                          : "Naughty list is empty.");
                     break;
 
                 default:
-                    reply(t("naughtyUsage"));
+                    reply("[color=red]Usage:[/color] !naughty (add|remove|list) username");
             }
         },
 
@@ -8065,7 +6501,7 @@ body.host-panel-dragging * {
             // If admin (not host), must specify whose to end
             if (isAdmin(fancyName)) {
                 if (!args.length || normalizeUserKey(args[0]) !== normalizeUserKey(giveawayData.host)) {
-                    reply(t("adminEndUsage", { host: sanitizeNick(giveawayData.host) }));
+                    reply(`[color=red]Admins must specify whose giveaway to end. Example: !end ${sanitizeNick(giveawayData.host)}[/color]`);
                     return;
                 }
                 logEvent("Giveaway stop requested", `Requested by admin ${sanitizeNick(author)} via !end ${sanitizeNick(giveawayData.host)}.`);
@@ -8114,11 +6550,9 @@ body.host-panel-dragging * {
             return `![color=#E50E68][b]${cmd}[/b][/color]`;
         }
 
-        const helpText = t("helpCommands", {
-            commands: COMMANDS.map(({ name, setting }) =>
-                fmt(name, setting && GENERAL_SETTINGS[setting])
-            ).join(" - ")
-        });
+        const helpText = "Commands are " + COMMANDS.map(({ name, setting }) =>
+                                                        fmt(name, setting && GENERAL_SETTINGS[setting])
+                                                       ).join(" - ") + ".";
         reply(helpText);
     }
 
@@ -8128,7 +6562,7 @@ body.host-panel-dragging * {
         if (normalizeUserKey(author) !== normalizeUserKey(giveawayData.host)) return;
 
         if (hostAddBonInFlight) {
-            reply(t("hostTopupBusy"));
+            reply("[b][color=#FFDE59]A host BON top-up is already being verified. Please wait a moment.[/color][/b]");
             return;
         }
 
@@ -8137,7 +6571,7 @@ body.host-panel-dragging * {
         const amount = parseInt(clean, 10);
 
         if (!Number.isFinite(amount) || amount <= 0) {
-            reply(t("hostTopupUsage"));
+            reply("[b][color=red]Invalid usage.[/color] Example: !addbon 100[/b]");
             return;
         }
 
@@ -8156,12 +6590,18 @@ body.host-panel-dragging * {
             const newTotal = currentPot + amount;
     
             if (!Number.isFinite(currentBon) || currentBon == null || currentBon < 0) {
-                reply(t("hostTopupBalanceUnavailable"));
+                reply(
+                    `[b][color=red]Unable to verify your current BON balance right now. ` +
+                    `Please try !addbon again shortly.[/color][/b]`
+                );
                 return;
             }
     
             if (currentBon < newTotal) {
-                reply(t("hostTopupInsufficient", { balance: fmtBONCurrency(currentBon), total: fmtBONCurrency(newTotal) }));
+                reply(
+                    `[b][color=red]You only have ${fmtBONCurrency(currentBon)} BON right now, so you can't increase the pot to ${fmtBONCurrency(newTotal)} BON. ` +
+                    `Wait for more BON (or sponsor gifts) and try again.[/color][/b]`
+                );
                 return;
             }
     
@@ -8185,13 +6625,13 @@ body.host-panel-dragging * {
                 flashWinnersUI();
             }
     
-            const addedPart = t("hostTopupAdded", { amount: fmtBONCurrency(amount) });
-            const totalPart = t("hostTopupTotal", { amount: fmtBONCurrency(Number(cleanPotString(giveawayData.amount))) });
+            const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
+            const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
     
             let scalingPart = "";
             if (giveawayData.scaleWinnersWithSponsors) {
                 if (winnersDelta > 0) {
-                    scalingPart = t("hostTopupScaling", { accent: SCALING_ACCENT_COLOR, old: prevEffectiveWinners, new: newEffectiveWinners, delta: winnersDelta });
+                    scalingPart = `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b]: [b][color=#5DE2E7]${prevEffectiveWinners} → ${newEffectiveWinners} (+${winnersDelta})[/color][/b].`;
                 } else {
                     scalingPart = getSponsorshipNextWinnerLine(giveawayData, { plain: true });
                 }
@@ -8228,7 +6668,7 @@ body.host-panel-dragging * {
             const mins = parseFloat(args[0]);
             if (isNaN(mins) || mins <= 0) {
                 reply(
-                    t("timeUsageExtended")
+                    "[color=red]Usage:[/color] !time add|remove <minutes> or !addtime|!removetime <minutes>"
                 );
                 return;
             }
@@ -8244,12 +6684,15 @@ body.host-panel-dragging * {
             );
             countdownHeader.textContent = parseTime(giveawayData.endTs - Date.now());
 
-            const oneKey = sign > 0 ? "timeAddedOne" : "timeRemovedOne";
-            const manyKey = sign > 0 ? "timeAddedMany" : "timeRemovedMany";
-            reply(tp(oneKey, manyKey, mins, {
-                minutes: mins,
-                remaining: parseTime(giveawayData.endTs - Date.now())
-            }));
+            const verb = sign > 0 ? "Added" : "Removed";
+            const prep = sign > 0 ? "to" : "from";
+
+            reply(
+                `${verb} [color=#DC3D1D][b]${mins}[/b][/color] minute${mins === 1 ? "" : "s"} ${prep} the giveaway. ` +
+                `New time left: [b][color=#1DDC5D]${parseTime(
+                    giveawayData.endTs - Date.now()
+                )}[/color][/b].`
+            );
             snapshotGiveaway();
         };
     }
@@ -8490,24 +6933,11 @@ body.host-panel-dragging * {
             sponsorsInterval = null;
         }
 
-        // Freeze the live participant source before payout computation.
-        stopEntryInputSource();
-
-        // Portugas can have a dead websocket while its REST chat API remains
-        // authoritative. One final cursor pass captures numeric entries posted
-        // at/before the exact settlement cutoff, without executing late commands
-        // or emitting entry replies during settlement.
-        if (SITE.chat.entrySource === "api") {
-            try {
-                await pollEntryChatApi({
-                    allowEnding: true,
-                    entriesOnly: true,
-                    suppressReply: true,
-                    maxCreatedAtTs: settlementCutoffTs
-                });
-            } catch (e) {
-                logEvent("Final entry API catch-up failed", String(e?.message || e));
-            }
+        // Freeze participant input before any payout computation. A queued/late
+        // entry must never alter stats or UI after the winner set is committed.
+        if (observer) {
+            observer.disconnect();
+            observer = null;
         }
 
         const buildSettlementFinancialPlan = () => {
@@ -8651,7 +7081,10 @@ body.host-panel-dragging * {
                     "Could not refresh the chat API after 3 attempts; settling with the last confirmed sponsor state."
                 );
                 try {
-                    window.alert(t("alertFinalSponsorSync"));
+                    window.alert(
+                        "Giveaway warning: final sponsor sync failed after 3 attempts. " +
+                        "Settlement will use the last confirmed sponsor total; verify any very recent gifts manually."
+                    );
                 } catch {}
             }
         }
@@ -8744,7 +7177,8 @@ body.host-panel-dragging * {
 
             if (noEntryPoolPct > 0) {
                 if (!(await sendSettlementMessage(
-                    t("zeroEntryPoolOutcome", { poolColor: BONANZA.GIVEAWAY_COLOR, amount: fmtBONCurrency(noEntryTotal), poolName: BONANZA.FUND_NAME }),
+                    `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
+                    `💙 The full pot of [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] will be contributed directly to the [b]${BONANZA.FUND_NAME}[/b].`,
                     "zero-entry BON Pool outcome",
                     "zero-entry-pool-outcome"
                 ))) return;
@@ -8755,7 +7189,10 @@ body.host-panel-dragging * {
 
                     if (noEntryPoolResult.confirmed) {
                         if (!(await sendSettlementMessage(
-                            t("zeroEntryPoolConfirmed", { marker: bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool"), poolColor: BONANZA.GIVEAWAY_COLOR, amount: fmtBONCurrency(noEntryTotal), poolName: BONANZA.FUND_NAME }),
+                            `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
+                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
+                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
+                            `No entrants — 100% of the pot was contributed. ✨`,
                             "zero-entry BON Pool confirmation",
                             "zero-entry-pool-confirmation"
                         ))) return;
@@ -8765,7 +7202,10 @@ body.host-panel-dragging * {
                             `Zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. No automatic retry was attempted.`
                         );
                         try {
-                            window.alert(t("alertPoolZeroUnconfirmed", { amount: fmtBONCurrency(noEntryTotal), path: BONANZA.POOL_PATH }));
+                            window.alert(
+                                `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. ` +
+                                `Check /bon-pool manually before retrying anything.`
+                            );
                         } catch {}
                     }
                 }
@@ -8803,7 +7243,7 @@ body.host-panel-dragging * {
                         split: noEntrySplit,
                         poolStatus: noEntryPoolResult.confirmed
                             ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
-                            : `NOT CONFIRMED, zero-entry full pot requires manual ${BONANZA.POOL_PATH} check`,
+                            : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
                         entrants: 0,
                         refunds: []
                     });
@@ -8826,13 +7266,12 @@ body.host-panel-dragging * {
                     .join(" · ");
 
                 if (!(await sendSettlementMessage(
-                    t("zeroEntryRefundBase", {
-                        marker: bridgeMarker(BRIDGE_MARKERS.SPONSORS, "↩️"),
-                        hostFunded: fmtBONCurrency(noEntryHostFunded)
-                    }) +
+                    `Unfortunately, no one has entered the giveaway, so there are no winners.\n` +
+                    `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "↩️")} BON Pool is [b]0%[/b]: ` +
+                    `the host-funded [b][color=#ffc00a]${fmtBONCurrency(noEntryHostFunded)} BON[/color][/b] remains with the host.` +
                     (refundList
-                        ? t("zeroEntryRefunds", { refunds: refundList })
-                        : t("zeroEntryNoRefunds")),
+                        ? ` Sponsor contributions will be returned in full: ${refundList}.`
+                        : ` There are no sponsor contributions to return.`),
                     "zero-entry refund outcome",
                     "zero-entry-refund-outcome"
                 ))) return;
@@ -9018,9 +7457,9 @@ body.host-panel-dragging * {
                 : [];
             const ties = Array.isArray(plan.ties) ? plan.ties.map(item => ({ ...item })) : [];
             if (ties.length > 1) {
-                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${sanitizeNick(e.author)}[/color][/b]`).join(", ");
+                const tieMessage = ties.map(e => `[b][color=#DC3D1D]${e.author}[/color][/b]`).join(", ");
                 if (!(await sendSettlementMessage(
-                    t("tieResult", { marker: bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️"), users: tieMessage, winner: sanitizeNick(entries[0].author) }),
+                    `${bridgeMarker(BRIDGE_MARKERS.TIE, "⚠️")} We have a tie between ${tieMessage}! [b][color=#DC3D1D]${entries[0].author}[/color][/b] wins the tie-breaker as their entry was submitted first!`,
                     "tie result",
                     "tie-result"
                 ))) return;
@@ -9054,29 +7493,40 @@ body.host-panel-dragging * {
             const entrantsTotal = Math.max(0, Math.floor(Number(plan.entrantsTotal) || 0));
             const scaleIncrease = Math.max(0, Math.floor(Number(plan.scaleIncrease) || 0));
 
-            const podium = ["🥇", "🥈", "🥉"];
+            //hard-coded emoji “podium”
+            const podium = ["🥇", "🥈", "🥉", "🏅", "🎖️"];
+
+            //build the tail: 6th, 7th, … up to the larger of N or MAX_WINNERS
+            const need = Math.max(N, MAX_WINNERS) - podium.length;
+            const tail = Array.from({ length: need }, (_, i) => {
+                const n = i + podium.length + 1;
+                const s = (n % 10 === 1 && n % 100 !== 11) ? "st" :
+                (n % 10 === 2 && n % 100 !== 12) ? "nd" :
+                (n % 10 === 3 && n % 100 !== 13) ? "rd" : "th";
+                return `${n}${s}`; // "6th" … "15th"
+            });
+
+            //final list
+            const medals = podium.concat(tail);
 
             // Rig note (rigNote() already checks riggedMode)
-            const rigTag = rigNote(t("rigFinalNote"));
+            const rigTag = rigNote(" (Rigged mode was active, but winners were still chosen [b]fairly[/b]… allegedly.) 👀");
 
-            const summaryLine = t("winnerSummary", {
-                marker: bridgeMarker(BRIDGE_MARKERS.RESULT, "🎯"),
-                number: fmtBON(winNum),
-                winners: fmtBON(N),
-                entrants: fmtBON(entrantsTotal)
-            });
-            const fundingLine = t("fundingSummary", {
-                hostFunded: fmtBONCurrency(hostFundedTotal),
-                sponsored: fmtBONCurrency(sponsoredTotal),
-                total: fmtBONCurrency(potTotal)
-            });
+            const summaryLine =
+                  `🏆 ${bridgeMarker(BRIDGE_MARKERS.RESULT, "🎯")} Winning number: [b][color=#1DDC5D]${fmtBON(winNum)}[/color][/b]. ` +
+                  `Winners drawn: [b][color=#5DE2E7]${fmtBON(N)}[/color][/b]. ` +
+                  `Total entrants: [b][color=#5DE2E7]${fmtBON(entrantsTotal)}[/color][/b].`;
+            const fundingLine =
+                  `Funding - Host-funded: [b][color=#ffc00a]${fmtBONCurrency(hostFundedTotal)} BON[/color][/b] | ` +
+                  `Sponsored: [b][color=#00abff]${fmtBONCurrency(sponsoredTotal)} BON[/color][/b] | ` +
+                  `Total pot: [b][color=#FFC00A]${fmtBONCurrency(potTotal)} BON[/color][/b].`;
             const scalingLine = (giveawayData.scaleWinnersWithSponsors && scaleIncrease > 0)
-            ? t("settlementScalingIncrease", { accent: SCALING_ACCENT_COLOR, count: fmtBON(scaleIncrease) })
+            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Winners increased[/b] by [b][color=#5DE2E7]+${fmtBON(scaleIncrease)}[/color][/b] due to sponsorships.`
             : "";
             const donationLine = donationActive
                 ? (riggedMode
-                    ? t("taxesDue", { amount: fmtBONCurrency(split.total), percent: split.percent, poolName: BONANZA.FUND_NAME })
-                    : t("poolAllocation", { poolColor: BONANZA.GIVEAWAY_COLOR, poolName: BONANZA.FUND_NAME, amount: fmtBONCurrency(split.total), percent: split.percent }))
+                    ? `🧾 [b][color=#FF4F9A]Taxes due:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct payment into the [b]${BONANZA.FUND_NAME}[/b]. Confirmation follows after settlement.`
+                    : `💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} allocation:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] (${split.percent}% of the pot) reserved for direct contribution.`)
                 : "";
 
             if (winners.length === 1) {
@@ -9086,21 +7536,19 @@ body.host-panel-dragging * {
                 const prize = fmtBONCurrency(net[0]);
                 const donatedNote = donationActive
                     ? (riggedMode
-                        ? t("grossPrizeTaxes", { gross: fmtBONCurrency(allocated[0]), tax: fmtBONCurrency(split.donations[0]) })
-                        : t("grossPrizePool", { gross: fmtBONCurrency(allocated[0]), poolName: BONANZA.FUND_NAME, pool: fmtBONCurrency(split.donations[0]) }))
+                        ? `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · Taxes: ${fmtBONCurrency(split.donations[0])} BON)[/color]`
+                        : `\n[color=#aaaaaa](Gross prize: ${fmtBONCurrency(allocated[0])} BON · ${BONANZA.FUND_NAME}: ${fmtBONCurrency(split.donations[0])} BON)[/color]`)
                     : "";
 
                 const accuracyText = diff === 0
-                    ? t("exactGuess")
-                    : tp("offByOne", "offByMany", diff, { diff: fmtBON(diff) });
+                    ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                    : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
 
-                const winnerLine = t("singleWinnerLine", {
-                    user: sanitizeNick(w.author),
-                    guess: fmtBON(w.guess),
-                    accuracy: accuracyText,
-                    prize,
-                    note: donatedNote
-                });
+                const winnerLine =
+                      `Congrats [b][color=#DC3D1D]${w.author}[/color][/b]! ` +
+                      `Guess [color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ` +
+                      `${accuracyText} ` +
+                      `wins [b][color=#FFC00A]${prize} BON[/color][/b].${donatedNote}`;
 
                 if (!(await sendSettlementMessage(
                     [summaryLine, fundingLine, scalingLine, donationLine, winnerLine].filter(Boolean).join("\n") + rigTag,
@@ -9108,47 +7556,22 @@ body.host-panel-dragging * {
                     "winner-result"
                 ))) return;
             } else {
-                // Keep the podium detailed; winners from 4th place onward are
-                // intentionally compact so large scaled giveaways stay readable.
-                const podiumLines = winners.slice(0, 3).map((w, i) => {
+                // multi‐winner public message
+                const lines = winners.map((w, i) => {
                     const diff = Math.abs(w.guess - winNum);
                     const prize = fmtBONCurrency(net[i]);
+                    const medal = medals[i] || `${i + 1}.`;
                     const accuracyText = diff === 0
-                        ? t("exactGuess")
-                        : tp("offByOne", "offByMany", diff, { diff: fmtBON(diff) });
-                    const place = i === 0
-                        ? t("podiumWinnerPlace")
-                        : t("podiumRankPlace", { rank: formatRank(i + 1) });
-                    return t("podiumWinnerLine", {
-                        medal: podium[i],
-                        user: sanitizeNick(w.author),
-                        place,
-                        guess: fmtBON(w.guess),
-                        accuracy: accuracyText,
-                        prize
-                    });
+                        ? "[color=#1DDC5D][b](spot on!)[/b][/color]"
+                        : `[color=#FB4F4F](off by ${fmtBON(diff)})[/color]`;
+                    return `${medal} [b][color=#DC3D1D]${w.author}[/color][/b]: ` +
+                        `[color=#1DDC5D][b]${fmtBON(w.guess)}[/b][/color] ${accuracyText} ` +
+                        `[color=#FFC00A][b]${prize} BON[/b][/color]`;
                 });
-
-                const remainingItems = winners.slice(3).map((w, offset) => {
-                    const i = offset + 3;
-                    return t("remainingWinnerItem", {
-                        rank: formatRank(i + 1),
-                        user: sanitizeNick(w.author),
-                        prize: fmtBONCurrency(net[i])
-                    });
-                });
-                const remainingLine = remainingItems.length
-                    ? t("remainingWinnersLine", { winners: remainingItems.join(" · ") })
-                    : "";
-
-                const multiDonatedNote = donationActive
-                    ? t("amountsAfterPool", { percent: split.percent, poolName: BONANZA.FUND_NAME })
-                    : "";
+                const multiDonatedNote = donationActive ? `\n[color=#aaaaaa]Amounts shown are after the ${split.percent}% ${BONANZA.FUND_NAME} donation.[/color]` : "";
 
                 if (!(await sendSettlementMessage(
-                    [summaryLine, fundingLine, scalingLine, donationLine, ...podiumLines, remainingLine]
-                        .filter(Boolean)
-                        .join("\n") + multiDonatedNote + rigTag,
+                    [summaryLine, fundingLine, scalingLine, donationLine, lines.join(', ')].filter(Boolean).join("\n") + multiDonatedNote + rigTag,
                     "winner results",
                     "winner-result"
                 ))) return;
@@ -9183,31 +7606,6 @@ body.host-panel-dragging * {
 
             settlement.payoutNotBeforeTs = payoutNotBeforeTs;
             settlement.payoutAfterMessageId = payoutAfterMessageId;
-
-            // Gift History is the canonical payout confirmation source. Freeze a
-            // pre-payout baseline so repeated recipient/amount combinations cannot
-            // accidentally match older transfers after a reload or concurrent tab.
-            const hasSavedPayoutHistoryBaseline = Object.prototype.hasOwnProperty.call(
-                settlement,
-                "payoutGiftHistoryBaseline"
-            );
-            let payoutGiftHistoryBaseline = hasSavedPayoutHistoryBaseline
-                ? settlement.payoutGiftHistoryBaseline
-                : null;
-            if (!hasSavedPayoutHistoryBaseline) {
-                try {
-                    payoutGiftHistoryBaseline =
-                        window.__activeTracker &&
-                        typeof window.__activeTracker.fetchRecentGiftHistory === "function"
-                            ? await window.__activeTracker.fetchRecentGiftHistory()
-                            : null;
-                } catch (e) {
-                    payoutGiftHistoryBaseline = null;
-                    logEvent("Winner Gift History preflight", String(e?.message || e));
-                }
-                settlement.payoutGiftHistoryBaseline = payoutGiftHistoryBaseline;
-            }
-
             snapshotGiveaway({ force: true });
 
             for (let i = 0; i < winners.length; i++) {
@@ -9225,8 +7623,8 @@ body.host-panel-dragging * {
                 }
 
                 const msg = (winners.length === 1)
-                    ? t("giftWinnerSingle", { amount: amt })
-                    : t("giftWinnerRanked", { rank: formatRank(i + 1) });
+                    ? `🎉 You won! Enjoy your ${amt} BON!`
+                    : `🎉 Congratulations on placing ${ordinal(i + 1)}!`;
 
                 const giftResult = await giftBon(w.author, amt, msg, GIFT_PURPOSE.WINNER);
                 const expectedGift = {
@@ -9257,17 +7655,8 @@ body.host-panel-dragging * {
                 if (poolResult.confirmed) {
                     markFundGiftStatus("confirmed");
                     const paidMessage = riggedMode
-                        ? t("taxesConfirmed", {
-                            marker: bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾"),
-                            amount: fmtBONCurrency(split.total),
-                            poolName: BONANZA.FUND_NAME
-                        })
-                        : t("poolConfirmed", {
-                            marker: bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙"),
-                            poolColor: BONANZA.GIVEAWAY_COLOR,
-                            amount: fmtBONCurrency(split.total),
-                            poolName: BONANZA.FUND_NAME
-                        });
+                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
+                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
                     if (!(await sendSettlementMessage(
                         paidMessage,
                         "BON Pool confirmation",
@@ -9277,7 +7666,7 @@ body.host-panel-dragging * {
                     markFundGiftStatus("failed");
                     logEvent("BON Pool verification warning", `Direct contribution of ${fmtBONCurrency(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
                     try {
-                        window.alert(t("alertPoolUnconfirmed", { amount: fmtBONCurrency(split.total), path: BONANZA.POOL_PATH }));
+                        window.alert(`BON Pool warning: the ${fmtBONCurrency(split.total)} BON contribution could not be confirmed. Check /bon-pool manually before retrying anything.`);
                     } catch {}
                 }
             }
@@ -9292,9 +7681,7 @@ body.host-panel-dragging * {
                 currentStatement = createStatementRecord({
                     winners, gross: allocated, net, donations: split.donations, split,
                     poolStatus: donationActive
-                        ? (poolResult.confirmed
-                            ? "confirmed directly in BON Pool"
-                            : `NOT CONFIRMED, check ${BONANZA.POOL_PATH} manually`)
+                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
                         : "none",
                     entrants: entrantsTotal
                 });
@@ -9302,11 +7689,8 @@ body.host-panel-dragging * {
                 persistCurrentStatement();
             } catch (e) { /* statements are best-effort */ }
 
-            // 6b) Verify payouts against authenticated Gift History first.
-            // SystemBot/chat is retained only as a final fallback for rows that
-            // could not be confirmed through the persistent history page.
+            // 6b) Verify that the gifts actually show up in chat via the API
             const winnersVerified = await verifyWinnerGifts(expectedGifts, giveawayData.host, {
-                giftHistoryBaseline: payoutGiftHistoryBaseline,
                 afterId: payoutAfterMessageId,
                 notBeforeTs: payoutNotBeforeTs,
                 statementId: currentStatement?.id ?? null
@@ -9363,7 +7747,7 @@ body.host-panel-dragging * {
         // Reset back to the basic two-column header.
         // Body will be repopulated by updateEntries() as entries arrive.
         table.innerHTML =
-            `<thead><tr><th>${t("uiUser")}</th><th>${t("uiEntryNumber")}</th></tr></thead><tbody></tbody>`;
+            "<thead><tr><th>User</th><th>Entry #</th></tr></thead><tbody></tbody>";
     }
 
     /**
@@ -9395,9 +7779,9 @@ body.host-panel-dragging * {
         // If we're still in the plain 2-column mode, extend the header
         if (headerRow.children.length === 2) {
             const thPrize = document.createElement("th");
-            thPrize.textContent = t("uiPrize");
+            thPrize.textContent = "Prize";
             const thGift = document.createElement("th");
-            thGift.textContent = t("uiGiftStatus");
+            thGift.textContent = "Gift Status";
             headerRow.appendChild(thPrize);
             headerRow.appendChild(thGift);
         }
@@ -9432,12 +7816,12 @@ body.host-panel-dragging * {
                 if (selfKeys.size && selfKeys.has(key)) {
                     // Host winner — can't gift to self, so skip gifting/verification UI
                     winnerGiftStatus.set(key, "self");
-                    giftCell.textContent = t("uiSelf");
-                    giftCell.title = t("uiHostSelfGift");
+                    giftCell.textContent = "Self";
+                    giftCell.title = "Host winner (no self-gift)";
                     row.classList.add("gift-self");
                 } else {
                     winnerGiftStatus.set(key, "pending");
-                    giftCell.innerHTML = `<span class="gift-spinner" title="${t("uiCheckingGift")}"></span>`;
+                    giftCell.innerHTML = `<span class="gift-spinner" title="Checking gift status…"></span>`;
                     row.classList.add("gift-pending");
                 }
 
@@ -9458,7 +7842,7 @@ body.host-panel-dragging * {
             fundRow.style.borderTop = `2px solid ${BONANZA.ACCENT_COLOR}`;
 
             const userCell = document.createElement("td");
-            userCell.innerHTML = `<span style="color:${BONANZA.ACCENT_COLOR};font-weight:600;">${BONANZA.FUND_NAME}</span> <small style="color:#aaa;">(${t("uiDirect")})</small>`;
+            userCell.innerHTML = `<span style="color:${BONANZA.ACCENT_COLOR};font-weight:600;">${BONANZA.FUND_NAME}</span> <small style="color:#aaa;">(direct)</small>`;
             const entryCell = document.createElement("td");
             entryCell.textContent = `${donation.percent}%`;
             const prizeCell = document.createElement("td");
@@ -9466,7 +7850,7 @@ body.host-panel-dragging * {
             const giftCell = document.createElement("td");
             giftCell.style.textAlign = "center";
 
-            giftCell.innerHTML = `<span class="gift-spinner" title="${t("uiCheckingPool")}"></span>`;
+            giftCell.innerHTML = `<span class="gift-spinner" title="Checking BON Pool contribution…"></span>`;
             fundRow.classList.add("gift-pending");
 
             fundRow.append(userCell, entryCell, prizeCell, giftCell);
@@ -9532,8 +7916,8 @@ body.host-panel-dragging * {
         const cells = row.children;
         if (cells.length >= 4) {
             // "No gift" indicator (host winner can't gift to self)
-            cells[3].textContent = t("uiSelf");
-            cells[3].title = t("uiHostSelfGift");
+            cells[3].textContent = "Self";
+            cells[3].title = "Host winner (no self-gift)";
         }
     }
 
@@ -9735,7 +8119,8 @@ body.host-panel-dragging * {
         logEvent("Sponsor refund verification warning", `Gift History could not confirm: ${missingList}`);
         if (!verificationStillOwned()) return false;
         await sendMessage(
-            t("warningRefunds", { missing: missingList }),
+            `[color=#ff4f4f][b]Warning:[/b][/color] Some sponsor refunds could not be confirmed. ` +
+            `Please verify manually: ${missingList}.`,
             { requireExclusiveGiveawayOwnership: true }
         );
         if (!verificationStillOwned()) return false;
@@ -9798,106 +8183,7 @@ body.host-panel-dragging * {
                 updateStatementGiftStatus(g.recipient, g.purpose, "failed", statementId);
             }
 
-            // Canonical verification: authenticated Gift History page.
-            const tracker = window.__activeTracker;
-            const baselineRows = verificationContext?.giftHistoryBaseline;
-            if (
-                Array.isArray(baselineRows) &&
-                tracker &&
-                typeof tracker.fetchRecentGiftHistory === "function"
-            ) {
-                const baselineCounts = new Map();
-                for (const row of baselineRows) {
-                    const key = giftHistoryBaseKey(row);
-                    if (!key) continue;
-                    baselineCounts.set(key, (baselineCounts.get(key) || 0) + 1);
-                }
-
-                let successfulHistoryReads = 0;
-                for (let attempt = 1; attempt <= 6; attempt++) {
-                    if (attempt > 1) {
-                        await new Promise(resolve => setTimeout(resolve, 2500));
-                        if (!verificationStillOwned()) return false;
-                    }
-
-                    let rows;
-                    try {
-                        rows = await tracker.fetchRecentGiftHistory();
-                        if (!verificationStillOwned()) return false;
-                        successfulHistoryReads += 1;
-                    } catch (e) {
-                        logEvent(
-                            "Winner Gift History retry",
-                            `Attempt ${attempt}/6: ${String(e?.message || e)}`
-                        );
-                        continue;
-                    }
-
-                    const currentCounts = new Map();
-                    const freshRows = [];
-                    for (const row of rows) {
-                        const key = giftHistoryBaseKey(row);
-                        if (!key) continue;
-                        const occurrence = (currentCounts.get(key) || 0) + 1;
-                        currentCounts.set(key, occurrence);
-                        if (occurrence > (baselineCounts.get(key) || 0)) freshRows.push(row);
-                    }
-
-                    const consumed = new Set();
-                    for (const gift of expected) {
-                        if (gift.done) continue;
-                        const index = freshRows.findIndex((row, idx) =>
-                            !consumed.has(idx) &&
-                            selfKeys.has(normalizeUserKey(row?.sender)) &&
-                            normalizeUserKey(row?.recipient) === gift.key &&
-                            Math.round(Number(row?.amount) || 0) === gift.amount
-                        );
-                        if (index < 0) continue;
-
-                        const row = freshRows[index];
-                        // The baseline-delta is authoritative even on trackers whose
-                        // Gift History wall clock has no timezone. Timestamp is kept
-                        // as supporting evidence, not guessed into a false rejection.
-                        consumed.add(index);
-                        gift.done = true;
-                        if (canTouchLiveUI()) markWinnerGiftConfirmed(gift.recipient);
-                        updateStatementGiftStatus(
-                            gift.recipient,
-                            gift.purpose,
-                            "confirmed-history",
-                            statementId
-                        );
-                        logEvent(
-                            "Winner gift confirmed in Gift History",
-                            `${sanitizeNick(gift.recipient)} ${fmtBONCurrency(gift.amount)} BON | ${row.rawTimestamp || "timestamp unavailable"}`
-                        );
-                    }
-
-                    if (expected.every(g => g.done)) {
-                        const targetStatement = getStatementRecordById(statementId);
-                        if (targetStatement) {
-                            targetStatement.verification = "all gifts confirmed in Gift History";
-                            persistStatementRecord(targetStatement);
-                        }
-                        return true;
-                    }
-                }
-
-                if (successfulHistoryReads > 0) {
-                    const remaining = expected.filter(g => !g.done).map(describe).join(", ");
-                    logEvent(
-                        "Winner Gift History fallback",
-                        `Persistent Gift History could not confirm: ${remaining}. Falling back to SystemBot/chat verification only for these transfers.`
-                    );
-                } else {
-                    logEvent(
-                        "Winner Gift History unavailable",
-                        "Persistent Gift History could not be read; falling back to SystemBot/chat verification."
-                    );
-                }
-            }
-
-            // Last-resort verification only: inspect genuine SystemBot gift events.
+            // Give UNIT3D a short moment to emit SystemBot gift messages.
             await new Promise(resolve => setTimeout(resolve, 2000));
             if (!verificationStillOwned()) return false;
 
@@ -9968,7 +8254,9 @@ body.host-panel-dragging * {
             logEvent("Payout verification warning", `Could not confirm gifts for: ${missingList}`);
             if (!verificationStillOwned()) return false;
             await sendMessage(
-                t("warningWinnerGifts", { missing: missingList }),
+                `[color=#ff4f4f][b]Warning:[/b][/color] ` +
+                `Some giveaway gifts could not be confirmed. ` +
+                `Please manually verify BON for: ${missingList}.`,
                 { requireExclusiveGiveawayOwnership: true }
             );
             if (!verificationStillOwned()) return false;
@@ -10084,11 +8372,11 @@ body.host-panel-dragging * {
 
         const sample = getFreeNumberSample(giveawayData, 5);
         if (!sample.length) {
-            return t("freeSuggestionNone");
+            return " There are no free numbers left!";
         }
 
-        const rigHint = rigNote(t("rigHintFree"));
-        return t("freeSuggestionList", { numbers: sample.join(", ") }) + rigHint;
+        const rigHint = rigNote("(these are some [b]suspiciously good[/b] numbers, trust me...) 😏");
+        return ` Here are some free numbers you can try: [b][color=#1DDC5D]${sample.join(", ")}[/color][/b].` + rigHint;
     }
 
     /**
@@ -10149,7 +8437,7 @@ body.host-panel-dragging * {
      * never allowed to reduce a positive gross prize below 1 BON.
      *
      * @param {number[]} allocated gross prizes
-     * @param {number} percent 0..50 in steps of 5
+     * @param {number} percent 0..30 in steps of 5
      * @returns {{percent:number, net:number[], donations:number[], total:number}}
      */
     function computeDonationSplit(allocated, percent) {
@@ -10346,7 +8634,7 @@ body.host-panel-dragging * {
             sponsors,
             donationPercent: pct,
             donationTotal,
-            donationRecipient: `${location.hostname} ${BONANZA.POOL_PATH}`,
+            donationRecipient: "DarkPeers /bon-pool",
             donationStatus: donationTotal <= 0 ? "none" : (p.poolStatus || "contribution pending verification"),
             refunds,
             winners,
@@ -10383,7 +8671,7 @@ body.host-panel-dragging * {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
         targetStatement.verification = ok
-            ? "all gifts confirmed"
+            ? "all gifts confirmed in chat"
             : `${missingCount} gift(s) could not be confirmed`;
         persistStatementRecord(targetStatement);
     }
@@ -10473,7 +8761,7 @@ body.host-panel-dragging * {
         L.push(`Gift verification: ${rec.verification}`);
         if (rec.notes && rec.notes.length) { L.push(""); rec.notes.forEach(n => L.push(`Note: ${n}`)); }
         L.push("");
-        L.push(`Generated ${statementTimestamp(Date.now())} by BONanza Giveaway v${rec.scriptVersion}`);
+        L.push(`Generated ${statementTimestamp(Date.now())} by DarkPeers BONanza Giveaway v${rec.scriptVersion}`);
         L.push(line());
         return L.join("\n");
     }
@@ -10550,29 +8838,24 @@ body.host-panel-dragging * {
         if (!donationHint) return;
         const pct = normalizeDonationPercent(donationPercentInput ? donationPercentInput.value : 0);
         if (pct <= 0) {
-            donationHint.innerHTML = t(
-                riggedMode ? "uiDonationZeroRigged" : "uiDonationZeroStandard",
-                { poolName: BONANZA.FUND_NAME }
-            );
+            donationHint.innerHTML = riggedMode
+                ? `Rigged mode is active, but the tax rate is <b>0%</b>. Suspiciously generous. No ${BONANZA.FUND_NAME} contribution.`
+                : `Standard giveaway. No ${BONANZA.FUND_NAME} contribution.`;
             return;
         }
         const potRaw = coinInput ? String(coinInput.value || "").replace(/[^0-9]/g, "") : "";
         const pot = potRaw ? parseInt(potRaw, 10) : 0;
         const est = pot > 0 ? Math.floor(pot * pct / 100) : 0;
-        const estText = pot > 0
-            ? t("uiDonationEstimate", { estimate: fmtBONCurrency(est), pot: fmtBONCurrency(pot) })
-            : "";
-        donationHint.innerHTML = t(riggedMode ? "uiDonationRigged" : "uiDonationStandard", {
-            percent: pct,
-            poolName: BONANZA.FUND_NAME,
-            color: BONANZA.ACCENT_COLOR,
-            estimate: estText
-        });
+        const estText = pot > 0 ? ` About <b>${fmtBONCurrency(est)} BON</b> of a ${fmtBONCurrency(pot)} BON pot (more if sponsored).` : "";
+        donationHint.innerHTML = riggedMode
+            ? `🧾 <b style="color:#FF4F9A;">${pct}% rigging taxes</b> will be taken from the final pot (host + sponsors) and paid <b>directly</b> into the ${BONANZA.FUND_NAME}. Your outlay is unchanged.${estText}`
+            : `<b style="color:${BONANZA.ACCENT_COLOR};">${pct}%</b> of the final pot (host + sponsors) will be contributed <b>directly</b> to the ${BONANZA.FUND_NAME}. Comes out of winnings; your outlay is unchanged.${estText}`;
     }
 
     function sendReminder(options = {}) {
         const force = !!(options && options.force);
         if (!force && !shouldSendReminder(giveawayData)) {
+            // Try again in 15 seconds if still eligible
             if (!reminderRetryTimeout) {
                 reminderRetryTimeout = setTimeout(() => {
                     reminderRetryTimeout = null;
@@ -10581,44 +8864,33 @@ body.host-panel-dragging * {
             }
             return;
         }
+        // Clear retry timer if any
         if (reminderRetryTimeout) {
             clearTimeout(reminderRetryTimeout);
             reminderRetryTimeout = null;
         }
 
-        const silentLine = silentNote(t("reminderSilent"));
-        const rigLine = rigNote(t("reminderRigged"));
+        const silentLine = silentNote("(Silent mode is enabled — command replies are sent via /msg.) 🤫");
+        const rigLine = rigNote("(Rigged mode is currently enabled, but the math is [b]definitely[/b] still legit) 😉");
         const reminderPct = normalizeDonationPercent(giveawayData.donationPercent);
-        const reminderVars = {
-            percent: reminderPct,
-            poolName: BONANZA.FUND_NAME,
-            poolColor: BONANZA.GIVEAWAY_COLOR
-        };
         const reminderPrefix = reminderPct > 0
-            ? (riggedMode ? t("reminderTaxes", reminderVars) : t("reminderPool", reminderVars))
+            ? (riggedMode
+                ? `🧾 [b][color=#FF4F9A]Rigging taxes: ${reminderPct}% to the ${BONANZA.FUND_NAME}[/color][/b] 🧾\n`
+                : `💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution giveaway (${reminderPct}% to the pool)[/color][/b] 💙\n`)
             : "";
         const reminderStartMarker = reminderPct > 0
             ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
             : BRIDGE_MARKERS.START;
-        const msg = reminderPrefix + t("reminderMain", {
-            marker: bridgeMarker(reminderStartMarker, "🎁"),
-            amount: fmtBONCurrency(cleanPotString(giveawayData.amount)),
-            winners: buildWinnersAnnouncementLine(giveawayData),
-            duration: parseTime(giveawayData.timeLeft * 1000),
-            start: giveawayData.startNum,
-            end: giveawayData.endNum,
-            custom: giveawayData.customMessage,
-            giftHint: t("giftHostHint", {
-                hintColor: GIFT_HINT_COLOR,
-                host: getGiftSyntaxHostName()
-            })
-        }) + silentLine + rigLine;
-
-        // Language-independent duplicate suppression. Persist before sending so a
-        // concurrent timer/retry cannot infer state from translated chat text.
-        giveawayData.lastReminderSentAt = Date.now();
-        snapshotGiveaway();
-        sendMessage(msg, { kind: "reminder" });
+        const msg = reminderPrefix +
+              `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
+              `${buildWinnersAnnouncementLine(giveawayData)} | ` +
+              `Time left: [b][color=#1DDC5D]${parseTime(giveawayData.timeLeft*1000)}[/color][/b]. ` +
+              `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
+              `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
+              `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨` +
+              silentLine +
+              rigLine;
+        sendMessage(msg);
     }
 
     // ───────────── HTTP-based BON gifting helper ─────────────
@@ -10706,112 +8978,6 @@ body.host-panel-dragging * {
         return Number.isFinite(n) ? n : null;
     }
 
-    function parseLivewireScriptConfigFromHtml(html) {
-        const source = String(html || "");
-        const match = source.match(/window\.livewireScriptConfig\s*=\s*(\{[\s\S]*?\})\s*;?/i);
-        if (!match) return {};
-        try {
-            return JSON.parse(match[1]);
-        } catch {
-            return {};
-        }
-    }
-
-    function normalizeLivewireUri(raw) {
-        let value = String(raw || "").trim();
-        if (!value) return "";
-        value = value.replace(/\\\//g, "/");
-        if (/^\/{2,}/.test(value)) value = value.replace(/^\/+/, "/");
-        try {
-            return new URL(value, location.origin).href;
-        } catch {
-            return "";
-        }
-    }
-
-    function inspectLivewirePoolDocument(doc, html) {
-        const text = (doc.body?.textContent || "").replace(/\u00a0/g, " ");
-        const total = parsePoolCounter(text, SITE.pool.totalLabel);
-
-        // UNIT3D exposes the current BON balance in the navbar. Prefer the
-        // dedicated DOM value because localized Pool copy such as "Tens"
-        // may omit punctuation or change wording between trackers.
-        const balanceNode = doc.querySelector(".ratio-bar__points");
-        const balanceDigits = String(balanceNode?.textContent || "").replace(/[^0-9]/g, "");
-        const balanceFromDom = balanceDigits ? parseInt(balanceDigits, 10) : null;
-        const balance = Number.isFinite(balanceFromDom)
-            ? balanceFromDom
-            : parsePoolCounter(text, SITE.pool.balanceLabel);
-
-        const component = Array.from(doc.querySelectorAll("[wire\\:snapshot]")).find(el =>
-            el.querySelector('[wire\\:click="contribute"]')
-        );
-        const snapshotRaw = component?.getAttribute("wire:snapshot") || "";
-        let snapshot = null;
-        try { snapshot = snapshotRaw ? JSON.parse(snapshotRaw) : null; } catch {}
-
-        const amountControl = component?.querySelector('[wire\\:model\\.live="amount"], [wire\\:model="amount"]');
-        const anonControl = component?.querySelector('[wire\\:model\\.live="anon"], [wire\\:model="anon"]');
-        const contributeControl = component?.querySelector('[wire\\:click="contribute"]');
-
-        const config = parseLivewireScriptConfigFromHtml(html);
-        const runtimeNode = doc.querySelector("script[data-update-uri], [data-update-uri], script[data-csrf], [data-csrf]");
-
-        const csrf =
-            doc.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ||
-            runtimeNode?.getAttribute("data-csrf") ||
-            String(config?.csrf || "");
-
-        let updateUri = normalizeLivewireUri(
-            runtimeNode?.getAttribute("data-update-uri") ||
-            config?.uri ||
-            ""
-        );
-
-        if (!updateUri) {
-            const rawMatch =
-                String(html || "").match(/data-update-uri=["']([^"']+)["']/i) ||
-                String(html || "").match(/["']uri["']\s*:\s*["']([^"']*livewire[^"']*)["']/i) ||
-                String(html || "").match(/(?:https?:\\?\/\\?\/[^"'<>\s]+)?\\?\/livewire\\?\/update/i);
-            updateUri = normalizeLivewireUri(rawMatch?.[1] || rawMatch?.[0] || "");
-        }
-
-        const rawContributed = snapshot?.data?.contributed;
-        const contributed = Number.isFinite(Number(rawContributed))
-            ? Number(rawContributed)
-            : null;
-
-        const missing = [];
-        if (total == null) missing.push("total");
-        // Balance is useful corroborating evidence, but not part of the
-        // transaction contract itself. Do not fail the Livewire adapter merely
-        // because a theme/version stops rendering it on this page.
-        if (!component) missing.push("component");
-        if (!snapshotRaw) missing.push("snapshot");
-        if (!snapshot?.memo?.name) missing.push("snapshot.memo.name");
-        if (!amountControl) missing.push("amount");
-        if (!anonControl) missing.push("anon");
-        if (!contributeControl) missing.push("contribute");
-        if (!csrf) missing.push("csrf");
-        if (!updateUri) missing.push("updateUri");
-
-        return {
-            ok: missing.length === 0,
-            missing,
-            total,
-            balance,
-            contributed,
-            component,
-            snapshotRaw,
-            snapshot,
-            amountControl,
-            anonControl,
-            contributeControl,
-            csrf,
-            updateUri
-        };
-    }
-
     async function fetchBonPoolPage() {
         const url = new URL(BONANZA.POOL_PATH, location.origin);
         const res = await fetchWithTimeout(url, {
@@ -10824,99 +8990,17 @@ body.host-panel-dragging * {
         const html = await res.text();
         const doc = new DOMParser().parseFromString(html, "text/html");
         const text = (doc.body?.textContent || "").replace(/\u00a0/g, " ");
-
-        if (SITE.pool.mode === "form") {
-            const total = parsePoolCounter(text, SITE.pool.totalLabel);
-            const mine = parsePoolCounter(text, SITE.pool.mineLabel);
-            const form = Array.from(doc.querySelectorAll("form")).find(el => {
-                try {
-                    const u = new URL(el.getAttribute("action") || "", location.origin);
-                    return u.origin === location.origin && u.pathname === BONANZA.POOL_STORE_PATH;
-                } catch { return false; }
-            });
-            if (!form || total == null || mine == null) {
-                throw new Error("Could not parse BON Pool form/counters.");
-            }
-            const action = new URL(form.getAttribute("action") || BONANZA.POOL_STORE_PATH, location.origin);
-            return {
-                mode: "form",
-                form,
-                action: action.href,
-                total,
-                mine,
-                balance: null,
-                contributorRows: []
-            };
-        }
-
-        if (SITE.pool.mode === "livewire") {
-            const inspected = inspectLivewirePoolDocument(doc, html);
-            const {
-                total,
-                balance,
-                component,
-                snapshotRaw,
-                snapshot,
-                amountControl,
-                anonControl,
-                contributeControl,
-                csrf,
-                updateUri,
-                contributed
-            } = inspected;
-
-            const contributorRows = [];
-            for (const row of doc.querySelectorAll("table.data-table tbody tr")) {
-                const cells = Array.from(row.querySelectorAll("td"));
-                const userCellIndex = cells.findIndex(cell => !!cell.querySelector('a[href*="/users/"]'));
-                if (userCellIndex < 0) continue;
-                const userCell = cells[userCellIndex];
-                const user = giftHistoryUsernameFromCell(userCell);
-                if (!user) continue;
-
-                const amountCell = cells[userCellIndex + 1] || null;
-                const rawAmount = String(amountCell?.textContent || "");
-                const digits = rawAmount.replace(/[^0-9]/g, "");
-                const amount = digits ? parseInt(digits, 10) : NaN;
-                if (!Number.isFinite(amount)) continue;
-
-                const timeEl = row.querySelector("time");
-                const rawTimestamp = timeEl?.getAttribute("datetime") || "";
-                contributorRows.push({
-                    user,
-                    amount,
-                    rawTimestamp,
-                    signature: rawTimestamp
-                        ? [
-                            normalizeUserKey(user),
-                            String(amount),
-                            String(rawTimestamp)
-                        ].join("\u001f")
-                        : ""
-                });
-            }
-
-            if (!inspected.ok) {
-                throw new Error(
-                    `Could not parse Portugas Livewire BON Pool contract. Missing: ${inspected.missing.join(", ")}`
-                );
-            }
-
-            return {
-                mode: "livewire",
-                total,
-                mine: contributed,
-                balance,
-                contributorRows,
-                snapshotRaw,
-                snapshotName: snapshot.memo.name,
-                componentId: component.getAttribute("wire:id") || snapshot.memo.id || "",
-                updateUri,
-                csrf
-            };
-        }
-
-        throw new Error(`Unsupported BON Pool adapter mode: ${SITE.pool.mode}`);
+        const total = parsePoolCounter(text, "Total contributions:");
+        const mine = parsePoolCounter(text, "Your contribution:");
+        const form = Array.from(doc.querySelectorAll("form")).find(el => {
+            try {
+                const u = new URL(el.getAttribute("action") || "", location.origin);
+                return u.origin === location.origin && u.pathname === BONANZA.POOL_STORE_PATH;
+            } catch { return false; }
+        });
+        if (!form || total == null || mine == null) throw new Error("Could not parse BON Pool form/counters.");
+        const action = new URL(form.getAttribute("action") || BONANZA.POOL_STORE_PATH, location.origin);
+        return { form, action: action.href, total, mine };
     }
 
     function urlEncodedDataFromParsedForm(form) {
@@ -10930,62 +9014,15 @@ body.host-panel-dragging * {
         return data;
     }
 
-    function portugasPoolOwnContributionEvidence(snapshot, record) {
-        const hostKeys = resolveSelfKeys(giveawayData?.host || getLoggedInUsername());
-        const baseline = new Set(Array.isArray(record.beforeContributorKeys) ? record.beforeContributorKeys : []);
-        const rows = Array.isArray(snapshot?.contributorRows) ? snapshot.contributorRows : [];
-        const rowMatch = rows.some(row =>
-            hostKeys.has(normalizeUserKey(row?.user)) &&
-            Math.floor(Number(row?.amount) || 0) === Math.floor(Number(record.amount) || 0) &&
-            row?.signature &&
-            !baseline.has(row.signature)
-        );
-
-        const mineBefore = Number(record.beforeMine);
-        const mineAfter = Number(snapshot?.mine);
-        const mineMatch =
-            Number.isFinite(mineBefore) &&
-            Number.isFinite(mineAfter) &&
-            mineAfter >= mineBefore + Number(record.amount);
-
-        const balanceBefore = Number(record.beforeBalance);
-        const balanceAfter = Number(snapshot?.balance);
-        const balanceMatch =
-            Number.isFinite(balanceBefore) &&
-            Number.isFinite(balanceAfter) &&
-            balanceAfter <= balanceBefore - Number(record.amount);
-
-        return { rowMatch, mineMatch, balanceMatch };
-    }
-
     async function verifyBonPoolContribution(record) {
-        const targetTotal = Number(record.beforeTotal) + Number(record.amount);
         const targetMine = Number(record.beforeMine) + Number(record.amount);
+        const targetTotal = Number(record.beforeTotal) + Number(record.amount);
         let last = null;
-
         for (let i = 0; i < BONANZA.VERIFY_ATTEMPTS; i++) {
             if (i > 0) await new Promise(resolve => setTimeout(resolve, BONANZA.VERIFY_DELAY_MS));
             try {
                 last = await fetchBonPoolPage();
-
-                if ((record.siteMode || "form") === "livewire") {
-                    const totalMatch = Number.isFinite(Number(last.total)) && Number(last.total) >= targetTotal;
-                    const own = portugasPoolOwnContributionEvidence(last, record);
-                    // A global total increase alone is insufficient because another
-                    // user may contribute concurrently. Require independent evidence
-                    // attributable to this host: a new exact contributor row or the
-                    // component's own contributed counter increasing by our amount.
-                    if (totalMatch && (own.rowMatch || own.mineMatch || own.balanceMatch)) {
-                        return { confirmed: true, snapshot: last, evidence: own };
-                    }
-                } else if (
-                    Number.isFinite(Number(last.mine)) &&
-                    Number.isFinite(Number(last.total)) &&
-                    Number(last.mine) >= targetMine &&
-                    Number(last.total) >= targetTotal
-                ) {
-                    return { confirmed: true, snapshot: last };
-                }
+                if (last.mine >= targetMine && last.total >= targetTotal) return { confirmed: true, snapshot: last };
             } catch (e) {
                 logEvent("BON Pool verify retry", String(e?.message || e));
             }
@@ -10995,38 +9032,30 @@ body.host-panel-dragging * {
 
     async function contributeBonPool(amount) {
         const safeAmount = Math.floor(Number(amount));
-        if (!Number.isFinite(safeAmount) || safeAmount <= 0) {
-            return { attempted: false, confirmed: false, reason: "invalid" };
-        }
+        if (!Number.isFinite(safeAmount) || safeAmount <= 0) return { attempted: false, confirmed: false, reason: "invalid" };
         const giveawayId = getActiveGiveawayId();
         if (!giveawayId) return { attempted: false, confirmed: false, reason: "missing-giveaway-id" };
         if (!(await ensureExclusiveTabOwnership())) {
             return { attempted: false, confirmed: false, reason: "ownership-lost" };
         }
-
+    
         const existing = getPoolContributionAttempt(giveawayId);
         if (existing) {
-            if (existing.amount !== safeAmount) {
-                return { attempted: false, confirmed: false, reason: "amount-conflict" };
-            }
-            if (existing.status === "confirmed") {
-                return { attempted: false, confirmed: true, reason: "already-confirmed", reused: true };
-            }
+            if (existing.amount !== safeAmount) return { attempted: false, confirmed: false, reason: "amount-conflict" };
+            if (existing.status === "confirmed") return { attempted: false, confirmed: true, reason: "already-confirmed", reused: true };
             const checked = await verifyBonPoolContribution(existing);
             if (checked.confirmed) {
                 savePoolContributionAttempt(giveawayId, {
                     status: "confirmed",
                     confirmedAt: Date.now(),
-                    afterMine: checked.snapshot?.mine ?? null,
-                    afterTotal: checked.snapshot?.total ?? null,
-                    afterBalance: checked.snapshot?.balance ?? null
+                    afterMine: checked.snapshot.mine,
+                    afterTotal: checked.snapshot.total
                 });
                 return { attempted: false, confirmed: true, reason: "verified-existing", reused: true };
             }
-            // Ambiguous existing attempts are never replayed automatically.
             return { attempted: false, confirmed: false, reason: "existing-unconfirmed", reused: true };
         }
-
+    
         let before;
         try {
             before = await fetchBonPoolPage();
@@ -11035,134 +9064,77 @@ body.host-panel-dragging * {
             return { attempted: false, confirmed: false, reason: "preflight-failed" };
         }
 
+        // The preflight itself can be frozen in BFCache. Never record/send a pool
+        // transfer after that await unless this tab still owns the giveaway.
         if (!(await ensureExclusiveTabOwnership())) {
             return { attempted: false, confirmed: false, reason: "ownership-lost" };
         }
-
+    
         const record = {
-            siteMode: before.mode || SITE.pool.mode,
             amount: safeAmount,
-            beforeMine: before.mine ?? null,
+            beforeMine: before.mine,
             beforeTotal: before.total,
-            beforeBalance: before.balance ?? null,
-            beforeContributorKeys: Array.isArray(before.contributorRows)
-                ? before.contributorRows.map(row => row.signature).filter(Boolean)
-                : [],
             attemptedAt: Date.now(),
             status: "attempted"
         };
         savePoolContributionAttempt(giveawayId, record);
-
+    
+        const data = urlEncodedDataFromParsedForm(before.form);
+        data.set("type", "bon");
+        data.set("contribution", String(safeAmount));
+        data.set("contributionTokens", "");
+        data.set("anon", "0");
+    
         try {
-            let res;
-            if (before.mode === "livewire") {
-                const payload = {
-                    _token: before.csrf,
-                    components: [{
-                        snapshot: before.snapshotRaw,
-                        updates: {
-                            amount: safeAmount,
-                            anon: false
-                        },
-                        calls: [{
-                            path: "",
-                            method: "contribute",
-                            params: []
-                        }]
-                    }]
-                };
-                res = await fetchWithTimeout(before.updateUri, {
-                    method: "POST",
-                    credentials: "include",
-                    cache: "no-store",
-                    redirect: "follow",
-                    headers: {
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                        "X-CSRF-TOKEN": before.csrf,
-                        "X-Livewire": "",
-                        "X-Requested-With": "XMLHttpRequest"
-                    },
-                    body: JSON.stringify(payload)
-                }, BONANZA.FETCH_TIMEOUT_MS);
-            } else {
-                const data = urlEncodedDataFromParsedForm(before.form);
-                data.set("type", "bon");
-                data.set("contribution", String(safeAmount));
-                data.set("contributionTokens", "");
-                data.set("anon", "0");
-
-                res = await fetchWithTimeout(before.action, {
-                    method: "POST",
-                    credentials: "include",
-                    cache: "no-store",
-                    redirect: "follow",
-                    headers: {
-                        "Accept": "text/html",
-                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
-                    },
-                    body: data.toString()
-                }, BONANZA.FETCH_TIMEOUT_MS);
-            }
-
+            const res = await fetchWithTimeout(before.action, {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+                redirect: "follow",
+                headers: {
+                    "Accept": "text/html",
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+                },
+                body: data.toString()
+            }, BONANZA.FETCH_TIMEOUT_MS);
             savePoolContributionAttempt(giveawayId, {
                 httpStatus: res.status,
                 postFinishedAt: Date.now(),
                 status: res.ok ? "posted" : "posted-http-error"
             });
         } catch (e) {
-            // Network/5xx ambiguity follows the same rule as gifts: never retry the
-            // money movement automatically; verify the real page instead.
             savePoolContributionAttempt(giveawayId, {
                 postError: String(e?.message || e),
                 status: "post-uncertain"
             });
         }
-
+    
         const checked = await verifyBonPoolContribution(record);
         if (checked.confirmed) {
             savePoolContributionAttempt(giveawayId, {
                 status: "confirmed",
                 confirmedAt: Date.now(),
-                afterMine: checked.snapshot?.mine ?? null,
-                afterTotal: checked.snapshot?.total ?? null,
-                afterBalance: checked.snapshot?.balance ?? null
+                afterMine: checked.snapshot.mine,
+                afterTotal: checked.snapshot.total
             });
-
-            const evidenceText = before.mode === "livewire"
-                ? `Total ${fmtBONCurrency(before.total)} -> ${fmtBONCurrency(checked.snapshot.total)} | own evidence=${
-                    checked.evidence?.rowMatch
-                        ? "new contributor row"
-                        : (checked.evidence?.mineMatch ? "contributed counter" : "BON balance delta")
-                }`
-                : `Mine ${fmtBONCurrency(before.mine)} -> ${fmtBONCurrency(checked.snapshot.mine)} | Total ${fmtBONCurrency(before.total)} -> ${fmtBONCurrency(checked.snapshot.total)}`;
             logEvent(
                 "BON Pool contribution confirmed",
-                `${fmtBONCurrency(safeAmount)} BON | ${evidenceText}`
+                `${fmtBONCurrency(safeAmount)} BON | Mine ${fmtBONCurrency(before.mine)} -> ${fmtBONCurrency(checked.snapshot.mine)} | Total ${fmtBONCurrency(before.total)} -> ${fmtBONCurrency(checked.snapshot.total)}`
             );
             return { attempted: true, confirmed: true, before, after: checked.snapshot };
         }
-
-        savePoolContributionAttempt(giveawayId, {
-            status: "unconfirmed",
-            verifyFinishedAt: Date.now()
-        });
-        return {
-            attempted: true,
-            confirmed: false,
-            reason: "not-confirmed",
-            before,
-            after: checked.snapshot
-        };
+    
+        savePoolContributionAttempt(giveawayId, { status: "unconfirmed", verifyFinishedAt: Date.now() });
+        return { attempted: true, confirmed: false, reason: "not-confirmed", before, after: checked.snapshot };
     }
 
     // Winner gifts use the gift ledger. BON Pool contributions have their own
-    // persisted ledger and are verified against the active site's BON Pool page.
+    // persisted ledger and are verified against /bon-pool counters.
     const GIFT_PURPOSE = Object.freeze({
         WINNER: "winner",
         SPONSOR_REFUND: "sponsor-refund"
     });
-    const SPONSOR_REFUND_NOTE = t("giftRefundNote");
+    const SPONSOR_REFUND_NOTE = "Giveaway refund";
 
     function paidGiftKey(recipient, amount, purpose = GIFT_PURPOSE.WINNER) {
         return `${String(recipient || "").trim().toLowerCase()}::${Math.floor(Number(amount) || 0)}::${purpose}`;
@@ -11432,31 +9404,36 @@ body.host-panel-dragging * {
             return true;
         }
 
-        // Page-first contract: GET the site's real Send Gift page and submit the
-        // exact POST form it exposes. Hidden tracker/version-specific fields are
-        // preserved automatically. /gift remains emergency fallback only.
-        const senderSlug = getAuthenticatedUserSlug();
-        const giftContract = senderSlug ? await fetchGiftFormContract(senderSlug) : null;
-
-        if (!giftContract?.action || !giftContract?.formData) {
-            logEvent(
-                "Gift page contract unavailable",
-                `Could not obtain the site's real Send Gift form for ${sanitizeNick(safeRecipient)}; chat fallback is the last resort.`
-            );
-            if (!SITE.gifts.allowChatFallback || !(await fallbackToChat())) {
-                return { attempted: false, reason: "gift-form-unavailable" };
-            }
-            return { attempted: true, transport: "chat-last-resort" };
-        }
-
-        const giftUrl = giftContract.action;
-        const formData = giftContract.formData;
         const csrfMeta = document.querySelector('meta[name="csrf-token"]');
         const csrfToken = csrfMeta && csrfMeta.content ? csrfMeta.content : null;
-        if (!formData.has("_token") && csrfToken) formData.set("_token", csrfToken);
-        formData.set("recipient_username", safeRecipient);
-        formData.set("bon", String(safeAmount));
-        formData.set("message", safeMessage);
+
+        // Resolve UNIT3D's sender-scoped gift route:
+        // /users/{authenticated-user}/gifts. The recipient itself is carried in
+        // recipient_username, so never derive this URL from an arbitrary visible user.
+        let giftUrl = null;
+        const senderSlug = getAuthenticatedUserSlug();
+        if (senderSlug) {
+            const endpointPath = getGiftEndpointPath(senderSlug);
+            giftUrl = endpointPath ? (location.origin + endpointPath) : null;
+        }
+
+        // If we can't resolve the HTTP endpoint or token, fall back immediately.
+        // This is safe: we haven't sent anything yet, so /gift is the first attempt.
+        if (!csrfToken || !giftUrl) {
+            if (!(await fallbackToChat())) {
+                return { attempted: false, reason: "ownership-lost" };
+            }
+            return { attempted: true, transport: "chat" };
+        }
+
+        const formData = new FormData();
+        formData.append("_token", csrfToken);
+        formData.append("recipient_username", safeRecipient);
+
+        formData.append("type", "bon");
+
+        formData.append("bon", String(safeAmount));
+        formData.append("message", safeMessage);
 
         // Codes that mean "server definitely did not process this gift":
         //   400 bad request, 401 unauthorized, 403 forbidden, 404 not found,
@@ -11586,9 +9563,10 @@ body.host-panel-dragging * {
     }
 
     /** Prepare a message for sending: obfuscate "giveaway" and apply number formatting. */
-    function prepareOutgoingMessage(messageStr, options = {}) {
-        // Message semantics are explicit; never infer them from localized text.
-        if (options?.kind !== "intro") {
+    function prepareOutgoingMessage(messageStr) {
+        // Obfuscate "giveaway" in all messages except the intro announcement
+        if (!(messageStr.includes("I am hosting a giveaway for") &&
+              messageStr.includes("Pick a number between"))) {
             messageStr = obfuscateGiveaway(messageStr);
         }
 
@@ -11606,7 +9584,7 @@ body.host-panel-dragging * {
 
     /** Try to send via API POST. Returns true on success, false otherwise. */
     async function trySendViaApi(messageStr) {
-        if (!OT_CHATROOM_ID || !OT_CSRF_TOKEN) return false;
+        if (!OT_USER_ID || !OT_CHATROOM_ID || !OT_CSRF_TOKEN) return false;
 
         const payload = {
             bot_id: null,
@@ -11615,7 +9593,7 @@ body.host-panel-dragging * {
             receiver_id: null,
             save: true,
             targeted: 0,
-            user_id: Number(OT_USER_ID || 0)
+            user_id: Number(OT_USER_ID)
         };
 
         const resp = await fetchWithTimeout(`/api/chat/messages`, {
@@ -11658,7 +9636,7 @@ body.host-panel-dragging * {
     }
 
     async function sendMessage(messageStr, options = {}) {
-        messageStr = prepareOutgoingMessage(messageStr, options);
+        messageStr = prepareOutgoingMessage(messageStr);
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
 
@@ -11713,7 +9691,8 @@ body.host-panel-dragging * {
             // finish conditions
             if (giveawayData.timeLeft === 0) return endGiveaway();
             if (numberEntries.size === giveawayData.totalEntries) {
-                sendMessage(t("allSlotsFilled", { count: giveawayData.totalEntries, remaining: parseTime(msLeft) }));
+                sendMessage(`All [b][color=#ffc00a]${giveawayData.totalEntries}[/color][/b] slot(s) filled! Ending early with ` +
+                            `[b][color=#1DDC5D]${parseTime(msLeft)}[/color][/b] remaining!`);
                 return endGiveaway();
             }
 
@@ -11732,13 +9711,11 @@ body.host-panel-dragging * {
     }
 
 
-    // Clean any inherited/site-provided invisible separators first. DarkPeers
-    // then re-inserts its historical compatibility ZWSP; Portugas displays the
-    // literal username with no invisible character.
+    // Inserts a zero-width space after the first character
     function sanitizeNick(nick) {
         if (typeof nick !== "string") return nick;
         const clean = nick.replace(/[\u200B\u200C\u200D\u2063\uFEFF]/g, "").trim();
-        if (clean.length < 2 || SITE?.chat?.obfuscateDisplayNames === false) return clean;
+        if (clean.length < 2) return clean;
         return clean[0] + "\u200B" + clean.slice(1);
     }
 
@@ -11767,7 +9744,7 @@ body.host-panel-dragging * {
         }
 
         const t = navLink?.textContent || "";
-        return String(t || "").trim();
+        return String(t || "").replace(/\s+/g, " ").trim();
     }
 
     // Returns a set of possible "self" keys (host + logged-in user).
@@ -11913,9 +9890,9 @@ body.host-panel-dragging * {
                 localStorage.setItem(STATS_KEY_LS, JSON.stringify(target));
             }
             localStorage.removeItem(STATS_KEY_LS_LEGACY_FORK);
-            console.info("[BONanza Giveaway] Merged pre-1.2.0 fork stats into the shared stats record.");
+            console.info("[DarkPeers BONanza Giveaway] Merged pre-1.2.0 fork stats into the shared stats record.");
         } catch (e) {
-            console.warn("[BONanza Giveaway] Legacy stats merge failed; leaving both records untouched.", e);
+            console.warn("[DarkPeers BONanza Giveaway] Legacy stats merge failed; leaving both records untouched.", e);
         }
     }
 
@@ -12290,9 +10267,22 @@ body.host-panel-dragging * {
 
         const who = `[color=#d85e27]${safeAuthor}[/color]`;
 
-        const pool = ta(action === "unrig" ? "rigDenyUnrig" : "rigDenyRig");
-        const template = pool[Math.floor(Math.random() * pool.length)] || "{user}";
-        const msg = String(template).replace(/\{user\}/g, who);
+        const linesRig = [
+            `🛑 Nice try ${who}. The Rigging Lever™ is behind host-only glass.`,
+            `🚨 Unauthorized rig attempt by ${who}. Deploying the Fairness Police…`,
+            `${who} tried to rig the giveaway. The universe said: “lol, no.”`,
+            `Sorry ${who} — only the host has a license to operate the Rig-O-Matic™.`
+        ];
+
+        const linesUnrig = [
+            `Hold up ${who}… you can’t unrig what you never rigged.`,
+            `🚫 Access denied, ${who}. The “Unrig” button is guarded by a tiny, angry moderator.`,
+            `Nice try ${who}. Only the host can turn off the Chaos Generator™.`,
+            `${who} reached for the unrig switch… and touched nothing but air.`
+        ];
+
+        const pool = (action === "unrig") ? linesUnrig : linesRig;
+        const msg = pool[Math.floor(Math.random() * pool.length)];
         sendCommandResponse(author, msg);
     }
 
@@ -12301,7 +10291,9 @@ body.host-panel-dragging * {
 
         rigToggleInput.disabled = false;
         rigToggleInput.checked = !!riggedMode;
-        rigToggleInput.title = t(riggedMode ? "uiRigOnTitle" : "uiRigOffTitle");
+        rigToggleInput.title = riggedMode
+            ? "Rigged mode is ON (cosmetic only). Click to disable."
+        : "Rigged mode is OFF (cosmetic only). Click to enable.";
 
         // Keep the donation/tax hint in sync when Rigged Mode is toggled.
         updateDonationHint();
@@ -12426,7 +10418,16 @@ body.host-panel-dragging * {
 
 
 
-    function ordinal(n){ return formatRank(n); }
+    function ordinal(n){
+        const rem100 = n % 100;
+        if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+        switch (n % 10){
+            case 1: return `${n}st`;
+            case 2: return `${n}nd`;
+            case 3: return `${n}rd`;
+            default: return `${n}th`;
+        }
+    }
 
     function getLuckyNumber(giveawayData) {
         // Returns a FREE number centered in the largest gap (or null if none left).
@@ -12479,9 +10480,9 @@ body.host-panel-dragging * {
         const minutes = Math.floor((ms % 3600000) / 60000);
         const seconds = Math.floor((ms % 60000) / 1000);
         const parts = [];
-        if (hours) parts.push(tp("durationHourOne", "durationHourMany", hours, { n: hours }));
-        if (minutes) parts.push(tp("durationMinuteOne", "durationMinuteMany", minutes, { n: minutes }));
-        if (seconds) parts.push(tp("durationSecondOne", "durationSecondMany", seconds, { n: seconds }));
+        if (hours) parts.push(`${hours} hour${hours > 1 ? 's' : ''}`);
+        if (minutes) parts.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+        if (seconds) parts.push(`${seconds} second${seconds > 1 ? 's' : ''}`);
         return parts.join(", ");
     }
     function getChatMsgText(msgNode) {
@@ -12530,11 +10531,22 @@ body.host-panel-dragging * {
     }
 
     function shouldSendReminder(giveawayData) {
-        if (!giveawayData) return false;
-        const last = Number(giveawayData.lastReminderSentAt) || 0;
-        // Automatic reminders are at least five minutes apart. A 60-second guard
-        // is enough to absorb reload/timer races without relying on message text.
-        return !last || (Date.now() - last) >= 60_000;
+        // Look at a small recent window to avoid duplicate reminders.
+        const messages = Array.from(document.querySelectorAll('.chatbox-message'));
+
+        for (let i = messages.length - 1; i >= Math.max(messages.length - 7, 0); i--) {
+            const msgNode = messages[i];
+            const author = getAuthor(msgNode);
+            const text = getChatMsgText(msgNode);
+
+            if (
+                normalizeUserKey(author) === normalizeUserKey(giveawayData.host) &&
+                text.includes("Gift the host to add to the pot")
+            ) {
+                return false; // Recent visible reminder by host exists
+            }
+        }
+        return true;
     }
 
     // Live sync reminder number field with allowed max/min and show interval
@@ -12559,13 +10571,11 @@ body.host-panel-dragging * {
         }
         const label = giveawayForm.querySelector('label[for="reminderNum"]');
         if (label) {
-            label.textContent = maxRem ? t("uiRemindersMax", { max: maxRem }) : t("uiReminders");
+            label.textContent = "# Reminders" + (maxRem ? ` (max ${maxRem})` : '');
         }
     }
 
     function cacheChatContext() {
-        const previousUserId = OT_USER_ID;
-        const previousRoomId = OT_CHATROOM_ID || chatroomId;
         OT_USER_ID = null;
         OT_CHATROOM_ID = null;
         OT_CSRF_TOKEN = null;
@@ -12631,11 +10641,6 @@ body.host-panel-dragging * {
               (document.cookie.match(/XSRF-TOKEN=([^;]+)/)?.[1] || "");
         OT_CSRF_TOKEN = xsrfToken ? decodeURIComponent(xsrfToken) : "";
 
-        // Vue-based UNIT3D chat versions don't expose Alpine x-data in the live
-        // DOM. Preserve context already resolved from the real page/API.
-        if (!OT_USER_ID && previousUserId) OT_USER_ID = previousUserId;
-        if (!OT_CHATROOM_ID && previousRoomId) OT_CHATROOM_ID = Number(previousRoomId);
-
         if (DEBUG_SETTINGS.verify_cacheChatContext) {
             console.debug("cacheChatContext: final OT_CSRF_TOKEN =", OT_CSRF_TOKEN ? "[token present]" : "[token missing]");
         }
@@ -12676,8 +10681,8 @@ body.host-panel-dragging * {
         const lettersRegex = /[A-Za-z]/;
 
         if (lettersRegex.test(startVal) || lettersRegex.test(endVal)) {
-            startInput.setCustomValidity(t("validationLetters"));
-            endInput.setCustomValidity(t("validationLetters"));
+            startInput.setCustomValidity("Letters are not allowed—please enter valid integers.");
+            endInput.setCustomValidity("Letters are not allowed—please enter valid integers.");
             return false;
         }
 
@@ -12686,8 +10691,8 @@ body.host-panel-dragging * {
             !integerRegex.test(startVal) ||
             !integerRegex.test(endVal)
         ) {
-            startInput.setCustomValidity(t("validationIntegers"));
-            endInput.setCustomValidity(t("validationIntegers"));
+            startInput.setCustomValidity("Please enter valid integers (e.g., -5, 0, 10).");
+            endInput.setCustomValidity("Please enter valid integers (e.g., -5, 0, 10).");
             return false;
         }
 
@@ -12696,14 +10701,14 @@ body.host-panel-dragging * {
 
         // Check for NaN just in case
         if (isNaN(startNum) || isNaN(endNum)) {
-            startInput.setCustomValidity(t("validationNumbersOnly"));
-            endInput.setCustomValidity(t("validationNumbersOnly"));
+            startInput.setCustomValidity("Please enter numbers only.");
+            endInput.setCustomValidity("Please enter numbers only.");
             return false;
         }
 
         // Ensure start is not greater than end
         if (startNum > endNum) {
-            endInput.setCustomValidity(t("validationEndAfterStart"));
+            endInput.setCustomValidity("End # should be greater than or equal to Start #.");
             return false;
         }
 
@@ -12714,7 +10719,7 @@ body.host-panel-dragging * {
         winnersInput.setCustomValidity("");
         const val = parseInt(winnersInput.value, 10);
         if (isNaN(val) || val < 1 || val > MAX_WINNERS) {
-            winnersInput.setCustomValidity(t("validationWinnersRange", { max: MAX_WINNERS }));
+            winnersInput.setCustomValidity(`Please choose between 1 and ${MAX_WINNERS} winners.`);
             winnersInput.reportValidity();
             updateStartButtonState();
             return false;
@@ -12738,16 +10743,16 @@ body.host-panel-dragging * {
 
         if (maxScaledWinnersInput) {
             maxScaledWinnersInput.classList.toggle("input-invalid", !!message);
-            maxScaledWinnersInput.setCustomValidity(message ? t("validationInvalidMaxWinners") : "");
+            maxScaledWinnersInput.setCustomValidity(message ? "Invalid max winners." : "");
         }
     }
 
     function getMaxScaledWinnersValidation(baseWinners, rawValue) {
         const raw = String(rawValue ?? "").trim();
-        const rangeMsg = t("validationMaxRange", { min: fmtBON(baseWinners), max: fmtBON(MAX_WINNERS) });
+        const rangeMsg = `Must be between ${fmtBON(baseWinners)} and ${fmtBON(MAX_WINNERS)}.`;
 
         if (!raw) return { valid: false, message: rangeMsg };
-        if (!/^-?\d+$/.test(raw)) return { valid: false, message: t("validationIntegerWithRange", { range: rangeMsg }) };
+        if (!/^-?\d+$/.test(raw)) return { valid: false, message: `Enter an integer. ${rangeMsg}` };
 
         const parsed = Number(raw);
         if (!Number.isSafeInteger(parsed)) return { valid: false, message: rangeMsg };
@@ -12758,7 +10763,7 @@ body.host-panel-dragging * {
 
     function updateStartButtonState() {
         if (!startButton || !scaleWinnersToggleInput || !maxScaledWinnersInput) return;
-        if (startButton.dataset.mode !== "start") return;
+        if (startButton.textContent !== "Start") return;
 
         const requiresValidMax = !!scaleWinnersToggleInput.checked;
         const invalidMax = requiresValidMax && maxScaledWinnersInput.classList.contains("input-invalid");
@@ -13002,15 +11007,13 @@ body.host-panel-dragging * {
 
     function buildWinnersAnnouncementLine(data, options = {}) {
         const winnersBase = Math.max(1, Math.floor(Number(data?.baseWinnersAtStart || data?.winnersNum) || 1));
+        // Show the effective winner count (accounts for scaling) — never capped by current entrants
         const winnersNow = Math.max(1, Math.floor(Number(data?.effectiveWinnersNum) || winnersBase));
-        const word = t(winnersNow === 1 ? "winnerWordOne" : "winnerWordMany");
-        let line = t("possibleWinners", { count: winnersNow, word });
+        let line = `[b][color=#5DE2E7]${winnersNow} possible ${winnersNow === 1 ? 'winner' : 'winners'}[/color][/b]`;
 
         if (data && data.scaleWinnersWithSponsors) {
             const maxWinners = Math.max(winnersBase, Math.min(Math.floor(Number(data.hostMaxScaledWinners) || winnersBase), MAX_WINNERS));
-            if (maxWinners > winnersNow) {
-                line += t("upToWinners", { max: maxWinners });
-            }
+            line += ` (up to [b][color=#5DE2E7]${maxWinners}[/color][/b])`;
         }
 
         return line;
@@ -13039,23 +11042,18 @@ body.host-panel-dragging * {
         if (!state) return "";
 
         if (state.effectiveWinners >= state.cap) {
-            return t(options.plain ? "scalingMaxReachedPlain" : "scalingMaxReachedSoft", {
-                accent: SCALING_ACCENT_COLOR,
-                cap: fmtBON(state.cap)
-            });
+            return options.plain
+                ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]Max winners reached[/b] (${fmtBON(state.cap)}).`
+                : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]Max winners reached[/b] (${fmtBON(state.cap)}).[/color][/i]`;
         }
 
-        const detail = t("scalingProgressDetail", {
-            remaining: fmtBONCurrency(state.remaining),
-            next: fmtBON(state.nextWinner),
-            progress: fmtBONCurrency(state.progress),
-            threshold: fmtBONCurrency(state.threshold)
-        });
+        const detail =
+            `${fmtBONCurrency(state.remaining)} BON still needed for winner #${fmtBON(state.nextWinner)} ` +
+            `(progress: ${fmtBONCurrency(state.progress)}/${fmtBONCurrency(state.threshold)} BON).`;
 
-        return t(options.plain ? "scalingProgressPlain" : "scalingProgressSoft", {
-            accent: SCALING_ACCENT_COLOR,
-            detail
-        });
+        return options.plain
+            ? `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [b]${detail}[/b]`
+            : `[b][color=${SCALING_ACCENT_COLOR}]Scaling:[/color][/b] [i][color=#9aa0a6][b]${detail}[/b][/color][/i]`;
     }
 
     function flashUIElement(el, durationMs = 950) {
@@ -13088,11 +11086,9 @@ body.host-panel-dragging * {
         if (!safe.length) return "";
 
         const sponsorTotal = sumSponsorContribs(data.sponsorContribs, data.host);
-        return t("finalSponsorThanks", {
-            marker: bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳"),
-            amount: fmtBONCurrency(sponsorTotal),
-            sponsors: safe.join(" · ")
-        });
+        return `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "🥳")} Thank you to all the sponsors! Total sponsored: ` +
+            `[color=#ffc00a][b]${fmtBONCurrency(sponsorTotal)} BON[/b][/color].\n` +
+            `[b]Sponsors:[/b] ${safe.join(" · ")}`;
     }
 
     function buildFinalSponsorMessageRecap(data) {
@@ -13140,7 +11136,7 @@ body.host-panel-dragging * {
             Math.floor(Number(SPONSOR_ANNOUNCE.final_recap_max_visible_chars) || 900)
         );
         const marker = bridgeMarker(BRIDGE_MARKERS.SPONSOR_MESSAGES, "💬");
-        const heading = t("finalSponsorMessagesHeading", { marker });
+        const heading = `${marker} [b]Messages from our sponsors:[/b]`;
         const messages = [];
         let currentLines = [];
 
@@ -13251,7 +11247,7 @@ body.host-panel-dragging * {
         const fallback = {
             label: name,
             section: "info",
-            description: `!${name}`,
+            description: `Execute !${name}.`,
             usage: `!${name}`,
             requiresGiveaway: true
         };
@@ -13294,11 +11290,11 @@ body.host-panel-dragging * {
     function getPanelCommandDisableReason(name) {
         const meta = getCommandMeta(name);
         const active = !!(giveawayData && isGiveawayCurrentlyActive(giveawayData));
-        if (meta.requiresGiveaway && !active) return t("uiRequiresGiveaway");
+        if (meta.requiresGiveaway && !active) return "Requires an active giveaway.";
 
-        if (meta.hostOnly && !isCurrentUserGiveawayHost()) return t("uiHostOnly");
+        if (meta.hostOnly && !isCurrentUserGiveawayHost()) return "Only the host can use this.";
 
-        if (name === "reminder" && active && !shouldSendReminder(giveawayData)) return t("uiReminderNotDue");
+        if (name === "reminder" && active && !shouldSendReminder(giveawayData)) return "No reminder is due right now.";
 
         return "";
     }
@@ -13321,18 +11317,18 @@ body.host-panel-dragging * {
             let error = "";
 
             if (!raw) {
-                if (requiredNow) error = arg.hint || t("uiRequired");
+                if (requiredNow) error = arg.hint || "Required.";
             } else if (arg.type === "int") {
                 const n = Number(raw);
                 if (!Number.isSafeInteger(n)) {
-                    error = t("uiInteger");
+                    error = "Enter an integer.";
                 } else if (Number.isFinite(arg.min) && n < arg.min) {
-                    error = t("uiMinimum", { value: arg.min });
+                    error = `Minimum: ${arg.min}.`;
                 } else if (Number.isFinite(arg.max) && n > arg.max) {
-                    error = t("uiMaximum", { value: arg.max });
+                    error = `Maximum: ${arg.max}.`;
                 }
             } else if (typeof arg.validate === "function" && !arg.validate(raw, allRaw)) {
-                error = arg.hint || t("uiInvalidValue");
+                error = arg.hint || "Invalid value.";
             }
 
             input.classList.toggle("input-invalid", !!error);
@@ -13355,7 +11351,7 @@ body.host-panel-dragging * {
         const validation = validatePanelCommand(name);
         const canRun = !disabledReason && validation.valid;
 
-        setButtonDisabledWithTooltip(state.button, !canRun, disabledReason || t("uiFixArguments"), `${validation.meta.description} ${t("uiExample", { usage: validation.meta.usage })}`);
+        setButtonDisabledWithTooltip(state.button, !canRun, disabledReason || "Fix invalid arguments.", `${validation.meta.description} Example: ${validation.meta.usage}`);
         if (!canRun) return;
 
         executeCommand({
@@ -13376,7 +11372,7 @@ body.host-panel-dragging * {
         if (!panelList || !Array.isArray(panelList.commands)) {
             const placeholder = document.createElement("p");
             placeholder.className = "host-command-panel__empty";
-            placeholder.textContent = t("uiPanelInitError");
+            placeholder.textContent = "Host Panel commands unavailable (init error).";
             hostCommandPanelBody.appendChild(placeholder);
             return;
         }
@@ -13385,7 +11381,7 @@ body.host-panel-dragging * {
         if (commands.length === 0) {
             const placeholder = document.createElement("p");
             placeholder.className = "host-command-panel__empty";
-            placeholder.textContent = t("uiNoCommands", { detail: t("uiRegistryEmpty", { registry: registryName }) });
+            placeholder.textContent = `No commands found (registry empty). ${registryName} has 0 entries.`;
             hostCommandPanelBody.appendChild(placeholder);
             return;
         }
@@ -13413,7 +11409,7 @@ body.host-panel-dragging * {
             const commandKey = normalizePanelCommandName(name);
             const row = document.createElement("div");
             row.className = "host-command-panel__row";
-            row.title = `${meta.description} ${t("uiExample", { usage: meta.usage })}`;
+            row.title = `${meta.description} Example: ${meta.usage}`;
             row.dataset.command = name;
 
             const inline = document.createElement("div");
@@ -13434,7 +11430,7 @@ body.host-panel-dragging * {
             button.type = "button";
             button.className = "form__button form__button--filled";
             button.textContent = meta.label;
-            button.title = `${meta.description} ${t("uiExample", { usage: meta.usage })}`;
+            button.title = `${meta.description} Example: ${meta.usage}`;
             button.dataset.command = name;
             buttonWrap.appendChild(button);
             mainLine.appendChild(buttonWrap);
@@ -13471,7 +11467,7 @@ body.host-panel-dragging * {
                     input.placeholder = arg.placeholder || arg.label || arg.name;
                 }
 
-                input.title = `${arg.label || arg.name} (${t(arg.required ? "uiRequiredSuffix" : "uiOptionalSuffix")})`;
+                input.title = `${arg.label || arg.name}${arg.required ? " (required)" : " (optional)"}`;
                 input.dataset.argName = arg.name;
 
                 argWrap.appendChild(input);
@@ -13561,7 +11557,7 @@ body.host-panel-dragging * {
         if (!hostPanelCommandState.size) {
             const placeholder = document.createElement("p");
             placeholder.className = "host-command-panel__empty";
-            placeholder.textContent = t("uiNoCommands", { detail: reason || t("uiRegistryEmpty", { registry: registryName }) });
+            placeholder.textContent = `No commands found (registry empty). ${reason || `${registryName} has 0 entries.`}`;
             hostCommandPanelBody.appendChild(placeholder);
         }
     }
@@ -13886,8 +11882,8 @@ body.host-panel-dragging * {
             setButtonDisabledWithTooltip(
                 state.button,
                 disabled,
-                reason || t("uiFixArguments"),
-                `${state.meta.description} ${t("uiExample", { usage: state.meta.usage })}`
+                reason || "Fix invalid arguments.",
+                `${state.meta.description} Example: ${state.meta.usage}`
             );
             state.inputs.forEach(({ input, arg }) => {
                 let shouldDisable = !!reason;
@@ -13954,9 +11950,6 @@ body.host-panel-dragging * {
     // Optional debug hook: set DEBUG_SETTINGS.expose_modules = true in code if you want this on window.
     if (DEBUG_SETTINGS && DEBUG_SETTINGS.expose_modules === true) {
         window.BON_GIVEAWAY = Object.freeze({
-            SITE,
-            SITE_PROFILES,
-            I18N,
             BONANZA,
             Pool: Object.freeze({
                 computeDonationSplit,
@@ -14000,31 +11993,6 @@ body.host-panel-dragging * {
                 fmtBON,
                 parseTime,
             }),
-        });
-    }
-
-    function normalizeChatApiText(rawHtml) {
-        try {
-            const doc = new DOMParser().parseFromString(String(rawHtml || ""), "text/html");
-            return String(doc.body?.textContent || "")
-                .replace(/\u00a0/g, " ")
-                .replace(/\s+/g, " ")
-                .trim();
-        } catch {
-            return String(rawHtml || "").replace(/\s+/g, " ").trim();
-        }
-    }
-
-    function sortChatMessagesChronologically(messages) {
-        return (Array.isArray(messages) ? messages.slice() : []).sort((a, b) => {
-            const aId = Number(a?.id);
-            const bId = Number(b?.id);
-            if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId;
-
-            const aTs = Date.parse(a?.created_at || "");
-            const bTs = Date.parse(b?.created_at || "");
-            if (Number.isFinite(aTs) && Number.isFinite(bTs) && aTs !== bTs) return aTs - bTs;
-            return 0;
         });
     }
 
