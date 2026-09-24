@@ -278,17 +278,7 @@ The field is now derived as cumulative host funding minus the verified opening h
 
 This reporting bug did not affect the pot or payouts.
 
-### 5. Audit collector parsed Gift History decimals incorrectly
-
-Status: fixed in v1.5.3.
-
-DarkPeers renders Gift History amounts such as `170867.00`. The first audit collector removed punctuation and therefore represented that as `17086700`.
-
-The collector now parses the decimal value and returns whole BON correctly.
-
-This bug existed only in the post-giveaway audit tool. It did not affect the userscript, settlement or DarkPeers.
-
-### 6. Winner gift wording
+### 5. Winner gift wording
 
 Status: changed in v1.5.2.
 
@@ -311,7 +301,7 @@ Multiple winners:
 Two independent evidence captures were made after settlement:
 
 1. Browser state captured at 18:18:01 UTC, including the final statement, payout ledger, BON Pool ledger and retained chat DOM.
-2. Read-only DarkPeers server collection started at 18:18:35 UTC, including persistent Gift History, notifications, BON Pool counters and current chat API windows.
+2. Read-only DarkPeers server evidence captured from persistent Gift History, notifications, BON Pool counters and current chat API windows.
 
 The retained browser chat starts at 17:18:39 UTC, while the giveaway started at 17:16:06 UTC. Therefore the first approximately 2 minutes and 33 seconds of chat are not preserved line by line in the browser snapshot.
 
