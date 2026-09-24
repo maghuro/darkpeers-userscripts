@@ -7739,7 +7739,16 @@ body.host-panel-dragging * {
                     `Persisted BON Pool attempt amount conflict: expected ${safeAmount}, found ${existing.amount}`
                 );
             }
-            return false;
+            if (existing.status === "confirmed") return false;
+            const retryableState = getPoolContributionRetryableState(
+                settlementGiveawayId,
+                existing
+            );
+            // Known-unsent retryable checkpoints still require funds. If the
+            // marker cannot currently be read, budget conservatively as though
+            // the outflow may still be required; the send path itself remains
+            // fail-closed until that ambiguity is resolved.
+            return retryableState === "retryable" || retryableState === "indeterminate";
         };
 
         const requiredSettlementOutflow = (() => {
@@ -8355,7 +8364,7 @@ body.host-panel-dragging * {
                         amount,
                         GIFT_PURPOSE.WINNER
                     ).state;
-                    return state === "pending" || state === "attempted";
+                    return state === "pending" || state === "attempted" || state === "indeterminate";
                 });
 
                 if (hasAmbiguousPriorWinnerAttempt) {
@@ -10104,16 +10113,25 @@ body.host-panel-dragging * {
         }
     }
 
-    function isPoolContributionRetryable(giveawayId, record) {
+    function getPoolContributionRetryableState(giveawayId, record) {
         const attemptToken = typeof record?.attemptToken === "string"
             ? record.attemptToken
             : "";
-        if (!giveawayId || !attemptToken) return false;
+        if (!giveawayId || !attemptToken) return "not-retryable";
         try {
-            return localStorage.getItem(poolContributionRetryableKey(giveawayId)) === attemptToken;
+            return localStorage.getItem(poolContributionRetryableKey(giveawayId)) === attemptToken
+                ? "retryable"
+                : "not-retryable";
         } catch {
-            return false;
+            // An unreadable marker cannot safely be interpreted either way: a
+            // retry might duplicate a real POST, while treating it as terminal
+            // could strand a known-unsent pre-POST checkpoint.
+            return "indeterminate";
         }
+    }
+
+    function isPoolContributionRetryable(giveawayId, record) {
+        return getPoolContributionRetryableState(giveawayId, record) === "retryable";
     }
 
     function parsePoolCounter(text, label) {
@@ -10198,8 +10216,11 @@ body.host-panel-dragging * {
             // A retryable checkpoint is known to have failed before any POST was
             // initiated (typically setItem succeeded but its read-back failed).
             // Do not treat it as an ambiguous money-moving attempt: take a fresh
-            // remote baseline and create a new token below.
-            if (!isPoolContributionRetryable(giveawayId, existing)) {
+            // remote baseline and create a new token below. If the retryable marker
+            // itself is unreadable, verification may confirm an existing transfer
+            // but a new POST is forbidden until storage becomes readable again.
+            const retryableState = getPoolContributionRetryableState(giveawayId, existing);
+            if (retryableState !== "retryable") {
                 const checked = await verifyBonPoolContribution(existing);
                 if (checked.confirmed) {
                     savePoolContributionAttempt(giveawayId, {
@@ -10210,7 +10231,14 @@ body.host-panel-dragging * {
                     });
                     return { attempted: false, confirmed: true, reason: "verified-existing", reused: true };
                 }
-                return { attempted: false, confirmed: false, reason: "existing-unconfirmed", reused: true };
+                return {
+                    attempted: false,
+                    confirmed: false,
+                    reason: retryableState === "indeterminate"
+                        ? "retryable-marker-unavailable"
+                        : "existing-unconfirmed",
+                    reused: true
+                };
             }
 
             logEvent(
@@ -10348,17 +10376,23 @@ body.host-panel-dragging * {
                 if (retryableToken === stored) {
                     return { state: "retryable", token: stored };
                 }
-            } catch {}
+            } catch {
+                // We cannot safely distinguish a known-unsent retryable token from
+                // an actually pending/ambiguous transfer if this marker read fails.
+                // Fail closed: never orphan-terminalize or resend it until storage
+                // becomes readable again.
+                return { state: "indeterminate", token: stored };
+            }
             return { state: "pending", token: stored };
         }
 
         return { state: "attempted", token: null };
     }
 
-    /** Returns true for a pending or terminal non-retryable attempt. */
+    /** Returns true for a pending, indeterminate, or terminal non-retryable attempt. */
     function hasGiftBeenAttempted(giveawayId, recipient, amount, purpose) {
         const { state } = getGiftAttemptState(giveawayId, recipient, amount, purpose);
-        return state === "pending" || state === "attempted";
+        return state === "pending" || state === "attempted" || state === "indeterminate";
     }
 
     /** Record a unique attempt token before an ambiguous send can happen. */
@@ -10455,7 +10489,7 @@ body.host-panel-dragging * {
             gift?.amount,
             gift?.purpose
         ).state;
-        return state === "none" || state === "pending" || state === "retryable";
+        return state === "none" || state === "pending" || state === "retryable" || state === "indeterminate";
     }
 
     /**
@@ -10501,6 +10535,13 @@ body.host-panel-dragging * {
             safeAmount,
             purpose
         );
+        if (existingAttempt.state === "indeterminate") {
+            logEvent(
+                "Gift deferred (retryable marker unreadable)",
+                `The transfer ledger for ${sanitizeNick(safeRecipient)} (${fmtBONCurrency(safeAmount)} BON, ${purpose}) cannot currently distinguish a known-unsent retryable attempt from an ambiguous pending transfer. Refusing to resend or terminalize it until local storage is readable again.`
+            );
+            return { attempted: false, reason: "attempt-state-indeterminate" };
+        }
         if (existingAttempt.state === "pending") {
             if (
                 recoverOrphanedPendingGiftAttempt(
