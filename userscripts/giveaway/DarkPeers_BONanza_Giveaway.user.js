@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway — Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.0
+// @version      1.5.1
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://github.com/maghuro/unit3d-userscripts
 // @supportURL   https://github.com/maghuro/unit3d-userscripts/issues
@@ -185,6 +185,12 @@
 //     Main Chat settlement-output reconciliation and fail-closed chatbox fallback.
 //     DarkPeers remains the sole production target; another tracker must use a
 //     separate userscript rather than changing this engine.
+//   - v1.5.1 keeps BON Pool context visible during an active giveaway: reminders,
+//     !bon, sponsor digests and host top-ups now repeat the selected pool percentage
+//     near the live pot/status information instead of relying only on the opening header.
+//     Sponsor accounting is also Gift-History-only: transient Gift History outages no
+//     longer let stale System/DPBot messages increment the pot a second time; recovery
+//     reconciles unseen persistent Gift History rows instead of replacing the baseline.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -625,6 +631,21 @@
         const n = Math.floor(Number(raw));
         if (!Number.isFinite(n)) return 0;
         return BONANZA.PERCENT_OPTIONS.includes(n) ? n : 0;
+    }
+
+    function buildDonationContext(data, { compact = false } = {}) {
+        const pct = normalizeDonationPercent(data?.donationPercent);
+        if (pct <= 0) return "";
+
+        if (riggedMode) {
+            return compact
+                ? `[b][color=#FF4F9A]${BONANZA.FUND_NAME}: ${pct}% tax[/color][/b]`
+                : `[b][color=#FF4F9A]${pct}% rigging tax to the ${BONANZA.FUND_NAME}[/color][/b]`;
+        }
+
+        return compact
+            ? `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME}: ${pct}%[/color][/b]`
+            : `💙 [b][color=${BONANZA.GIVEAWAY_COLOR}]${pct}% of the final pot (including sponsor gifts) goes to the ${BONANZA.FUND_NAME}[/color][/b]; winners share the remaining ${100 - pct}%.`;
     }
 
 
@@ -3275,6 +3296,28 @@ body.host-panel-dragging * {
             });
             window.__activeTracker = tracker;
 
+            // Before any restored timer/poll/settlement resumes, rebuild sponsor
+            // accounting from persistent Gift History. This self-heals snapshots
+            // affected by the v1.5.0 System/DPBot replay bug and fails closed if
+            // canonical coverage cannot be proven.
+            const sponsorReconciliation = await tracker.reconcileCanonicalSponsorAccounting({
+                repairStats: true
+            });
+            if (!snapshotGiveaway({ force: true, verifyWrite: true })) {
+                throw new Error("Canonical sponsor reconciliation could not be persisted safely.");
+            }
+            if (sponsorReconciliation.repaired) {
+                coinHeader.innerHTML = `${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON`;
+                coinHeader.prepend(goldCoins.cloneNode(false));
+                updateHostPanelUI();
+                try {
+                    window.alert(
+                        "BONanza repaired the active giveaway from persistent DarkPeers Gift History before resuming. " +
+                        `Pot: ${fmtBONCurrency(sponsorReconciliation.previousPot)} -> ${fmtBONCurrency(sponsorReconciliation.canonicalPot)} BON.`
+                    );
+                } catch {}
+            }
+
             let expiredLegacyBootstrap = Promise.resolve();
             if (savedTracker) {
                 // Current snapshots have a persisted cursor. For an expired restore,
@@ -4717,6 +4760,252 @@ body.host-panel-dragging * {
             }
         }
 
+        async reconcileCanonicalSponsorAccounting({ repairStats = false } = {}) {
+            const endpointPath = getGiftEndpointPath(getAuthenticatedUserSlug());
+            if (!endpointPath) {
+                throw new Error("Cannot resolve Gift History endpoint for sponsor reconciliation.");
+            }
+
+            const rows = [];
+            const MAX_RECONCILE_PAGES = 20;
+            let reachedWindowStart = false;
+
+            for (let page = 1; page <= MAX_RECONCILE_PAGES; page++) {
+                const historyUrl = new URL(endpointPath, location.origin);
+                if (page > 1) historyUrl.searchParams.set("page", String(page));
+                historyUrl.searchParams.set("_dpgw_reconcile", String(Date.now()));
+
+                const res = await fetchWithTimeout(
+                    historyUrl,
+                    {
+                        credentials: "same-origin",
+                        cache: "no-store"
+                    },
+                    7000
+                );
+                if (!res.ok) {
+                    throw new Error(`Gift History reconciliation page ${page} HTTP ${res.status}`);
+                }
+
+                const pageRows = parseGiftHistoryPage(await res.text());
+                if (!pageRows.length) {
+                    reachedWindowStart = true;
+                    break;
+                }
+
+                rows.push(...pageRows);
+
+                const offset = optionalFiniteNumber(this.giftHistoryClockOffsetMs)
+                    ?? await this.ensureGiftHistoryClockOffset(rows);
+
+                if (offset !== null) {
+                    reachedWindowStart = rows.some(item => {
+                        const wallTs = Number.isFinite(Number(item?.createdAtAltTs))
+                            ? Number(item.createdAtAltTs)
+                            : Number(item?.createdAtTs);
+                        if (!Number.isFinite(wallTs)) return false;
+                        const resolutionMs = Math.max(
+                            1,
+                            Number.isFinite(Number(item?.timestampResolutionMs))
+                                ? Number(item.timestampResolutionMs)
+                                : unit3dTimestampResolutionMs(item?.rawTimestamp)
+                        );
+                        return ((wallTs - offset) + resolutionMs) <= this.giveawayStartTs;
+                    });
+                    if (reachedWindowStart) break;
+                }
+
+                if (page === MAX_RECONCILE_PAGES) {
+                    throw new Error(
+                        "Gift History reconciliation reached its page safety cap before proving coverage back to giveaway start."
+                    );
+                }
+            }
+
+            const offset = await this.ensureGiftHistoryClockOffset(rows);
+            if (rows.length && optionalFiniteNumber(offset) === null) {
+                throw new Error("Gift History reconciliation could not calibrate DarkPeers wall-clock time.");
+            }
+
+            if (!reachedWindowStart && rows.length) {
+                // We deliberately do not guess completeness here. The loop normally
+                // exits on an empty page or once an older pre-giveaway row proves the
+                // window boundary. Anything else is unsafe to auto-repair.
+                throw new Error("Gift History reconciliation could not prove complete coverage of the giveaway window.");
+            }
+
+            const indexed = indexGiftHistoryRows(rows);
+            const hostKey = normalizeUserKey(this.data.host);
+            const hostRows = indexed.filter(item =>
+                item.historyKey &&
+                normalizeUserKey(item.recipient) === hostKey
+            );
+
+            const maxTs =
+                optionalFiniteNumber(this.maxAcceptedCreatedAtTs) ??
+                optionalFiniteNumber(this.data?.settlement?.cutoffTs) ??
+                optionalFiniteNumber(this.data?.endTs);
+
+            const filtered = await this.filterHistoryRowsByWindow(
+                hostRows,
+                this.giveawayStartTs,
+                maxTs,
+                indexed
+            );
+            if (filtered.retryableKeys.size) {
+                throw new Error(
+                    "Gift History reconciliation found timestamp-boundary rows that are not yet safe to classify."
+                );
+            }
+
+            const canonicalRows = filtered.accepted;
+            const canonicalContribs = {};
+            const canonicalNamesByKey = new Map();
+            const canonicalMessages = [];
+            let canonicalSponsoredTotal = 0;
+
+            for (const item of canonicalRows) {
+                const sponsor = String(item?.sender || "").trim();
+                const sponsorKey = normalizeUserKey(sponsor);
+                const amount = Math.max(0, Math.floor(Number(item?.amount) || 0));
+                if (!sponsorKey || !(amount > 0)) continue;
+
+                const displayName = canonicalNamesByKey.get(sponsorKey) || sponsor;
+                canonicalNamesByKey.set(sponsorKey, displayName);
+                canonicalContribs[displayName] =
+                    (Number(canonicalContribs[displayName]) || 0) + amount;
+                canonicalSponsoredTotal += amount;
+
+                const message = sanitizeSponsorGiftMessage(item?.message);
+                if (message) {
+                    canonicalMessages.push({
+                        sponsor: displayName,
+                        amount,
+                        message,
+                        createdAtTs: Number.isFinite(Number(item?.createdAtTs))
+                            ? Number(item.createdAtTs)
+                            : null
+                    });
+                }
+            }
+
+            const oldLiveTotals = new Map(liveSponsorTotalThisGiveaway);
+            const oldLiveSeen = new Set(liveSponsorSeenThisGiveaway);
+            const canonicalTotalsByKey = new Map();
+            for (const [name, amount] of Object.entries(canonicalContribs)) {
+                const key = normalizeUserKey(name);
+                if (key) canonicalTotalsByKey.set(key, Math.max(0, Math.floor(Number(amount) || 0)));
+            }
+
+            const hostAdded = Math.max(
+                0,
+                Math.floor(
+                    Number(this.data.hostAdded ?? this.data.initialPotVerifiedAtStart) || 0
+                )
+            );
+            const previousPot = Math.max(0, Math.floor(Number(this.data.amount) || 0));
+            const previousSponsoredTotal = Math.max(
+                0,
+                Math.floor(sumSponsorContribs(this.data.sponsorContribs, this.data.host) || 0)
+            );
+            const canonicalPot = hostAdded + canonicalSponsoredTotal;
+
+            this.data.sponsorContribs = canonicalContribs;
+            this.data.sponsors = Array.from(canonicalNamesByKey.values());
+            this.data.sponsorGiftMessages = canonicalMessages;
+            this.data.amount = canonicalPot;
+
+            liveSponsorSeenThisGiveaway.clear();
+            liveSponsorTotalThisGiveaway.clear();
+            for (const [name, amount] of Object.entries(canonicalContribs)) {
+                const key = normalizeUserKey(name);
+                if (!key || !(amount > 0)) continue;
+                liveSponsorSeenThisGiveaway.add(key);
+                liveSponsorTotalThisGiveaway.set(key, amount);
+            }
+
+            if (repairStats) {
+                const stats = getStatsCached();
+                const keys = new Set([
+                    ...oldLiveTotals.keys(),
+                    ...canonicalTotalsByKey.keys(),
+                    ...oldLiveSeen
+                ]);
+
+                let statsChanged = false;
+                for (const key of keys) {
+                    const oldAmount = Math.max(0, Math.floor(Number(oldLiveTotals.get(key)) || 0));
+                    const newAmount = Math.max(0, Math.floor(Number(canonicalTotalsByKey.get(key)) || 0));
+                    const amountDelta = newAmount - oldAmount;
+                    const wasSeen = oldLiveSeen.has(key);
+                    const isSeen = canonicalTotalsByKey.has(key) && newAmount > 0;
+                    const displayName =
+                        canonicalNamesByKey.get(key) ||
+                        this.data.sponsors.find(name => normalizeUserKey(name) === key) ||
+                        key;
+                    const rec = getOrCreateUserStats(stats, displayName);
+                    if (!rec) continue;
+
+                    if (amountDelta !== 0) {
+                        rec.sponsoredTotal = Math.max(
+                            0,
+                            Math.floor(Number(rec.sponsoredTotal) || 0) + amountDelta
+                        );
+                        statsChanged = true;
+                    }
+
+                    if (wasSeen !== isSeen) {
+                        rec.sponsorCount = Math.max(
+                            0,
+                            Math.floor(Number(rec.sponsorCount) || 0) + (isSeen ? 1 : -1)
+                        );
+                        statsChanged = true;
+                    }
+
+                    // Increasing this max is always safe. Decreasing it is not: the
+                    // previous legitimate per-giveaway maximum is not retained
+                    // separately, so an inflated live max is audited manually instead
+                    // of risking destruction of an older valid record.
+                    if (newAmount > Math.max(0, Math.floor(Number(rec.biggestSponsor) || 0))) {
+                        rec.biggestSponsor = newAmount;
+                        statsChanged = true;
+                    }
+                }
+
+                if (statsChanged) {
+                    saveGiveawayStats(stats);
+                    _statsCache = stats;
+                    _statsDirty = false;
+                    if (_statsFlushTimer) {
+                        clearTimeout(_statsFlushTimer);
+                        _statsFlushTimer = null;
+                    }
+                }
+            }
+
+            recomputeEffectiveWinners(this.data);
+            this.setGiftHistoryBaseline(rows);
+            this.historyFallbackActive = false;
+
+            logEvent(
+                previousPot === canonicalPot && previousSponsoredTotal === canonicalSponsoredTotal
+                    ? "Sponsor accounting verified from Gift History"
+                    : "Sponsor accounting repaired from Gift History",
+                `Persistent Gift History canonical total=${fmtBONCurrency(canonicalSponsoredTotal)} BON | pot ${fmtBONCurrency(previousPot)} -> ${fmtBONCurrency(canonicalPot)} BON`
+            );
+
+            return {
+                repaired:
+                    previousPot !== canonicalPot ||
+                    previousSponsoredTotal !== canonicalSponsoredTotal,
+                previousPot,
+                canonicalPot,
+                previousSponsoredTotal,
+                canonicalSponsoredTotal,
+                canonicalContribs
+            };
+        }
+
         async fetchRecentChatGiftEvents() {
             const messages = await this.fetchNew();
             return messages
@@ -5090,21 +5379,36 @@ body.host-panel-dragging * {
             try {
                 historyRows = await this.fetchRecentGiftHistory();
             } catch (e) {
+                // Persistent Gift History is the canonical sponsorship ledger.
+                // Do NOT mutate the pot from the rolling System/DPBot room here:
+                // its cursor can lag behind Gift History and replay gifts that were
+                // already counted during an earlier healthy history poll.
                 this.historyFallbackActive = true;
                 if (DEBUG_SETTINGS.log_chat_messages) {
-                    console.warn("Gift History unavailable; using Chat API/SystemBot fallback:", e);
+                    console.warn("Gift History unavailable; sponsor accounting paused until recovery:", e);
                 }
-                const ok = await this.pollChatFallback(options);
+                logEvent(
+                    "Sponsor accounting paused (Gift History unavailable)",
+                    "Keeping the current pot unchanged until persistent Gift History recovers; System/DPBot is diagnostic evidence only."
+                );
                 if (PERF) perfMeasure('sponsor_poll', perfStart);
-                return ok;
+                return false;
             }
 
             if (this.historyFallbackActive) {
-                const chatOk = await this.pollChatFallback(options);
-                if (!chatOk) {
+                // Reconcile against the existing persistent boundary. Never replace
+                // it with a fresh baseline after an outage: doing so can either hide
+                // gifts missed during the outage or, when chat fallback was involved,
+                // make stale System-room messages look new.
+                if (this.giftHistoryInitialized) {
+                    const ok = await this.processGiftHistoryRows(historyRows, options);
                     if (PERF) perfMeasure('sponsor_poll', perfStart);
-                    return false;
+                    return ok;
                 }
+
+                // Legacy snapshots may pre-date Gift History cursor persistence. For
+                // those only, establish a baseline without applying historical rows;
+                // this deliberately favors manual under-count recovery over duplicates.
                 this.setGiftHistoryBaseline(historyRows);
                 this.historyFallbackActive = false;
                 snapshotGiveaway();
@@ -5113,11 +5417,8 @@ body.host-panel-dragging * {
             }
 
             if (!this.giftHistoryInitialized) {
-                const chatOk = await this.pollChatFallback(options);
-                if (!chatOk) {
-                    if (PERF) perfMeasure('sponsor_poll', perfStart);
-                    return false;
-                }
+                // Same conservative legacy-bootstrap rule as above. New giveaways
+                // always initialize Gift History before their opening announcement.
                 this.setGiftHistoryBaseline(historyRows);
                 snapshotGiveaway();
                 if (PERF) perfMeasure('sponsor_poll', perfStart);
@@ -5735,8 +6036,10 @@ body.host-panel-dragging * {
             const prefix =
                 `${bridgeMarker(BRIDGE_MARKERS.SPONSORS, "✨")} Sponsors just added [color=#DC3D1D][b]${deltaTotal} BON[/b][/color] ` +
                 `from [b]${sponsorCount} sponsor${sponsorCount === 1 ? "" : "s"}[/b]! `;
+            const donationContext = buildDonationContext(this.data, { compact: true });
             const suffix =
                 `Total pot is now [b][color=#ffc00a]${potTotal} BON[/color][/b].` +
+                (donationContext ? ` ${donationContext}.` : "") +
                 (nextWinnerLine ? ` ${nextWinnerLine}` : "");
 
             const maxVisible = Math.max(180, Math.floor(Number(SPONSOR_ANNOUNCE.max_visible_chars) || 300));
@@ -6353,8 +6656,10 @@ body.host-panel-dragging * {
 
         bon({ giveawayData , reply}) {
             const rigTag = rigNote("(pot size [b]carefully curated[/b] by our rigging department)");
+            const donationContext = buildDonationContext(giveawayData);
             reply(
                 `Giveaway Amount: [b][color=#FFB700]${fmtBONCurrency(giveawayData.amount)} BON[/color][/b]` +
+                (donationContext ? ` | ${donationContext}` : "") +
                 rigTag
             );
         },
@@ -6580,7 +6885,9 @@ body.host-panel-dragging * {
 
         reminder(ctx) {
             if (normalizeUserKey(ctx.author) === normalizeUserKey(ctx.giveawayData.host)) {
-                sendReminder();
+                // An explicit host !reminder is a manual override: send it now
+                // instead of applying the automatic recent-reminder suppression.
+                sendReminder({ force: true });
             }
         },
 
@@ -6931,6 +7238,7 @@ body.host-panel-dragging * {
     
             const addedPart = `Host added [color=#DC3D1D][b]${fmtBONCurrency(amount)} BON[/b][/color].`;
             const totalPart = `Total pot: [b][color=#ffc00a]${fmtBONCurrency(Number(cleanPotString(giveawayData.amount)))} BON[/color][/b].`;
+            const donationPart = buildDonationContext(giveawayData, { compact: true });
     
             let scalingPart = "";
             if (giveawayData.scaleWinnersWithSponsors) {
@@ -6945,7 +7253,7 @@ body.host-panel-dragging * {
 
             const announced = await sendMessage(
                 `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
-                [addedPart, totalPart, scalingPart].filter(Boolean).join(" "),
+                [addedPart, totalPart, donationPart, scalingPart].filter(Boolean).join(" "),
                 { requireExclusiveGiveawayOwnership: true }
             );
 
@@ -9999,12 +10307,15 @@ body.host-panel-dragging * {
         const reminderStartMarker = reminderPct > 0
             ? (riggedMode ? BRIDGE_MARKERS.START_TAXES : BRIDGE_MARKERS.START_POOL)
             : BRIDGE_MARKERS.START;
+        const reminderDonationContext = buildDonationContext(giveawayData);
         const msg = reminderPrefix +
               `${bridgeMarker(reminderStartMarker, "🎁")} Ongoing giveaway for [b][color=#ffc00a]${fmtBONCurrency(cleanPotString(giveawayData.amount))} BON[/color][/b] | ` +
               `${buildWinnersAnnouncementLine(giveawayData)} | ` +
               `Time left: [b][color=#1DDC5D]${parseTime(getGiveawayRemainingMs(giveawayData))}[/color][/b]. ` +
               `Pick a number [b]between [color=#DC3D1D]${giveawayData.startNum} and ${giveawayData.endNum}[/color][/b]. ` +
-              `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]\n` +
+              `[b][color=#5DE2E7]${giveawayData.customMessage}[/color][/b]` +
+              (reminderDonationContext ? `\n${reminderDonationContext}` : "") +
+              `\n` +
               `✨[b][color=#FB4F4F]Gift the host to add to the pot! [color=${GIFT_HINT_COLOR}]/gift ${getGiftSyntaxHostName()} AMOUNT MESSAGE[/color][/color][/b]✨` +
               silentLine +
               rigLine;
