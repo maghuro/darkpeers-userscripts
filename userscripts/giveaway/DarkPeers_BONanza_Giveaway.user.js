@@ -7343,11 +7343,38 @@ body.host-panel-dragging * {
             } catch {}
         };
 
-        // One funding invariant for all terminal modes. Verify the complete external
-        // outflow before winner gifts, sponsor refunds or a BON Pool contribution.
-        // The committed plan is immutable, so a retry checks the same obligation.
+        // One funding invariant for all terminal modes. On the first settlement
+        // attempt this is the complete external outflow. On recovery/retry, count
+        // only transfers that the persisted ledgers still permit us to initiate.
+        // Already-attempted gifts/pool transfers are verification-only work and
+        // MUST NOT be budgeted again or resent automatically.
         const settlementPlan = giveawayData.settlement.financialPlan;
         const settlementSelfKeys = resolveSelfKeys(giveawayData.host);
+        const settlementGiveawayId = getActiveGiveawayId();
+
+        const giftNeedsNewTransfer = (recipient, amount, purpose) => {
+            const state = getGiftAttemptState(
+                settlementGiveawayId,
+                recipient,
+                amount,
+                purpose
+            ).state;
+            return state === "none" || state === "retryable";
+        };
+
+        const poolNeedsNewTransfer = amount => {
+            const safeAmount = Math.max(0, Math.floor(Number(amount) || 0));
+            if (!safeAmount) return false;
+            const existing = getPoolContributionAttempt(settlementGiveawayId);
+            if (!existing) return true;
+            if (Math.floor(Number(existing.amount) || 0) !== safeAmount) {
+                throw new Error(
+                    `Persisted BON Pool attempt amount conflict: expected ${safeAmount}, found ${existing.amount}`
+                );
+            }
+            return false;
+        };
+
         const requiredSettlementOutflow = (() => {
             if (settlementPlan.mode === "winners") {
                 const winners = Array.isArray(settlementPlan.winners) ? settlementPlan.winners : [];
@@ -7356,19 +7383,28 @@ body.host-panel-dragging * {
                     const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
                     if (!amount) return sum;
                     if (settlementSelfKeys.has(normalizeUserKey(winner?.author))) return sum;
-                    return sum + amount;
+                    return giftNeedsNewTransfer(winner?.author, amount, GIFT_PURPOSE.WINNER)
+                        ? sum + amount
+                        : sum;
                 }, 0);
                 const poolOutflow = Math.max(0, Math.floor(Number(settlementPlan.split?.total) || 0));
-                return winnerOutflow + poolOutflow;
+                return winnerOutflow + (poolNeedsNewTransfer(poolOutflow) ? poolOutflow : 0);
             }
 
             if (settlementPlan.mode === "no-entries-pool") {
-                return Math.max(0, Math.floor(Number(settlementPlan.potTotal) || 0));
+                const poolOutflow = Math.max(0, Math.floor(Number(settlementPlan.potTotal) || 0));
+                return poolNeedsNewTransfer(poolOutflow) ? poolOutflow : 0;
             }
 
             if (settlementPlan.mode === "no-entries-refund") {
                 return (Array.isArray(settlementPlan.refunds) ? settlementPlan.refunds : [])
-                    .reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item?.amount) || 0)), 0);
+                    .reduce((sum, item) => {
+                        const amount = Math.max(0, Math.floor(Number(item?.amount) || 0));
+                        if (!amount) return sum;
+                        return giftNeedsNewTransfer(item?.name, amount, GIFT_PURPOSE.SPONSOR_REFUND)
+                            ? sum + amount
+                            : sum;
+                    }, 0);
             }
 
             return NaN;
@@ -7391,11 +7427,11 @@ body.host-panel-dragging * {
                     : "unavailable";
                 pauseSettlementForRetry(
                     "Settlement paused (insufficient verified BON)",
-                    `Required=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No settlement transfer was attempted.`,
+                    `Remaining automatic outflow=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No new transfer was attempted.`,
                     `GIVEAWAY SETTLEMENT PAUSED\n\n` +
-                    `Required to settle: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
+                    `Still required for new automatic transfers: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
                     `Verified balance: ${availableText} BON\n\n` +
-                    `No new winner gift, sponsor refund or BON Pool contribution has been made by this settlement attempt.`
+                    `Previously attempted transfers are not counted again and will not be resent automatically.`
                 );
                 return;
             }
