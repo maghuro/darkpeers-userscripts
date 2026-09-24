@@ -6758,11 +6758,25 @@ body.host-panel-dragging * {
                 }
             }
     
-            await sendMessage(
+            snapshotGiveaway({ force: true });
+
+            const announced = await sendMessage(
                 `${bridgeMarker(BRIDGE_MARKERS.POT, "💰")} ` +
-                [addedPart, totalPart, scalingPart].filter(Boolean).join(" ")
+                [addedPart, totalPart, scalingPart].filter(Boolean).join(" "),
+                { requireExclusiveGiveawayOwnership: true }
             );
-            snapshotGiveaway();
+
+            if (announced === false) {
+                logEvent(
+                    "Host BON top-up announcement deferred",
+                    `Recorded ${fmtBONCurrency(amount)} BON locally (pot=${fmtBONCurrency(newTotal)} BON), but the chat announcement could not be sent safely.`
+                );
+            } else {
+                logEvent(
+                    "Host BON top-up recorded",
+                    `Host added ${fmtBONCurrency(amount)} BON | pot=${fmtBONCurrency(newTotal)} BON | verified wallet=${fmtBONCurrency(currentBon)} BON`
+                );
+            }
         } finally {
             hostAddBonInFlight = false;
         }
@@ -7312,10 +7326,84 @@ body.host-panel-dragging * {
         applySettlementFinancialPlan(giveawayData.settlement.financialPlan);
         snapshotGiveaway({ force: true });
 
+        const pauseSettlementForRetry = (eventName, details, alertText = "") => {
+            logEvent(eventName, details);
+            try {
+                if (alertText) window.alert(alertText);
+            } catch {}
+            snapshotGiveaway({ force: true });
+            giveawayData.__ending = false;
+            try {
+                if (startButton) {
+                    startButton.disabled = false;
+                    startButton.textContent = "Retry settlement";
+                    startButton.title = "Re-check the preserved settlement without duplicating confirmed transfers";
+                    startButton.onclick = () => endGiveaway();
+                }
+            } catch {}
+        };
+
+        // One funding invariant for all terminal modes. Verify the complete external
+        // outflow before winner gifts, sponsor refunds or a BON Pool contribution.
+        // The committed plan is immutable, so a retry checks the same obligation.
+        const settlementPlan = giveawayData.settlement.financialPlan;
+        const settlementSelfKeys = resolveSelfKeys(giveawayData.host);
+        const requiredSettlementOutflow = (() => {
+            if (settlementPlan.mode === "winners") {
+                const winners = Array.isArray(settlementPlan.winners) ? settlementPlan.winners : [];
+                const net = Array.isArray(settlementPlan.net) ? settlementPlan.net : [];
+                const winnerOutflow = winners.reduce((sum, winner, index) => {
+                    const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
+                    if (!amount) return sum;
+                    if (settlementSelfKeys.has(normalizeUserKey(winner?.author))) return sum;
+                    return sum + amount;
+                }, 0);
+                const poolOutflow = Math.max(0, Math.floor(Number(settlementPlan.split?.total) || 0));
+                return winnerOutflow + poolOutflow;
+            }
+
+            if (settlementPlan.mode === "no-entries-pool") {
+                return Math.max(0, Math.floor(Number(settlementPlan.potTotal) || 0));
+            }
+
+            if (settlementPlan.mode === "no-entries-refund") {
+                return (Array.isArray(settlementPlan.refunds) ? settlementPlan.refunds : [])
+                    .reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item?.amount) || 0)), 0);
+            }
+
+            return NaN;
+        })();
+
+        if (!Number.isFinite(requiredSettlementOutflow)) {
+            throw new Error(`Unsupported committed settlement mode: ${String(settlementPlan.mode || "")}`);
+        }
+
+        if (requiredSettlementOutflow > 0) {
+            const verifiedSettlementBalance =
+                await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
+
+            if (
+                !Number.isFinite(verifiedSettlementBalance) ||
+                verifiedSettlementBalance < requiredSettlementOutflow
+            ) {
+                const availableText = Number.isFinite(verifiedSettlementBalance)
+                    ? fmtBONCurrency(verifiedSettlementBalance)
+                    : "unavailable";
+                pauseSettlementForRetry(
+                    "Settlement paused (insufficient verified BON)",
+                    `Required=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No settlement transfer was attempted.`,
+                    `GIVEAWAY SETTLEMENT PAUSED\n\n` +
+                    `Required to settle: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
+                    `Verified balance: ${availableText} BON\n\n` +
+                    `No new winner gift, sponsor refund or BON Pool contribution has been made by this settlement attempt.`
+                );
+                return;
+            }
+        }
+
         // Sponsor acknowledgement is independent of whether anyone entered. Gifts
         // were already received and the final sync above has frozen the authoritative
         // sponsor state, so thank sponsors (and preserve their notes) in either path.
-        const settlementPlan = giveawayData.settlement.financialPlan;
         const finalSponsoredTotal = Math.max(0, Math.floor(Number(settlementPlan.sponsoredTotal) || 0));
         if (finalSponsoredTotal > 0) {
             const sponsorsMessage = buildSponsorsSummaryMessage(giveawayData);
@@ -7368,16 +7456,37 @@ body.host-panel-dragging * {
                             "zero-entry-pool-confirmation"
                         ))) return;
                     } else {
-                        logEvent(
-                            "BON Pool verification warning",
-                            `Zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. No automatic retry was attempted.`
-                        );
                         try {
-                            window.alert(
-                                `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed. ` +
-                                `Check /bon-pool manually before retrying anything.`
-                            );
+                            const noEntrySplit = {
+                                percent: noEntryTotal > 0 ? 100 : 0,
+                                net: [],
+                                donations: [],
+                                total: noEntryTotal
+                            };
+                            currentStatement = createStatementRecord({
+                                winners: [],
+                                gross: [],
+                                net: [],
+                                donations: [],
+                                split: noEntrySplit,
+                                poolStatus: "NOT CONFIRMED; zero-entry settlement preserved",
+                                entrants: 0,
+                                refunds: []
+                            });
+                            if (currentStatement) {
+                                currentStatement.verification =
+                                    "zero-entry BON Pool contribution not confirmed";
+                                persistCurrentStatement();
+                            }
                         } catch {}
+
+                        pauseSettlementForRetry(
+                            "Settlement paused (zero-entry BON Pool not confirmed)",
+                            `The full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON is not yet confirmed. No automatic resend will occur.`,
+                            `BON Pool warning: the zero-entry full-pot contribution of ${fmtBONCurrency(noEntryTotal)} BON could not be confirmed.\n\n` +
+                            `The settlement has been preserved. Check /bon-pool and use Retry settlement to verify the existing attempt.`
+                        );
+                        return;
                     }
                 }
 
@@ -7546,21 +7655,6 @@ body.host-panel-dragging * {
                 );
 
                 try {
-                    if (!giveawayData.settlement?.statsRecorded) {
-                        recordGiveawayStats(
-                            giveawayData,
-                            [],
-                            [],
-                            numberEntries,
-                            null,
-                            { sponsorRefundedTotal: refundTotal }
-                        );
-                        giveawayData.settlement.statsRecorded = true;
-                        snapshotGiveaway({ force: true });
-                    }
-                } catch (e) { /* ignore stats errors */ }
-
-                try {
                     currentStatement = createStatementRecord({
                         winners: [],
                         gross: [],
@@ -7579,8 +7673,9 @@ body.host-panel-dragging * {
                     }
                 } catch (e) { /* statements are best-effort */ }
 
+                let refundsVerified = refundExpectedGifts.length === 0;
                 if (refundExpectedGifts.length) {
-                    const refundsVerified = await verifySponsorRefundGifts(
+                    refundsVerified = await verifySponsorRefundGifts(
                         refundExpectedGifts,
                         giveawayData.host,
                         refundGiftHistoryBaseline,
@@ -7590,25 +7685,42 @@ body.host-panel-dragging * {
                             statementId: currentStatement?.id ?? null
                         }
                     );
-
-                    if (
-                        !refundsVerified &&
-                        refundDeferredGifts.some(gift =>
-                            giftAttemptStillNeedsResolution(
-                                getActiveGiveawayId(),
-                                gift
-                            )
-                        )
-                    ) {
-                        logEvent(
-                            "Settlement paused (refund attempt unresolved)",
-                            "A sponsor refund is still pending/retryable after ownership handoff; preserving the active settlement for a safe retry."
-                        );
-                        snapshotGiveaway({ force: true });
-                        giveawayData.__ending = false;
-                        return;
-                    }
                 }
+
+                if (!refundsVerified) {
+                    const unresolved = refundDeferredGifts.some(gift =>
+                        giftAttemptStillNeedsResolution(
+                            getActiveGiveawayId(),
+                            gift
+                        )
+                    );
+                    pauseSettlementForRetry(
+                        unresolved
+                            ? "Settlement paused (refund attempt unresolved)"
+                            : "Settlement paused (sponsor refund not confirmed)",
+                        unresolved
+                            ? "A sponsor refund is still pending/retryable after ownership handoff."
+                            : "At least one sponsor refund could not be confirmed in persistent Gift History. No automatic resend will occur.",
+                        "Sponsor refund verification is incomplete.\n\n" +
+                        "The settlement has been preserved. Verify the recipient Gift History state and use Retry settlement after resolving any missing refund manually."
+                    );
+                    return;
+                }
+
+                try {
+                    if (!giveawayData.settlement?.statsRecorded) {
+                        recordGiveawayStats(
+                            giveawayData,
+                            [],
+                            [],
+                            numberEntries,
+                            null,
+                            { sponsorRefundedTotal: refundTotal }
+                        );
+                        giveawayData.settlement.statsRecorded = true;
+                        snapshotGiveaway({ force: true });
+                    }
+                } catch (e) { /* ignore stats errors */ }
             }
         } else {
             // The draw was committed before any settlement side effect. A resumed
@@ -7663,44 +7775,6 @@ body.host-panel-dragging * {
             const hostFundedTotal = Math.max(0, Math.floor(Number(plan.hostFundedTotal) || 0));
             const entrantsTotal = Math.max(0, Math.floor(Number(plan.entrantsTotal) || 0));
             const scaleIncrease = Math.max(0, Math.floor(Number(plan.scaleIncrease) || 0));
-
-            // Before announcing or moving any BON, prove that the host can cover
-            // the entire remaining external settlement in one go.
-            const settlementSelfKeys = resolveSelfKeys(giveawayData.host);
-            const requiredWinnerOutflow = winners.reduce((sum, winner, index) => {
-                const amount = Math.max(0, Math.floor(Number(net[index]) || 0));
-                if (!amount) return sum;
-                if (settlementSelfKeys.has(normalizeUserKey(winner?.author))) return sum;
-                return sum + amount;
-            }, 0);
-            const requiredSettlementOutflow =
-                requiredWinnerOutflow + Math.max(0, Math.floor(Number(split.total) || 0));
-            const verifiedSettlementBalance =
-                await getVerifiedHostBalance({ requireServer: true, maxAgeMs: 0 });
-
-            if (
-                !Number.isFinite(verifiedSettlementBalance) ||
-                verifiedSettlementBalance < requiredSettlementOutflow
-            ) {
-                const availableText = Number.isFinite(verifiedSettlementBalance)
-                    ? fmtBONCurrency(verifiedSettlementBalance)
-                    : "unavailable";
-                logEvent(
-                    "Settlement paused (insufficient verified BON)",
-                    `Required=${fmtBONCurrency(requiredSettlementOutflow)} BON | verified balance=${availableText} BON. No settlement transfer was attempted.`
-                );
-                try {
-                    window.alert(
-                        `GIVEAWAY SETTLEMENT PAUSED\n\n` +
-                        `Required to settle: ${fmtBONCurrency(requiredSettlementOutflow)} BON\n` +
-                        `Verified balance: ${availableText} BON\n\n` +
-                        `No winner gift or BON Pool contribution has been made by this settlement attempt.`
-                    );
-                } catch {}
-                snapshotGiveaway({ force: true });
-                giveawayData.__ending = false;
-                return;
-            }
 
             //hard-coded emoji “podium”
             const podium = ["🥇", "🥈", "🥉", "🏅", "🎖️"];
@@ -7929,10 +8003,26 @@ body.host-panel-dragging * {
                     ))) return;
                 } else {
                     markFundGiftStatus("failed");
-                    logEvent("BON Pool verification warning", `Direct contribution of ${fmtBONCurrency(split.total)} BON could not be confirmed. No automatic retry was attempted.`);
                     try {
-                        window.alert(`BON Pool warning: the ${fmtBONCurrency(split.total)} BON contribution could not be confirmed. Check /bon-pool manually before retrying anything.`);
+                        currentStatement = createStatementRecord({
+                            winners, gross: allocated, net, donations: split.donations, split,
+                            poolStatus: "NOT CONFIRMED; settlement preserved for verification",
+                            entrants: entrantsTotal
+                        });
+                        if (currentStatement) {
+                            currentStatement.verification =
+                                "winner payouts confirmed; BON Pool contribution not confirmed";
+                            persistCurrentStatement();
+                        }
                     } catch {}
+
+                    pauseSettlementForRetry(
+                        "Settlement paused (BON Pool not confirmed)",
+                        `Winner payouts are confirmed, but the ${fmtBONCurrency(split.total)} BON Pool contribution is not yet confirmed. No automatic resend will occur.`,
+                        `BON Pool warning: the ${fmtBONCurrency(split.total)} BON contribution could not be confirmed.\n\n` +
+                        `The settlement has been preserved. Check /bon-pool and use Retry settlement; the persisted pool ledger will verify the existing attempt before any further action.`
+                    );
+                    return;
                 }
             }
             try {
@@ -10724,10 +10814,12 @@ body.host-panel-dragging * {
     // Safely read the host's BON balance from the page, regardless of locale separators
     function readHostBalance() {
         try {
-            const points = document.getElementsByClassName("ratio-bar__points")[0];
-            if (!points || !points.firstElementChild) return 0;
-            const raw = points.firstElementChild.textContent || "";
-            // remove everything that isn't a digit: spaces, commas, dots, apostrophes, etc.
+            const points = document.querySelector(".ratio-bar__points");
+            if (!points) return 0;
+            const raw = points.textContent || "";
+            // DarkPeers currently renders values such as "9 961". Parse the full
+            // element text so this remains correct whether the theme uses a child
+            // element or renders the number directly in .ratio-bar__points.
             const digitsOnly = raw.replace(/[^\d]/g, "");
             const n = parseInt(digitsOnly, 10);
             return Number.isNaN(n) ? 0 : n;
