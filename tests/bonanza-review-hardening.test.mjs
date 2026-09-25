@@ -149,7 +149,7 @@ test("rehearsal routes userscript output privately to the host", () => {
   assert.match(source, /async function sendPrivateMessage\(username, messageStr, options = \{\}\)/);
   assert.match(source, /const allowRehearsalPrivateOutput =[\s\S]*?options\?\.rehearsalPrivateOutput === true/);
   assert.match(source, /const rehearsalHost = String\(giveawayData\?\.host \|\| getLoggedInUsername\(\) \|\| ""\)\.trim\(\)/);
-  assert.match(source, /return sendPrivateMessage\(rehearsalHost, rehearsalBody, \{[\s\S]*?rehearsalPrivateOutput: true[\s\S]*?\}\)/);
+  assert.match(source, /return sendPrivateMessage\(rehearsalHost, rehearsalBody, \{[\s\S]*?rehearsalPrivateOutput: true,[\s\S]*?requireExclusiveGiveawayOwnership[\s\S]*?\}\)/);
   assert.match(source, /return sendMessage\(`\/msg \$\{to\} \$\{body\}`, options\)/);
   assert.doesNotMatch(source, /logEvent\("Rehearsal chat suppressed"/);
 });
