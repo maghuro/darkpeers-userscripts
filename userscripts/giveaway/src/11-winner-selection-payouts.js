@@ -1633,20 +1633,36 @@
                 }
             } catch (e) { /* ignore stats errors */ }
             try {
+                const finalPoolStatus = donationActive
+                    ? (
+                        poolResult.dryRun
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : (
+                                poolResult.confirmed
+                                    ? "confirmed directly in BON Pool"
+                                    : "NOT CONFIRMED, check /bon-pool manually"
+                            )
+                    )
+                    : "none";
+
                 if (!currentStatement) {
                     currentStatement = createStatementRecord({
                         winners, gross: allocated, net, donations: split.donations, split,
-                        poolStatus: donationActive
-                            ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                            : "none",
+                        poolStatus: finalPoolStatus,
                         entrants: entrantsTotal
                     });
                 }
                 if (currentStatement) {
-                    currentStatement.donationStatus = donationActive
-                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                        : "none";
-                    if (!expectedGifts.length) currentStatement.verification = "nothing to verify";
+                    currentStatement.donationStatus = finalPoolStatus;
+                    if (!expectedGifts.length) {
+                        currentStatement.verification = poolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : (
+                                REHEARSAL_MODE
+                                    ? "rehearsal simulation complete; no winner gift required"
+                                    : "nothing to verify"
+                            );
+                    }
                     currentStatement.endedAt = Date.now();
                     persistCurrentStatement();
                 }
