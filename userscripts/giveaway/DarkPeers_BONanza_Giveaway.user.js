@@ -227,9 +227,10 @@
 //     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
 //     fetching the full userscript. @homepageURL and @namespace now point to Maghuro's
 //     DarkPeers profile; v1.5.10 is intentionally treated as a fresh userscript identity.
-//     Rehearsal statements
-//     and settlement messages now label simulated transfers explicitly, so dry-run
-//     success cannot be mistaken for proof of a real BON movement.
+//     Rehearsal statements and settlement messages now label simulated transfers
+//     explicitly, preserve that status through finalization, and infer/sanitize
+//     rehearsal-only v1.5.9 statements so dry-run success cannot be mistaken for
+//     proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -9317,20 +9318,36 @@ body.host-panel-dragging * {
                 }
             } catch (e) { /* ignore stats errors */ }
             try {
+                const finalPoolStatus = donationActive
+                    ? (
+                        poolResult.dryRun
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : (
+                                poolResult.confirmed
+                                    ? "confirmed directly in BON Pool"
+                                    : "NOT CONFIRMED, check /bon-pool manually"
+                            )
+                    )
+                    : "none";
+
                 if (!currentStatement) {
                     currentStatement = createStatementRecord({
                         winners, gross: allocated, net, donations: split.donations, split,
-                        poolStatus: donationActive
-                            ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                            : "none",
+                        poolStatus: finalPoolStatus,
                         entrants: entrantsTotal
                     });
                 }
                 if (currentStatement) {
-                    currentStatement.donationStatus = donationActive
-                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                        : "none";
-                    if (!expectedGifts.length) currentStatement.verification = "nothing to verify";
+                    currentStatement.donationStatus = finalPoolStatus;
+                    if (!expectedGifts.length) {
+                        currentStatement.verification = poolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : (
+                                REHEARSAL_MODE
+                                    ? "rehearsal simulation complete; no winner gift required"
+                                    : "nothing to verify"
+                            );
+                    }
                     currentStatement.endedAt = Date.now();
                     persistCurrentStatement();
                 }
@@ -10401,11 +10418,52 @@ body.host-panel-dragging * {
 
     let currentStatement = null; // record for the giveaway that just ended
 
+    function normalizeStatementRecord(record) {
+        if (!record || typeof record !== "object") return record;
+
+        const normalized = { ...record };
+        const hasExplicitMode = typeof normalized.rehearsalMode === "boolean";
+
+        // v1.5.9 statements predate rehearsalMode but already lived in a
+        // rehearsal-specific storage namespace. Therefore the current storage
+        // context is authoritative when the field is absent.
+        if (!hasExplicitMode) {
+            normalized.rehearsalMode = REHEARSAL_MODE;
+        }
+
+        if (normalized.rehearsalMode && !hasExplicitMode) {
+            if (
+                normalized.donationTotal > 0 &&
+                /^confirmed directly in BON Pool/.test(String(normalized.donationStatus || ""))
+            ) {
+                normalized.donationStatus =
+                    "simulated only (legacy rehearsal; no BON Pool contribution sent)";
+            }
+
+            if (
+                normalized.verification === "nothing to verify" ||
+                normalized.verification === "all gifts confirmed in DarkPeers"
+            ) {
+                normalized.verification =
+                    "rehearsal simulation complete; no BON-moving requests sent";
+            }
+        }
+
+        return normalized;
+    }
+
+    function isRehearsalStatementRecord(record) {
+        if (!record || typeof record !== "object") return false;
+        return typeof record.rehearsalMode === "boolean"
+            ? record.rehearsalMode
+            : REHEARSAL_MODE;
+    }
+
     function readStatements() {
         try {
             const raw = localStorage.getItem(LS_STATEMENTS);
             const arr = raw ? JSON.parse(raw) : [];
-            return Array.isArray(arr) ? arr : [];
+            return Array.isArray(arr) ? arr.map(normalizeStatementRecord) : [];
         } catch { return []; }
     }
 
@@ -10576,7 +10634,7 @@ body.host-panel-dragging * {
     function finalizeStatementVerification(ok, missingCount, statementId = null) {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
-        targetStatement.verification = targetStatement.rehearsalMode
+        targetStatement.verification = isRehearsalStatementRecord(targetStatement)
             ? (
                 ok
                     ? "rehearsal simulation complete; no BON-moving requests sent"
@@ -10604,7 +10662,7 @@ body.host-panel-dragging * {
         L.push(`Giveaway ID     : ${rec.id}`);
         L.push(`Site            : ${rec.site}`);
         L.push(`Host            : ${rec.host}`);
-        L.push(`Mode            : ${rec.rehearsalMode ? "REHEARSAL / SIMULATION (no BON-moving requests sent)" : "LIVE"}`);
+        L.push(`Mode            : ${isRehearsalStatementRecord(rec) ? "REHEARSAL / SIMULATION (no BON-moving requests sent)" : "LIVE"}`);
         L.push(`Started         : ${rec.startedAt ? statementTimestamp(rec.startedAt) : "n/a"}`);
         L.push(`Ended           : ${statementTimestamp(rec.endedAt)}`);
         L.push(`Number range    : ${rec.range[0]} - ${rec.range[1]}`);
