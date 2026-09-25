@@ -31,7 +31,7 @@ test("review hardening invariants stay present", () => {
 test("public update metadata is split from the install payload", () => {
   const header = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || "";
 
-  assert.match(header, /^\/\/ @namespace\s+https:\/\/darkpeers\.org\/users\/maghuro$/m);
+  assert.match(header, /^\/\/ @namespace\s+https:\/\/github\.com\/maghuro\/unit3d-userscripts$/m);
   assert.match(header, /^\/\/ @homepageURL\s+https:\/\/darkpeers\.org\/users\/maghuro$/m);
   assert.match(
     header,
@@ -41,7 +41,8 @@ test("public update metadata is split from the install payload", () => {
     header,
     /^\/\/ @downloadURL\s+https:\/\/gist\.githubusercontent\.com\/maghuro\/da2dbfec94951990cbc54e75a9aee318\/raw\/DarkPeers_BONanza_Giveaway\.user\.js$/m
   );
-  assert.doesNotMatch(header, /github\.com\/maghuro\/unit3d-userscripts/);
+  assert.doesNotMatch(header, /^\/\/ @homepageURL\s+.*github\.com/m);
+  assert.match(source, /@namespace intentionally preserves the pre-1\.5\.10 legacy value/);
 });
 
 test("Gist workflow generates and verifies a minimal .meta.js manifest", () => {
