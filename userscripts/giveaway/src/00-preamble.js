@@ -227,9 +227,10 @@
 //     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
 //     fetching the full userscript. @homepageURL and @namespace now point to Maghuro's
 //     DarkPeers profile; v1.5.10 is intentionally treated as a fresh userscript identity.
-//     Rehearsal statements
-//     and settlement messages now label simulated transfers explicitly, so dry-run
-//     success cannot be mistaken for proof of a real BON movement.
+//     Rehearsal statements and settlement messages now label simulated transfers
+//     explicitly, preserve that status through finalization, and infer/sanitize
+//     rehearsal-only v1.5.9 statements so dry-run success cannot be mistaken for
+//     proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
