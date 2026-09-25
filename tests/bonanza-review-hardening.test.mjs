@@ -29,7 +29,7 @@ test("review hardening invariants stay present", () => {
 });
 
 test("public update metadata is split from the install payload", () => {
-  const header = source.match(/\/\/ ==UserScript==[\\s\\S]*?\/\/ ==\\/UserScript==/)?.[0] || "";
+  const header = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || "";
 
   assert.match(header, /^\/\/ @namespace\s+https:\/\/darkpeers\.org\/users\/maghuro$/m);
   assert.match(header, /^\/\/ @homepageURL\s+https:\/\/darkpeers\.org\/users\/maghuro$/m);
@@ -54,7 +54,7 @@ test("Gist workflow generates and verifies a minimal .meta.js manifest", () => {
   assert.match(workflow, /META_FILE: \/tmp\/DarkPeers_BONanza_Giveaway\.meta\.js/);
   assert.match(
     workflow,
-    /metadata_keys = \([\\s\\S]*?"@name"[\\s\\S]*?"@namespace"[\\s\\S]*?"@version"[\\s\\S]*?"@updateURL"[\\s\\S]*?"@downloadURL"[\\s\\S]*?\)/
+    /metadata_keys = \([\s\S]*?"@name"[\s\S]*?"@namespace"[\s\S]*?"@version"[\s\S]*?"@updateURL"[\s\S]*?"@downloadURL"[\s\S]*?\)/
   );
   assert.match(workflow, /Gist update response does not contain/);
   assert.match(workflow, /Published Gist content for \{gist_file\} does not match the generated content/);
