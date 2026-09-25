@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.8
+// @version      1.5.9
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -218,6 +218,8 @@
 //   - v1.5.8 makes the Rehearsal / Debug UI toggle honest under forced overrides:
 //     URL-forced rehearsal can be switched off from the UI, while a source-level
 //     DEBUG_SETTINGS.dry_run override is shown as forced instead of pretending to disable.
+//   - v1.5.9 routes rehearsal chat output privately to the host instead of suppressing
+//     it, while keeping winner/refund gifts and BON Pool contributions fully simulated.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
