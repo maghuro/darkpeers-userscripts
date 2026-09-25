@@ -8,6 +8,7 @@ on:
       - userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
       - userscripts/giveaway/src/**
       - scripts/build-bonanza.mjs
+      - .github/workflows/publish-bonanza-gist.yml
   workflow_dispatch:
 
 permissions:
@@ -27,12 +28,57 @@ jobs:
           git diff --exit-code -- userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
           node --check userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
 
-      - name: Publish userscript to Gist
+      - name: Generate userscript update metadata
+        env:
+          SOURCE_FILE: userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+          META_FILE: /tmp/DarkPeers_BONanza_Giveaway.meta.js
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE_FILE"]).read_text(encoding="utf-8")
+          metadata_keys = (
+              "@name",
+              "@namespace",
+              "@version",
+              "@updateURL",
+              "@downloadURL",
+          )
+
+          selected = []
+          for key in metadata_keys:
+              pattern = re.compile(rf"^//\s+{re.escape(key)}\s+.+$", re.MULTILINE)
+              matches = pattern.findall(source)
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one {key} metadata line, found {len(matches)}"
+                  )
+              selected.append(matches[0])
+
+          meta = "// ==UserScript==\n" + "\n".join(selected) + "\n// ==/UserScript==\n"
+          meta_path = Path(os.environ["META_FILE"])
+          meta_path.write_text(meta, encoding="utf-8")
+
+          if "DarkPeers_BONanza_Giveaway.meta.js" not in selected[3]:
+              raise SystemExit("@updateURL does not point to the .meta.js update manifest")
+          if "DarkPeers_BONanza_Giveaway.user.js" not in selected[4]:
+              raise SystemExit("@downloadURL does not point to the full .user.js payload")
+
+          print(meta, end="")
+          PY
+
+      - name: Publish userscript and metadata to Gist
         env:
           GIST_TOKEN: ${{ secrets.BONANZA_GIST_TOKEN }}
           GIST_ID: ${{ vars.BONANZA_GIST_ID }}
           SOURCE_FILE: userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
-          GIST_FILE: DarkPeers_BONanza_Giveaway.user.js
+          META_FILE: /tmp/DarkPeers_BONanza_Giveaway.meta.js
+          GIST_USER_FILE: DarkPeers_BONanza_Giveaway.user.js
+          GIST_META_FILE: DarkPeers_BONanza_Giveaway.meta.js
         run: |
           set -euo pipefail
 
@@ -44,14 +90,15 @@ jobs:
           import os
           from pathlib import Path
 
-          source = Path(os.environ["SOURCE_FILE"])
-          content = source.read_text(encoding="utf-8")
+          files = {
+              os.environ["GIST_USER_FILE"]: Path(os.environ["SOURCE_FILE"]).read_text(encoding="utf-8"),
+              os.environ["GIST_META_FILE"]: Path(os.environ["META_FILE"]).read_text(encoding="utf-8"),
+          }
 
           payload = {
               "files": {
-                  os.environ["GIST_FILE"]: {
-                      "content": content,
-                  }
+                  name: {"content": content}
+                  for name, content in files.items()
               }
           }
 
@@ -75,19 +122,27 @@ jobs:
           import os
           from pathlib import Path
 
-          source = Path(os.environ["SOURCE_FILE"]).read_text(encoding="utf-8")
+          expected = {
+              os.environ["GIST_USER_FILE"]: Path(os.environ["SOURCE_FILE"]).read_text(encoding="utf-8"),
+              os.environ["GIST_META_FILE"]: Path(os.environ["META_FILE"]).read_text(encoding="utf-8"),
+          }
           response = json.loads(Path("/tmp/gist-response.json").read_text(encoding="utf-8"))
-          gist_file = os.environ["GIST_FILE"]
-          published = response.get("files", {}).get(gist_file)
 
-          if not published:
-              raise SystemExit(f"Gist update response does not contain {gist_file!r}")
+          for gist_file, wanted in expected.items():
+              published = response.get("files", {}).get(gist_file)
 
-          if published.get("truncated"):
-              raise SystemExit("Gist API returned truncated content; refusing an unverified publish")
+              if not published:
+                  raise SystemExit(f"Gist update response does not contain {gist_file!r}")
 
-          if published.get("content") != source:
-              raise SystemExit("Published Gist content does not match the repository userscript")
+              if published.get("truncated"):
+                  raise SystemExit(
+                      f"Gist API returned truncated content for {gist_file}; refusing an unverified publish"
+                  )
 
-          print(f"Published and verified {gist_file} in gist {os.environ['GIST_ID']}.")
+              if published.get("content") != wanted:
+                  raise SystemExit(
+                      f"Published Gist content for {gist_file} does not match the generated content"
+                  )
+
+              print(f"Published and verified {gist_file} in gist {os.environ['GIST_ID']}.")
           PY
