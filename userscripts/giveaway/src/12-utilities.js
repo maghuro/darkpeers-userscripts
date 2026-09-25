@@ -1568,7 +1568,8 @@
             }
 
             return sendPrivateMessage(rehearsalHost, rehearsalBody, {
-                rehearsalPrivateOutput: true
+                rehearsalPrivateOutput: true,
+                requireExclusiveGiveawayOwnership
             });
         }
         if (DEBUG_SETTINGS.disable_chat_output) return true;
