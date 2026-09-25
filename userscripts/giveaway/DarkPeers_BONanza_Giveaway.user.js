@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
-// @namespace    https://darkpeers.org/users/maghuro
+// @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
 // @version      1.5.10
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
@@ -14,6 +14,9 @@
 // @match        https://darkpeers.org/
 // @run-at document-idle
 // ==/UserScript==
+
+// NOTE: @namespace intentionally preserves the pre-1.5.10 legacy value as the
+// stable userscript identity. Do not repurpose it as a public project/homepage URL.
 
 // DarkPeers-only fork of "Blutopia BON Giveaway" v6.2.2 by Nums (GPL-3.0-or-later).
 // Changes in this fork:
@@ -222,8 +225,9 @@
 //     it, while keeping winner/refund gifts and BON Pool contributions fully simulated.
 //   - v1.5.10 separates update metadata from the install payload: @updateURL now uses
 //     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
-//     fetching the full userscript. Public maintainer links now point to Maghuro's
-//     DarkPeers profile instead of the development repository. Rehearsal statements
+//     fetching the full userscript. @homepageURL now points to Maghuro's DarkPeers
+//     profile; the legacy @namespace is intentionally retained as the stable script ID.
+//     Rehearsal statements
 //     and settlement messages now label simulated transfers explicitly, so dry-run
 //     success cannot be mistaken for proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
