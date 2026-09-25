@@ -216,13 +216,28 @@ test("rehearsal toggle handles forced overrides honestly", () => {
 test("rehearsal statements keep simulated transfers distinct from live confirmations", () => {
   assert.match(source, /rehearsalMode: REHEARSAL_MODE/);
   assert.match(source, /"dry-run": "simulated \(no BON sent\)"/);
-  assert.match(source, /targetStatement\.rehearsalMode/);
+  assert.match(source, /isRehearsalStatementRecord\(targetStatement\)/);
   assert.match(source, /REHEARSAL \/ SIMULATION \(no BON-moving requests sent\)/);
   assert.match(source, /const rehearsalPool = poolResult\.dryRun === true/);
   assert.match(source, /simulated only \(no BON Pool contribution sent\)/);
   assert.match(source, /REHEARSAL:[\s\S]*?No BON was sent\./);
   assert.match(source, /noEntryPoolResult\.dryRun/);
   assert.match(source, /simulated only \(zero entrants; no BON Pool contribution sent\)/);
+  assert.match(source, /const finalPoolStatus = donationActive[\s\S]*?poolResult\.dryRun[\s\S]*?simulated only \(no BON Pool contribution sent\)/);
+  assert.match(source, /currentStatement\.donationStatus = finalPoolStatus/);
+  assert.match(source, /currentStatement\.verification = poolResult\.dryRun[\s\S]*?rehearsal simulation complete; no BON-moving requests sent/);
+});
+
+test("legacy rehearsal statements inherit rehearsal context and lose false live confirmations", () => {
+  assert.match(source, /function normalizeStatementRecord\(record\)/);
+  assert.match(source, /const hasExplicitMode = typeof normalized\.rehearsalMode === "boolean"/);
+  assert.match(source, /if \(!hasExplicitMode\) \{[\s\S]*?normalized\.rehearsalMode = REHEARSAL_MODE/);
+  assert.match(source, /legacy rehearsal; no BON Pool contribution sent/);
+  assert.match(source, /normalized\.verification === "nothing to verify"/);
+  assert.match(source, /normalized\.verification === "all gifts confirmed in DarkPeers"/);
+  assert.match(source, /return Array\.isArray\(arr\) \? arr\.map\(normalizeStatementRecord\) : \[\]/);
+  assert.match(source, /function isRehearsalStatementRecord\(record\)/);
+  assert.match(source, /typeof record\.rehearsalMode === "boolean"[\s\S]*?\? record\.rehearsalMode[\s\S]*?: REHEARSAL_MODE/);
 });
 
 test("rehearsal persistent state is isolated from live giveaway state", () => {
