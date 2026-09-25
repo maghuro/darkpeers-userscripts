@@ -223,7 +223,9 @@
 //   - v1.5.10 separates update metadata from the install payload: @updateURL now uses
 //     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
 //     fetching the full userscript. Public maintainer links now point to Maghuro's
-//     DarkPeers profile instead of the development repository.
+//     DarkPeers profile instead of the development repository. Rehearsal statements
+//     and settlement messages now label simulated transfers explicitly, so dry-run
+//     success cannot be mistaken for proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
