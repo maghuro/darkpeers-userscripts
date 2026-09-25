@@ -137,9 +137,9 @@ test("rehearsal guards precede every money/chat POST path", () => {
   assert.ok(giftStart >= 0 && giftDryRun > giftStart && giftPost > giftDryRun);
 
   const sendStart = source.indexOf("async function sendMessage");
-  const sendDryRun = source.indexOf("if (REHEARSAL_MODE)", sendStart);
+  const sendRehearsalRoute = source.indexOf("if (REHEARSAL_MODE && !allowRehearsalPrivateOutput)", sendStart);
   const sendApiCall = source.indexOf("trySendViaApi(messageStr)", sendStart);
-  assert.ok(sendStart >= 0 && sendDryRun > sendStart && sendApiCall > sendDryRun);
+  assert.ok(sendStart >= 0 && sendRehearsalRoute > sendStart && sendApiCall > sendRehearsalRoute);
 
   assert.equal((source.match(/trySendViaApi\(/g) || []).length, 2);
 });
