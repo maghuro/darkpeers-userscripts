@@ -6,7 +6,7 @@ on:
       - "userscripts/giveaway/**"
       - "scripts/build-bonanza.mjs"
       - "tests/bonanza-*.test.mjs"
-      - ".github/workflows/validate-bonanza.yml"
+      - ".github/workflows/validate-bonanza.yml"\n      - ".github/workflows/publish-bonanza-gist.yml"
   push:
     branches:
       - main
@@ -14,7 +14,7 @@ on:
       - "userscripts/giveaway/**"
       - "scripts/build-bonanza.mjs"
       - "tests/bonanza-*.test.mjs"
-      - ".github/workflows/validate-bonanza.yml"
+      - ".github/workflows/validate-bonanza.yml"\n      - ".github/workflows/publish-bonanza-gist.yml"
   workflow_dispatch:
 
 permissions:
