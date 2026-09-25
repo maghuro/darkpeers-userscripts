@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://github.com/maghuro/unit3d-userscripts
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.8
+// @version      1.5.9
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
@@ -218,6 +218,8 @@
 //   - v1.5.8 makes the Rehearsal / Debug UI toggle honest under forced overrides:
 //     URL-forced rehearsal can be switched off from the UI, while a source-level
 //     DEBUG_SETTINGS.dry_run override is shown as forced instead of pretending to disable.
+//   - v1.5.9 routes rehearsal chat output privately to the host instead of suppressing
+//     it, while keeping winner/refund gifts and BON Pool contributions fully simulated.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -1369,12 +1371,12 @@
         <div class="settings-group__header">
           <p class="settings-group__title">Safety & Testing</p>
         </div>
-        <label class="settings-row" title="Rehearsal/debug mode suppresses userscript chat output and all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
+        <label class="settings-row" title="Rehearsal/debug mode sends userscript output privately to the host and simulates all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
           <span class="settings-row__label">Rehearsal / Debug mode</span>
           <input
             type="checkbox"
             id="rehearsalModeToggle"
-            title="No userscript chat output or BON transfers. Changing this setting reloads the page."
+            title="Userscript output is sent privately to the host; no BON is transferred. Changing this setting reloads the page."
             class="settings-row__toggle"
           >
         </label>
@@ -1776,10 +1778,10 @@ body.host-panel-dragging * {
     if (REHEARSAL_MODE) {
         setHostSafetyBanner(
             "rehearsal",
-            "REHEARSAL MODE: userscript chat output, winner/refund gifts and BON Pool contributions are disabled.",
+            "REHEARSAL MODE: userscript output is sent privately to the host; winner/refund gifts and BON Pool contributions are simulated only.",
             "danger"
         );
-        console.warn("[BON Giveaway] REHEARSAL MODE active: no script chat output or BON-moving request will be sent.");
+        console.warn("[BON Giveaway] REHEARSAL MODE active: script output is redirected to a private host message; no BON-moving request will be sent.");
     }
 
     // ── Mutual exclusion with the original "Blutopia BON Giveaway" script ──
@@ -11565,11 +11567,24 @@ body.host-panel-dragging * {
             return str;
         }
     }
-    async function sendPrivateMessage(username, messageStr) {
+    function formatRehearsalPrivateOutput(messageStr) {
+        const raw = String(messageStr ?? "").replace(/[\r\n]+/g, " ").trim();
+        const privateMatch = raw.match(/^\/msg\s+(\S+)\s*(.*)$/i);
+
+        if (privateMatch) {
+            const intendedRecipient = sanitizeNick(privateMatch[1]);
+            const body = String(privateMatch[2] || "").trim();
+            return `[b][color=#ff3333][REHEARSAL][/color][/b] [i](would PM ${intendedRecipient})[/i]${body ? ` ${body}` : ""}`;
+        }
+
+        return `[b][color=#ff3333][REHEARSAL][/color][/b]${raw ? ` ${raw}` : ""}`;
+    }
+
+    async function sendPrivateMessage(username, messageStr, options = {}) {
         const to = String(username || "").trim();
         if (!to) {
-            // No target → fall back to normal chat output
-            return sendMessage(messageStr);
+            // No target -> fall back to the normal output path.
+            return sendMessage(messageStr, options);
         }
 
         let body = String(messageStr ?? "");
@@ -11583,7 +11598,7 @@ body.host-panel-dragging * {
         // Avoid newlines which can confuse slash-command parsers
         body = body.replace(/[\r\n]+/g, " ").trim();
 
-        return sendMessage(`/msg ${to} ${body}`);
+        return sendMessage(`/msg ${to} ${body}`, options);
     }
 
     async function sendCommandResponse(username, messageStr) {
@@ -11673,13 +11688,35 @@ body.host-panel-dragging * {
             : prepareOutgoingMessage(messageStr);
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
+        const allowRehearsalPrivateOutput =
+            options?.rehearsalPrivateOutput === true;
 
-        if (REHEARSAL_MODE) {
-            logEvent("Rehearsal chat suppressed", messageStr);
-            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
-                console.debug("[BON Giveaway rehearsal] chat suppressed:", messageStr);
+        if (REHEARSAL_MODE && !allowRehearsalPrivateOutput) {
+            const rehearsalHost = String(giveawayData?.host || getLoggedInUsername() || "").trim();
+            const rehearsalBody = formatRehearsalPrivateOutput(messageStr);
+
+            logEvent(
+                "Rehearsal chat redirected",
+                rehearsalHost
+                    ? `Private host output -> ${sanitizeNick(rehearsalHost)}: ${rehearsalBody}`
+                    : `No host identity available; output suppressed: ${rehearsalBody}`
+            );
+
+            if (!rehearsalHost) {
+                if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                    console.warn("[BON Giveaway rehearsal] host identity unavailable; output suppressed:", messageStr);
+                }
+                return true;
             }
-            return true;
+
+            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                console.debug("[BON Giveaway rehearsal] redirecting output privately to host:", rehearsalHost, messageStr);
+            }
+
+            return sendPrivateMessage(rehearsalHost, rehearsalBody, {
+                rehearsalPrivateOutput: true,
+                requireExclusiveGiveawayOwnership
+            });
         }
         if (DEBUG_SETTINGS.disable_chat_output) return true;
 

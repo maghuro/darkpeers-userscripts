@@ -1,6 +1,6 @@
-# BONanza incident runbook
+# BONanza operations runbook
 
-This runbook is for the host of an active DarkPeers BONanza giveaway.
+This is the operational reference for hosting, rehearsing and recovering a DarkPeers BONanza giveaway.
 
 ## If the pot or sponsor accounting looks wrong
 
@@ -38,7 +38,7 @@ The host and recognized staff are exempt from the escalating command spam lockou
 
 ## Rehearsal mode
 
-Rehearsal mode runs the userscript logic without sending userscript chat output and without moving BON.
+Rehearsal mode runs the userscript logic without moving BON. Output that would normally be sent by the userscript is redirected privately to the host via `/msg` instead of being posted in public chat.
 
 Enable it from the host panel:
 
@@ -58,7 +58,8 @@ location.reload();
 
 While rehearsal mode is active:
 
-- script-generated chat messages are suppressed;
+- script-generated output is redirected privately to the host via `/msg`, prefixed as rehearsal output;
+- output that would normally be a private reply to another user is still shown only to the host, with the intended recipient identified;
 - winner gifts are simulated only;
 - sponsor refunds are simulated only;
 - BON Pool contributions are simulated only;
@@ -77,7 +78,7 @@ Suggested pre-release rehearsal:
 6. Exercise time controls.
 7. End the giveaway.
 8. Inspect the host log and statement.
-9. Confirm that no script output appeared in chat and no BON moved.
+9. Confirm that no script output appeared in public chat, the host received the rehearsal output by private message, and no BON moved.
 
 Disable rehearsal mode from **Settings > Safety & Testing** by turning off **Rehearsal / Debug mode**. The page reloads automatically.
 

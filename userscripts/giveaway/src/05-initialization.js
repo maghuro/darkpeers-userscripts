@@ -25,10 +25,10 @@
     if (REHEARSAL_MODE) {
         setHostSafetyBanner(
             "rehearsal",
-            "REHEARSAL MODE: userscript chat output, winner/refund gifts and BON Pool contributions are disabled.",
+            "REHEARSAL MODE: userscript output is sent privately to the host; winner/refund gifts and BON Pool contributions are simulated only.",
             "danger"
         );
-        console.warn("[BON Giveaway] REHEARSAL MODE active: no script chat output or BON-moving request will be sent.");
+        console.warn("[BON Giveaway] REHEARSAL MODE active: script output is redirected to a private host message; no BON-moving request will be sent.");
     }
 
     // ── Mutual exclusion with the original "Blutopia BON Giveaway" script ──

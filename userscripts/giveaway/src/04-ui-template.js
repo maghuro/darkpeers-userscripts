@@ -338,12 +338,12 @@
         <div class="settings-group__header">
           <p class="settings-group__title">Safety & Testing</p>
         </div>
-        <label class="settings-row" title="Rehearsal/debug mode suppresses userscript chat output and all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
+        <label class="settings-row" title="Rehearsal/debug mode sends userscript output privately to the host and simulates all BON-moving actions. Changing it reloads the page." for="rehearsalModeToggle">
           <span class="settings-row__label">Rehearsal / Debug mode</span>
           <input
             type="checkbox"
             id="rehearsalModeToggle"
-            title="No userscript chat output or BON transfers. Changing this setting reloads the page."
+            title="Userscript output is sent privately to the host; no BON is transferred. Changing this setting reloads the page."
             class="settings-row__toggle"
           >
         </label>

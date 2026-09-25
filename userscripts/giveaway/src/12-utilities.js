@@ -1421,11 +1421,24 @@
             return str;
         }
     }
-    async function sendPrivateMessage(username, messageStr) {
+    function formatRehearsalPrivateOutput(messageStr) {
+        const raw = String(messageStr ?? "").replace(/[\r\n]+/g, " ").trim();
+        const privateMatch = raw.match(/^\/msg\s+(\S+)\s*(.*)$/i);
+
+        if (privateMatch) {
+            const intendedRecipient = sanitizeNick(privateMatch[1]);
+            const body = String(privateMatch[2] || "").trim();
+            return `[b][color=#ff3333][REHEARSAL][/color][/b] [i](would PM ${intendedRecipient})[/i]${body ? ` ${body}` : ""}`;
+        }
+
+        return `[b][color=#ff3333][REHEARSAL][/color][/b]${raw ? ` ${raw}` : ""}`;
+    }
+
+    async function sendPrivateMessage(username, messageStr, options = {}) {
         const to = String(username || "").trim();
         if (!to) {
-            // No target → fall back to normal chat output
-            return sendMessage(messageStr);
+            // No target -> fall back to the normal output path.
+            return sendMessage(messageStr, options);
         }
 
         let body = String(messageStr ?? "");
@@ -1439,7 +1452,7 @@
         // Avoid newlines which can confuse slash-command parsers
         body = body.replace(/[\r\n]+/g, " ").trim();
 
-        return sendMessage(`/msg ${to} ${body}`);
+        return sendMessage(`/msg ${to} ${body}`, options);
     }
 
     async function sendCommandResponse(username, messageStr) {
@@ -1529,13 +1542,35 @@
             : prepareOutgoingMessage(messageStr);
         const requireExclusiveGiveawayOwnership =
             options?.requireExclusiveGiveawayOwnership === true;
+        const allowRehearsalPrivateOutput =
+            options?.rehearsalPrivateOutput === true;
 
-        if (REHEARSAL_MODE) {
-            logEvent("Rehearsal chat suppressed", messageStr);
-            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
-                console.debug("[BON Giveaway rehearsal] chat suppressed:", messageStr);
+        if (REHEARSAL_MODE && !allowRehearsalPrivateOutput) {
+            const rehearsalHost = String(giveawayData?.host || getLoggedInUsername() || "").trim();
+            const rehearsalBody = formatRehearsalPrivateOutput(messageStr);
+
+            logEvent(
+                "Rehearsal chat redirected",
+                rehearsalHost
+                    ? `Private host output -> ${sanitizeNick(rehearsalHost)}: ${rehearsalBody}`
+                    : `No host identity available; output suppressed: ${rehearsalBody}`
+            );
+
+            if (!rehearsalHost) {
+                if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                    console.warn("[BON Giveaway rehearsal] host identity unavailable; output suppressed:", messageStr);
+                }
+                return true;
             }
-            return true;
+
+            if (DEBUG_SETTINGS.log_chat_messages || DEBUG_SETTINGS.verify_sendmessage) {
+                console.debug("[BON Giveaway rehearsal] redirecting output privately to host:", rehearsalHost, messageStr);
+            }
+
+            return sendPrivateMessage(rehearsalHost, rehearsalBody, {
+                rehearsalPrivateOutput: true,
+                requireExclusiveGiveawayOwnership
+            });
         }
         if (DEBUG_SETTINGS.disable_chat_output) return true;
 
