@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
-// @namespace    https://github.com/maghuro/unit3d-userscripts
+// @namespace    https://darkpeers.org/users/maghuro
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.9
+// @version      1.5.10
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
-// @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
-// @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
+// @homepageURL  https://darkpeers.org/users/maghuro
+// @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.meta.js
 // @downloadURL  https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
 // @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
@@ -14,6 +14,9 @@
 // @match        https://darkpeers.org/
 // @run-at document-idle
 // ==/UserScript==
+
+// NOTE: v1.5.10 intentionally changes @namespace. This release is treated as a
+// fresh userscript identity rather than an in-place identity migration.
 
 // DarkPeers-only fork of "Blutopia BON Giveaway" v6.2.2 by Nums (GPL-3.0-or-later).
 // Changes in this fork:
@@ -220,6 +223,14 @@
 //     DEBUG_SETTINGS.dry_run override is shown as forced instead of pretending to disable.
 //   - v1.5.9 routes rehearsal chat output privately to the host instead of suppressing
 //     it, while keeping winner/refund gifts and BON Pool contributions fully simulated.
+//   - v1.5.10 separates update metadata from the install payload: @updateURL now uses
+//     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
+//     fetching the full userscript. @homepageURL and @namespace now point to Maghuro's
+//     DarkPeers profile; v1.5.10 is intentionally treated as a fresh userscript identity.
+//     Rehearsal statements and settlement messages now label simulated transfers
+//     explicitly, preserve that status through finalization, and infer/sanitize
+//     rehearsal-only v1.5.9 statements so dry-run success cannot be mistaken for
+//     proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 

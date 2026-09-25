@@ -888,11 +888,14 @@
                     noEntryPoolResult = await contributeBonPool(noEntryTotal);
 
                     if (noEntryPoolResult.confirmed) {
+                        const zeroEntryPoolMessage = noEntryPoolResult.dryRun
+                            ? `[b][color=#FFC00A]REHEARSAL:[/color][/b] ${fmtBONCurrency(noEntryTotal)} BON full-pot contribution simulated. No BON was sent to the ${BONANZA.FUND_NAME}.`
+                            : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
+                                `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
+                                `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
+                                `No entrants. 100% of the pot was contributed. ✨`;
                         if (!(await sendSettlementMessage(
-                            `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
-                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
-                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
-                            `No entrants. 100% of the pot was contributed. ✨`,
+                            zeroEntryPoolMessage,
                             "zero-entry BON Pool confirmation",
                             "zero-entry-pool-confirmation"
                         ))) return;
@@ -933,7 +936,7 @@
 
                 logEvent(
                     "Giveaway ended",
-                    `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED"})`
+                    `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.dryRun ? "simulated" : (noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED")})`
                 );
 
                 const noEntryDonationInfo = {
@@ -962,16 +965,20 @@
                         net: [],
                         donations: [],
                         split: noEntrySplit,
-                        poolStatus: noEntryPoolResult.confirmed
-                            ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
-                            : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
+                        poolStatus: noEntryPoolResult.dryRun
+                            ? "simulated only (zero entrants; no BON Pool contribution sent)"
+                            : noEntryPoolResult.confirmed
+                                ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
+                                : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
                         entrants: 0,
                         refunds: []
                     });
                     if (currentStatement) {
-                        currentStatement.verification = noEntryPoolResult.confirmed
-                            ? "nothing to verify"
-                            : "BON Pool contribution requires manual verification";
+                        currentStatement.verification = noEntryPoolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : noEntryPoolResult.confirmed
+                                ? "nothing to verify"
+                                : "BON Pool contribution requires manual verification";
                         persistCurrentStatement();
                     }
                 } catch (e) { /* statements are best-effort */ }
@@ -1561,7 +1568,9 @@
             }
 
             if (currentStatement && !expectedGifts.length) {
-                currentStatement.verification = "nothing to verify";
+                currentStatement.verification = REHEARSAL_MODE
+                    ? "rehearsal simulation complete; no winner gift required"
+                    : "nothing to verify";
                 persistCurrentStatement();
             }
 
@@ -1573,15 +1582,24 @@
                 poolResult = await contributeBonPool(split.total);
                 donationInfo.confirmed = !!poolResult.confirmed;
                 if (poolResult.confirmed) {
+                    const rehearsalPool = poolResult.dryRun === true;
                     markFundGiftStatus("confirmed");
                     if (currentStatement) {
-                        currentStatement.donationStatus = "confirmed directly in BON Pool";
+                        currentStatement.donationStatus = rehearsalPool
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : "confirmed directly in BON Pool";
+                        if (rehearsalPool) {
+                            currentStatement.verification =
+                                "rehearsal simulation complete; no BON-moving requests sent";
+                        }
                         currentStatement.endedAt = Date.now();
                         persistCurrentStatement();
                     }
-                    const paidMessage = riggedMode
-                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
-                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
+                    const paidMessage = rehearsalPool
+                        ? `[b][color=#FFC00A]REHEARSAL:[/color][/b] ${fmtBONCurrency(split.total)} BON ${riggedMode ? "Rigged Taxes payment" : BONANZA.FUND_NAME + " contribution"} simulated. No BON was sent.`
+                        : riggedMode
+                            ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
+                            : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
                     if (!(await sendSettlementMessage(
                         paidMessage,
                         "BON Pool confirmation",
@@ -1615,20 +1633,36 @@
                 }
             } catch (e) { /* ignore stats errors */ }
             try {
+                const finalPoolStatus = donationActive
+                    ? (
+                        poolResult.dryRun
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : (
+                                poolResult.confirmed
+                                    ? "confirmed directly in BON Pool"
+                                    : "NOT CONFIRMED, check /bon-pool manually"
+                            )
+                    )
+                    : "none";
+
                 if (!currentStatement) {
                     currentStatement = createStatementRecord({
                         winners, gross: allocated, net, donations: split.donations, split,
-                        poolStatus: donationActive
-                            ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                            : "none",
+                        poolStatus: finalPoolStatus,
                         entrants: entrantsTotal
                     });
                 }
                 if (currentStatement) {
-                    currentStatement.donationStatus = donationActive
-                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                        : "none";
-                    if (!expectedGifts.length) currentStatement.verification = "nothing to verify";
+                    currentStatement.donationStatus = finalPoolStatus;
+                    if (!expectedGifts.length) {
+                        currentStatement.verification = poolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : (
+                                REHEARSAL_MODE
+                                    ? "rehearsal simulation complete; no winner gift required"
+                                    : "nothing to verify"
+                            );
+                    }
                     currentStatement.endedAt = Date.now();
                     persistCurrentStatement();
                 }

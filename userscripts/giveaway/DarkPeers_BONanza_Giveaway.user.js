@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
-// @namespace    https://github.com/maghuro/unit3d-userscripts
+// @namespace    https://darkpeers.org/users/maghuro
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.9
+// @version      1.5.10
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
-// @homepageURL  https://gist.github.com/maghuro/da2dbfec94951990cbc54e75a9aee318
-// @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
+// @homepageURL  https://darkpeers.org/users/maghuro
+// @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.meta.js
 // @downloadURL  https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.user.js
 // @icon         https://darkpeers.org/img/logo.png
 // @grant        GM_getValue
@@ -14,6 +14,9 @@
 // @match        https://darkpeers.org/
 // @run-at document-idle
 // ==/UserScript==
+
+// NOTE: v1.5.10 intentionally changes @namespace. This release is treated as a
+// fresh userscript identity rather than an in-place identity migration.
 
 // DarkPeers-only fork of "Blutopia BON Giveaway" v6.2.2 by Nums (GPL-3.0-or-later).
 // Changes in this fork:
@@ -220,6 +223,14 @@
 //     DEBUG_SETTINGS.dry_run override is shown as forced instead of pretending to disable.
 //   - v1.5.9 routes rehearsal chat output privately to the host instead of suppressing
 //     it, while keeping winner/refund gifts and BON Pool contributions fully simulated.
+//   - v1.5.10 separates update metadata from the install payload: @updateURL now uses
+//     a minimal .meta.js published beside the full .user.js, while @downloadURL keeps
+//     fetching the full userscript. @homepageURL and @namespace now point to Maghuro's
+//     DarkPeers profile; v1.5.10 is intentionally treated as a fresh userscript identity.
+//     Rehearsal statements and settlement messages now label simulated transfers
+//     explicitly, preserve that status through finalization, and infer/sanitize
+//     rehearsal-only v1.5.9 statements so dry-run success cannot be mistaken for
+//     proof of a real BON movement.
 //// DarkPeers BONanza fork created and maintained by T.R.A.V.I.S. for the DarkPeers staff.
 // Further development and maintenance by Maghuro & M.A.E.S.T.R.O.
 
@@ -8562,11 +8573,14 @@ body.host-panel-dragging * {
                     noEntryPoolResult = await contributeBonPool(noEntryTotal);
 
                     if (noEntryPoolResult.confirmed) {
+                        const zeroEntryPoolMessage = noEntryPoolResult.dryRun
+                            ? `[b][color=#FFC00A]REHEARSAL:[/color][/b] ${fmtBONCurrency(noEntryTotal)} BON full-pot contribution simulated. No BON was sent to the ${BONANZA.FUND_NAME}.`
+                            : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
+                                `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
+                                `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
+                                `No entrants. 100% of the pot was contributed. ✨`;
                         if (!(await sendSettlementMessage(
-                            `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙", "pool")} ` +
-                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] ` +
-                            `[b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(noEntryTotal)} BON[/color][/b] paid directly into the pool.\n` +
-                            `No entrants. 100% of the pot was contributed. ✨`,
+                            zeroEntryPoolMessage,
                             "zero-entry BON Pool confirmation",
                             "zero-entry-pool-confirmation"
                         ))) return;
@@ -8607,7 +8621,7 @@ body.host-panel-dragging * {
 
                 logEvent(
                     "Giveaway ended",
-                    `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED"})`
+                    `Entrants=0 | Winners=0 | Host-funded=${fmtBONCurrency(noEntryHostFunded)} BON | Sponsored=${fmtBONCurrency(finalSponsoredTotal)} BON | Total=${fmtBONCurrency(noEntryTotal)} BON | BON Pool=${fmtBONCurrency(noEntryTotal)} BON (100%, ${noEntryPoolResult.dryRun ? "simulated" : (noEntryPoolResult.confirmed ? "confirmed" : "NOT CONFIRMED")})`
                 );
 
                 const noEntryDonationInfo = {
@@ -8636,16 +8650,20 @@ body.host-panel-dragging * {
                         net: [],
                         donations: [],
                         split: noEntrySplit,
-                        poolStatus: noEntryPoolResult.confirmed
-                            ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
-                            : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
+                        poolStatus: noEntryPoolResult.dryRun
+                            ? "simulated only (zero entrants; no BON Pool contribution sent)"
+                            : noEntryPoolResult.confirmed
+                                ? "confirmed directly in BON Pool (zero entrants, 100% of pot)"
+                                : "NOT CONFIRMED, zero-entry full pot requires manual /bon-pool check",
                         entrants: 0,
                         refunds: []
                     });
                     if (currentStatement) {
-                        currentStatement.verification = noEntryPoolResult.confirmed
-                            ? "nothing to verify"
-                            : "BON Pool contribution requires manual verification";
+                        currentStatement.verification = noEntryPoolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : noEntryPoolResult.confirmed
+                                ? "nothing to verify"
+                                : "BON Pool contribution requires manual verification";
                         persistCurrentStatement();
                     }
                 } catch (e) { /* statements are best-effort */ }
@@ -9235,7 +9253,9 @@ body.host-panel-dragging * {
             }
 
             if (currentStatement && !expectedGifts.length) {
-                currentStatement.verification = "nothing to verify";
+                currentStatement.verification = REHEARSAL_MODE
+                    ? "rehearsal simulation complete; no winner gift required"
+                    : "nothing to verify";
                 persistCurrentStatement();
             }
 
@@ -9247,15 +9267,24 @@ body.host-panel-dragging * {
                 poolResult = await contributeBonPool(split.total);
                 donationInfo.confirmed = !!poolResult.confirmed;
                 if (poolResult.confirmed) {
+                    const rehearsalPool = poolResult.dryRun === true;
                     markFundGiftStatus("confirmed");
                     if (currentStatement) {
-                        currentStatement.donationStatus = "confirmed directly in BON Pool";
+                        currentStatement.donationStatus = rehearsalPool
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : "confirmed directly in BON Pool";
+                        if (rehearsalPool) {
+                            currentStatement.verification =
+                                "rehearsal simulation complete; no BON-moving requests sent";
+                        }
                         currentStatement.endedAt = Date.now();
                         persistCurrentStatement();
                     }
-                    const paidMessage = riggedMode
-                        ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
-                        : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
+                    const paidMessage = rehearsalPool
+                        ? `[b][color=#FFC00A]REHEARSAL:[/color][/b] ${fmtBONCurrency(split.total)} BON ${riggedMode ? "Rigged Taxes payment" : BONANZA.FUND_NAME + " contribution"} simulated. No BON was sent.`
+                        : riggedMode
+                            ? `${bridgeMarker(BRIDGE_MARKERS.TAXES_PAID, "🧾")} [b][color=#FF4F9A]TAXES PAID:[/color][/b] [b][color=#FFC00A]${fmtBONCurrency(split.total)} BON[/color][/b] successfully paid directly into the [b]${BONANZA.FUND_NAME}[/b]. The taxman is satisfied. 😈`
+                            : `${bridgeMarker(BRIDGE_MARKERS.POOL_PAID, "💙")} [b][color=${BONANZA.GIVEAWAY_COLOR}]${BONANZA.FUND_NAME} contribution confirmed:[/color][/b] [b][color=${BONANZA.GIVEAWAY_COLOR}]${fmtBONCurrency(split.total)} BON[/color][/b] paid directly into the pool.\nThank you for supporting the event! ✨`;
                     if (!(await sendSettlementMessage(
                         paidMessage,
                         "BON Pool confirmation",
@@ -9289,20 +9318,36 @@ body.host-panel-dragging * {
                 }
             } catch (e) { /* ignore stats errors */ }
             try {
+                const finalPoolStatus = donationActive
+                    ? (
+                        poolResult.dryRun
+                            ? "simulated only (no BON Pool contribution sent)"
+                            : (
+                                poolResult.confirmed
+                                    ? "confirmed directly in BON Pool"
+                                    : "NOT CONFIRMED, check /bon-pool manually"
+                            )
+                    )
+                    : "none";
+
                 if (!currentStatement) {
                     currentStatement = createStatementRecord({
                         winners, gross: allocated, net, donations: split.donations, split,
-                        poolStatus: donationActive
-                            ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                            : "none",
+                        poolStatus: finalPoolStatus,
                         entrants: entrantsTotal
                     });
                 }
                 if (currentStatement) {
-                    currentStatement.donationStatus = donationActive
-                        ? (poolResult.confirmed ? "confirmed directly in BON Pool" : "NOT CONFIRMED, check /bon-pool manually")
-                        : "none";
-                    if (!expectedGifts.length) currentStatement.verification = "nothing to verify";
+                    currentStatement.donationStatus = finalPoolStatus;
+                    if (!expectedGifts.length) {
+                        currentStatement.verification = poolResult.dryRun
+                            ? "rehearsal simulation complete; no BON-moving requests sent"
+                            : (
+                                REHEARSAL_MODE
+                                    ? "rehearsal simulation complete; no winner gift required"
+                                    : "nothing to verify"
+                            );
+                    }
                     currentStatement.endedAt = Date.now();
                     persistCurrentStatement();
                 }
@@ -10373,11 +10418,52 @@ body.host-panel-dragging * {
 
     let currentStatement = null; // record for the giveaway that just ended
 
+    function normalizeStatementRecord(record) {
+        if (!record || typeof record !== "object") return record;
+
+        const normalized = { ...record };
+        const hasExplicitMode = typeof normalized.rehearsalMode === "boolean";
+
+        // v1.5.9 statements predate rehearsalMode but already lived in a
+        // rehearsal-specific storage namespace. Therefore the current storage
+        // context is authoritative when the field is absent.
+        if (!hasExplicitMode) {
+            normalized.rehearsalMode = REHEARSAL_MODE;
+        }
+
+        if (normalized.rehearsalMode && !hasExplicitMode) {
+            if (
+                normalized.donationTotal > 0 &&
+                /^confirmed directly in BON Pool/.test(String(normalized.donationStatus || ""))
+            ) {
+                normalized.donationStatus =
+                    "simulated only (legacy rehearsal; no BON Pool contribution sent)";
+            }
+
+            if (
+                normalized.verification === "nothing to verify" ||
+                normalized.verification === "all gifts confirmed in DarkPeers"
+            ) {
+                normalized.verification =
+                    "rehearsal simulation complete; no BON-moving requests sent";
+            }
+        }
+
+        return normalized;
+    }
+
+    function isRehearsalStatementRecord(record) {
+        if (!record || typeof record !== "object") return false;
+        return typeof record.rehearsalMode === "boolean"
+            ? record.rehearsalMode
+            : REHEARSAL_MODE;
+    }
+
     function readStatements() {
         try {
             const raw = localStorage.getItem(LS_STATEMENTS);
             const arr = raw ? JSON.parse(raw) : [];
-            return Array.isArray(arr) ? arr : [];
+            return Array.isArray(arr) ? arr.map(normalizeStatementRecord) : [];
         } catch { return []; }
     }
 
@@ -10474,7 +10560,9 @@ body.host-panel-dragging * {
             gross: p.gross[i],
             donation: p.donations[i],
             net: p.net[i],
-            status: (normalizeUserKey(w.author) === hostKey) ? "self (host, no gift sent)" : "sent, awaiting confirmation"
+            status: (normalizeUserKey(w.author) === hostKey)
+                ? (REHEARSAL_MODE ? "simulated self (host, no gift sent)" : "self (host, no gift sent)")
+                : "sent, awaiting confirmation"
         }));
 
         const pct = p.split ? p.split.percent : 0;
@@ -10490,6 +10578,7 @@ body.host-panel-dragging * {
         return {
             id: getActiveGiveawayId() || Date.now(),
             scriptVersion: SCRIPT_VERSION,
+            rehearsalMode: REHEARSAL_MODE,
             site: location.hostname,
             host: data.host,
             startedAt: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -10524,6 +10613,7 @@ body.host-panel-dragging * {
             "confirmed-history": "confirmed in Gift History",
             "confirmed-system": "confirmed in System room",
             "observed-system": "seen in System room; awaiting Gift History",
+            "dry-run": "simulated (no BON sent)",
             failed: "NOT CONFIRMED, check manually",
             self: "self (host, no gift sent)"
         })[status] || status;
@@ -10544,9 +10634,17 @@ body.host-panel-dragging * {
     function finalizeStatementVerification(ok, missingCount, statementId = null) {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
-        targetStatement.verification = ok
-            ? "all gifts confirmed in DarkPeers"
-            : `${missingCount} gift(s) could not be confirmed`;
+        targetStatement.verification = isRehearsalStatementRecord(targetStatement)
+            ? (
+                ok
+                    ? "rehearsal simulation complete; no BON-moving requests sent"
+                    : `rehearsal simulation incomplete; ${missingCount} simulated gift(s) unresolved`
+            )
+            : (
+                ok
+                    ? "all gifts confirmed in DarkPeers"
+                    : `${missingCount} gift(s) could not be confirmed`
+            );
         persistStatementRecord(targetStatement);
     }
 
@@ -10564,6 +10662,7 @@ body.host-panel-dragging * {
         L.push(`Giveaway ID     : ${rec.id}`);
         L.push(`Site            : ${rec.site}`);
         L.push(`Host            : ${rec.host}`);
+        L.push(`Mode            : ${isRehearsalStatementRecord(rec) ? "REHEARSAL / SIMULATION (no BON-moving requests sent)" : "LIVE"}`);
         L.push(`Started         : ${rec.startedAt ? statementTimestamp(rec.startedAt) : "n/a"}`);
         L.push(`Ended           : ${statementTimestamp(rec.endedAt)}`);
         L.push(`Number range    : ${rec.range[0]} - ${rec.range[1]}`);

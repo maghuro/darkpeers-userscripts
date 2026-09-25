@@ -227,11 +227,52 @@
 
     let currentStatement = null; // record for the giveaway that just ended
 
+    function normalizeStatementRecord(record) {
+        if (!record || typeof record !== "object") return record;
+
+        const normalized = { ...record };
+        const hasExplicitMode = typeof normalized.rehearsalMode === "boolean";
+
+        // v1.5.9 statements predate rehearsalMode but already lived in a
+        // rehearsal-specific storage namespace. Therefore the current storage
+        // context is authoritative when the field is absent.
+        if (!hasExplicitMode) {
+            normalized.rehearsalMode = REHEARSAL_MODE;
+        }
+
+        if (normalized.rehearsalMode && !hasExplicitMode) {
+            if (
+                normalized.donationTotal > 0 &&
+                /^confirmed directly in BON Pool/.test(String(normalized.donationStatus || ""))
+            ) {
+                normalized.donationStatus =
+                    "simulated only (legacy rehearsal; no BON Pool contribution sent)";
+            }
+
+            if (
+                normalized.verification === "nothing to verify" ||
+                normalized.verification === "all gifts confirmed in DarkPeers"
+            ) {
+                normalized.verification =
+                    "rehearsal simulation complete; no BON-moving requests sent";
+            }
+        }
+
+        return normalized;
+    }
+
+    function isRehearsalStatementRecord(record) {
+        if (!record || typeof record !== "object") return false;
+        return typeof record.rehearsalMode === "boolean"
+            ? record.rehearsalMode
+            : REHEARSAL_MODE;
+    }
+
     function readStatements() {
         try {
             const raw = localStorage.getItem(LS_STATEMENTS);
             const arr = raw ? JSON.parse(raw) : [];
-            return Array.isArray(arr) ? arr : [];
+            return Array.isArray(arr) ? arr.map(normalizeStatementRecord) : [];
         } catch { return []; }
     }
 
@@ -328,7 +369,9 @@
             gross: p.gross[i],
             donation: p.donations[i],
             net: p.net[i],
-            status: (normalizeUserKey(w.author) === hostKey) ? "self (host, no gift sent)" : "sent, awaiting confirmation"
+            status: (normalizeUserKey(w.author) === hostKey)
+                ? (REHEARSAL_MODE ? "simulated self (host, no gift sent)" : "self (host, no gift sent)")
+                : "sent, awaiting confirmation"
         }));
 
         const pct = p.split ? p.split.percent : 0;
@@ -344,6 +387,7 @@
         return {
             id: getActiveGiveawayId() || Date.now(),
             scriptVersion: SCRIPT_VERSION,
+            rehearsalMode: REHEARSAL_MODE,
             site: location.hostname,
             host: data.host,
             startedAt: giveawayStartTime ? giveawayStartTime.getTime() : null,
@@ -378,6 +422,7 @@
             "confirmed-history": "confirmed in Gift History",
             "confirmed-system": "confirmed in System room",
             "observed-system": "seen in System room; awaiting Gift History",
+            "dry-run": "simulated (no BON sent)",
             failed: "NOT CONFIRMED, check manually",
             self: "self (host, no gift sent)"
         })[status] || status;
@@ -398,9 +443,17 @@
     function finalizeStatementVerification(ok, missingCount, statementId = null) {
         const targetStatement = getStatementRecordById(statementId);
         if (!targetStatement) return;
-        targetStatement.verification = ok
-            ? "all gifts confirmed in DarkPeers"
-            : `${missingCount} gift(s) could not be confirmed`;
+        targetStatement.verification = isRehearsalStatementRecord(targetStatement)
+            ? (
+                ok
+                    ? "rehearsal simulation complete; no BON-moving requests sent"
+                    : `rehearsal simulation incomplete; ${missingCount} simulated gift(s) unresolved`
+            )
+            : (
+                ok
+                    ? "all gifts confirmed in DarkPeers"
+                    : `${missingCount} gift(s) could not be confirmed`
+            );
         persistStatementRecord(targetStatement);
     }
 
@@ -418,6 +471,7 @@
         L.push(`Giveaway ID     : ${rec.id}`);
         L.push(`Site            : ${rec.site}`);
         L.push(`Host            : ${rec.host}`);
+        L.push(`Mode            : ${isRehearsalStatementRecord(rec) ? "REHEARSAL / SIMULATION (no BON-moving requests sent)" : "LIVE"}`);
         L.push(`Started         : ${rec.startedAt ? statementTimestamp(rec.startedAt) : "n/a"}`);
         L.push(`Ended           : ${statementTimestamp(rec.endedAt)}`);
         L.push(`Number range    : ${rec.range[0]} - ${rec.range[1]}`);
