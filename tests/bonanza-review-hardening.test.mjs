@@ -212,6 +212,18 @@ test("rehearsal toggle handles forced overrides honestly", () => {
 });
 
 
+test("rehearsal statements keep simulated transfers distinct from live confirmations", () => {
+  assert.match(source, /rehearsalMode: REHEARSAL_MODE/);
+  assert.match(source, /"dry-run": "simulated \(no BON sent\)"/);
+  assert.match(source, /targetStatement\.rehearsalMode/);
+  assert.match(source, /REHEARSAL \/ SIMULATION \(no BON-moving requests sent\)/);
+  assert.match(source, /const rehearsalPool = poolResult\.dryRun === true/);
+  assert.match(source, /simulated only \(no BON Pool contribution sent\)/);
+  assert.match(source, /REHEARSAL:[\s\S]*?No BON was sent\./);
+  assert.match(source, /noEntryPoolResult\.dryRun/);
+  assert.match(source, /simulated only \(zero entrants; no BON Pool contribution sent\)/);
+});
+
 test("rehearsal persistent state is isolated from live giveaway state", () => {
   assert.match(source, /const REHEARSAL_STORAGE_SUFFIX = REHEARSAL_MODE \? "::rehearsal" : ""/);
   assert.match(source, /BONANZA_GIVEAWAY_STATS_v2::\$\{location\.hostname\}\$\{REHEARSAL_STORAGE_SUFFIX\}/);
