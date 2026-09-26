@@ -9,7 +9,7 @@ const sourcePath = new URL(
 const source = readFileSync(sourcePath, "utf8");
 
 test("review hardening invariants stay present", () => {
-  assert.match(source, /^\/\/ @version\s+1\.5\.10$/m);
+  assert.match(source, /^\/\/ @version\s+1\.5\.11$/m);
   assert.doesNotMatch(source, /pollChatFallback/);
   assert.doesNotMatch(source, /onlyguardians/i);
   assert.match(source, /async function getLatestMainChatReplayBoundary\(\)/);
@@ -70,6 +70,19 @@ test("winner-count commands are host-only", () => {
 
   assert.match(maxWinners, /normalizeUserKey\(author\) !== normalizeUserKey\(giveawayData\.host\)/);
   assert.doesNotMatch(maxWinners, /isHostOrAdmin/);
+});
+
+test("host virtual BON stays isolated from sponsor gifts", () => {
+  assert.match(source, /hostWalletAtStart: null/);
+  assert.match(source, /hostWalletAtStart: giveawayData\.hostWalletAtStart/);
+  assert.match(source, /function getHostVirtualBon\(data = giveawayData\)/);
+  assert.match(source, /Math\.floor\(walletAtStart\) - hostCommitted/);
+  assert.match(source, /My Virtual BON/);
+  assert.match(source, /sponsor gifts do not affect this balance/);
+  assert.match(source, /const virtualBon = getHostVirtualBon\(giveawayData\)/);
+  assert.match(source, /amount > virtualBon/);
+  assert.match(source, /giveawayData\.hostAdded = \(giveawayData\.hostAdded \|\| 0\) \+ amount/);
+  assert.match(source, /updateHostPanelUI\(\)/);
 });
 
 test("staff emergency controls remain available", () => {
