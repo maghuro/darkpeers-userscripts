@@ -148,6 +148,7 @@
             customMessage: customMessageInput.value,
             donationPercent: normalizeDonationPercent(donationPercentInput ? donationPercentInput.value : 0),
             hostAdded: amountInt,
+            hostWalletAtStart: null,
             initialPotVerifiedAtStart: amountInt,
             reminderSchedule : schedule,
             reminderNum      : schedule.length,
@@ -182,6 +183,10 @@
             return;
         }
         else {
+            // Freeze the host's own pre-giveaway wallet. Sponsor gifts increase the
+            // real DarkPeers wallet and the giveaway pot together, but must not make
+            // the host appear to have more personal BON available to commit.
+            giveawayData.hostWalletAtStart = Math.max(0, Math.floor(currentBon));
             giveawayData.initialPotVerifiedAtStart = giveawayData.amount;
             recomputeEffectiveWinners(giveawayData);
             initializeScaledWinnersAnnouncementState(giveawayData);
