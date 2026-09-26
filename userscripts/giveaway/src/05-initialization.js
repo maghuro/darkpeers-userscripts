@@ -1344,6 +1344,7 @@
                     customMessage: giveawayData.customMessage,
                     donationPercent: giveawayData.donationPercent,
                     hostAdded: giveawayData.hostAdded,
+                    hostWalletAtStart: giveawayData.hostWalletAtStart,
                     initialPotVerifiedAtStart: giveawayData.initialPotVerifiedAtStart,
                     reminderSchedule: giveawayData.reminderSchedule,
                     reminderNum: giveawayData.reminderNum,
@@ -1667,6 +1668,10 @@
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
                 : [];
+            const restoredHostWalletAtStart = Number(giveawayData.hostWalletAtStart);
+            giveawayData.hostWalletAtStart = (
+                Number.isFinite(restoredHostWalletAtStart) && restoredHostWalletAtStart >= 0
+            ) ? Math.floor(restoredHostWalletAtStart) : null;
             // Old active snapshots must not expose a start-time draw. A committed
             // settlement must keep its exact draw so crash/reload recovery cannot
             // select a different winner.

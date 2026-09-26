@@ -370,6 +370,15 @@
         return line;
     }
 
+    function getHostVirtualBon(data = giveawayData) {
+        if (!data) return null;
+        const walletAtStart = Number(data.hostWalletAtStart);
+        if (!Number.isFinite(walletAtStart) || walletAtStart < 0) return null;
+
+        const hostCommitted = Math.max(0, Math.floor(Number(data.hostAdded) || 0));
+        return Math.max(0, Math.floor(walletAtStart) - hostCommitted);
+    }
+
     function isCurrentUserGiveawayHost() {
         const navDisplayName = getTopNavUserLink()?.textContent || "";
         const selfNames = [getLoggedInUsername(), navDisplayName].map((name) => normUserKey(name)).filter(Boolean);
@@ -713,10 +722,51 @@
         });
     }
 
+    function renderHostVirtualBonCard() {
+        if (!hostCommandPanelBody) return;
+
+        let card = hostCommandPanelBody.querySelector(".host-command-panel__virtual-bon");
+        if (!card) {
+            card = document.createElement("section");
+            card.className = "host-command-panel__virtual-bon";
+            card.innerHTML = `
+              <div class="host-command-panel__virtual-bon-main">
+                <span class="host-command-panel__virtual-bon-label">My Virtual BON</span>
+                <strong class="host-command-panel__virtual-bon-value">—</strong>
+              </div>
+              <small class="host-command-panel__virtual-bon-detail"></small>`;
+            hostCommandPanelBody.prepend(card);
+        }
+
+        const value = card.querySelector(".host-command-panel__virtual-bon-value");
+        const detail = card.querySelector(".host-command-panel__virtual-bon-detail");
+        if (!value || !detail) return;
+
+        if (!giveawayData) {
+            value.textContent = "—";
+            detail.textContent = "Start a giveaway to track your own available BON.";
+            return;
+        }
+
+        const virtualBon = getHostVirtualBon(giveawayData);
+        if (!Number.isFinite(virtualBon)) {
+            value.textContent = "Unavailable";
+            detail.textContent = "This giveaway predates virtual BON tracking.";
+            return;
+        }
+
+        const walletAtStart = Math.max(0, Math.floor(Number(giveawayData.hostWalletAtStart) || 0));
+        const hostCommitted = Math.max(0, Math.floor(Number(giveawayData.hostAdded) || 0));
+        value.textContent = `${fmtBONCurrency(virtualBon)} BON`;
+        detail.textContent =
+            `Start: ${fmtBONCurrency(walletAtStart)} BON · committed by you: ${fmtBONCurrency(hostCommitted)} BON · sponsor gifts do not affect this balance.`;
+    }
+
     function renderHostPanelCommands() {
         if (!hostCommandPanelBody) return;
         hostPanelCommandState.clear();
         hostCommandPanelBody.innerHTML = "";
+        renderHostVirtualBonCard();
 
         const panelList = getPanelCommandList();
         if (!panelList || !Array.isArray(panelList.commands)) {
@@ -1221,6 +1271,7 @@
 
     function updateHostPanelUI() {
         const visible = true;
+        renderHostVirtualBonCard();
 
         if (hostPanelToggleBtn) hostPanelToggleBtn.style.display = visible ? "inline-flex" : "none";
         if (hostCommandPanel && !visible) setHostPanelOpen(false);

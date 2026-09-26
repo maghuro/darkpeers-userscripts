@@ -636,6 +636,38 @@ body.host-panel-dragging * {
   white-space: normal;
   word-break: break-word;
 }
+.host-command-panel__virtual-bon {
+  border: 1px solid rgba(255, 192, 10, 0.38);
+  border-radius: 6px;
+  background: rgba(255, 192, 10, 0.07);
+  padding: 9px 10px;
+  min-width: 0;
+}
+.host-command-panel__virtual-bon-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.host-command-panel__virtual-bon-label {
+  color: #ffa200;
+  font-size: 12px;
+  font-weight: 700;
+}
+.host-command-panel__virtual-bon-value {
+  color: #ffc00a;
+  font-size: 15px;
+  font-weight: 800;
+  text-align: right;
+}
+.host-command-panel__virtual-bon-detail {
+  display: block;
+  margin-top: 3px;
+  color: #aaa;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
 .host-command-panel .host-command-panel__row {
   margin-bottom: 6px;
   min-width: 0;

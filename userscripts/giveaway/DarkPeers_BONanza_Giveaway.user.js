@@ -2,7 +2,7 @@
 // @name         DarkPeers BONanza Giveaway | Maghuro Fork
 // @namespace    https://darkpeers.org/users/maghuro
 // @description  BON giveaways on DarkPeers with an optional direct contribution to the BON Pool
-// @version      1.5.10
+// @version      1.5.11
 // @author       🤖 T.R.A.V.I.S., Maghuro & M.A.E.S.T.R.O.
 // @homepageURL  https://darkpeers.org/users/maghuro
 // @updateURL    https://gist.githubusercontent.com/maghuro/da2dbfec94951990cbc54e75a9aee318/raw/DarkPeers_BONanza_Giveaway.meta.js
@@ -1680,6 +1680,38 @@ body.host-panel-dragging * {
   white-space: normal;
   word-break: break-word;
 }
+.host-command-panel__virtual-bon {
+  border: 1px solid rgba(255, 192, 10, 0.38);
+  border-radius: 6px;
+  background: rgba(255, 192, 10, 0.07);
+  padding: 9px 10px;
+  min-width: 0;
+}
+.host-command-panel__virtual-bon-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.host-command-panel__virtual-bon-label {
+  color: #ffa200;
+  font-size: 12px;
+  font-weight: 700;
+}
+.host-command-panel__virtual-bon-value {
+  color: #ffc00a;
+  font-size: 15px;
+  font-weight: 800;
+  text-align: right;
+}
+.host-command-panel__virtual-bon-detail {
+  display: block;
+  margin-top: 3px;
+  color: #aaa;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
 .host-command-panel .host-command-panel__row {
   margin-bottom: 6px;
   min-width: 0;
@@ -3108,6 +3140,7 @@ body.host-panel-dragging * {
                     customMessage: giveawayData.customMessage,
                     donationPercent: giveawayData.donationPercent,
                     hostAdded: giveawayData.hostAdded,
+                    hostWalletAtStart: giveawayData.hostWalletAtStart,
                     initialPotVerifiedAtStart: giveawayData.initialPotVerifiedAtStart,
                     reminderSchedule: giveawayData.reminderSchedule,
                     reminderNum: giveawayData.reminderNum,
@@ -3431,6 +3464,10 @@ body.host-panel-dragging * {
             giveawayData.sponsorGiftMessages = Array.isArray(giveawayData.sponsorGiftMessages)
                 ? giveawayData.sponsorGiftMessages
                 : [];
+            const restoredHostWalletAtStart = Number(giveawayData.hostWalletAtStart);
+            giveawayData.hostWalletAtStart = (
+                Number.isFinite(restoredHostWalletAtStart) && restoredHostWalletAtStart >= 0
+            ) ? Math.floor(restoredHostWalletAtStart) : null;
             // Old active snapshots must not expose a start-time draw. A committed
             // settlement must keep its exact draw so crash/reload recovery cannot
             // select a different winner.
@@ -3950,6 +3987,7 @@ body.host-panel-dragging * {
             customMessage: customMessageInput.value,
             donationPercent: normalizeDonationPercent(donationPercentInput ? donationPercentInput.value : 0),
             hostAdded: amountInt,
+            hostWalletAtStart: null,
             initialPotVerifiedAtStart: amountInt,
             reminderSchedule : schedule,
             reminderNum      : schedule.length,
@@ -3984,6 +4022,10 @@ body.host-panel-dragging * {
             return;
         }
         else {
+            // Freeze the host's own pre-giveaway wallet. Sponsor gifts increase the
+            // real DarkPeers wallet and the giveaway pot together, but must not make
+            // the host appear to have more personal BON available to commit.
+            giveawayData.hostWalletAtStart = Math.max(0, Math.floor(currentBon));
             giveawayData.initialPotVerifiedAtStart = giveawayData.amount;
             recomputeEffectiveWinners(giveawayData);
             initializeScaledWinnersAnnouncementState(giveawayData);
@@ -7543,6 +7585,16 @@ body.host-panel-dragging * {
             return;
         }
 
+        // The host's virtual BON is deliberately frozen against sponsor gifts.
+        // Reject impossible top-ups locally before spending another DarkPeers request.
+        const virtualBon = getHostVirtualBon(giveawayData);
+        if (Number.isFinite(virtualBon) && amount > virtualBon) {
+            reply(
+                `[b][color=red]You only have ${fmtBONCurrency(virtualBon)} virtual BON available to add from your own balance.[/color][/b]`
+            );
+            return;
+        }
+
         // Serialize the balance check and mutation as one host transaction.
         hostAddBonInFlight = true;
         try {
@@ -7582,6 +7634,7 @@ body.host-panel-dragging * {
 
             // ✅ host-only tracking (excludes sponsors)
             giveawayData.hostAdded = (giveawayData.hostAdded || 0) + amount;
+            updateHostPanelUI();
     
             const newEffectiveWinners = recomputeEffectiveWinners(giveawayData);
             const winnersDelta = Math.max(0, newEffectiveWinners - prevEffectiveWinners);
@@ -7622,7 +7675,7 @@ body.host-panel-dragging * {
             } else {
                 logEvent(
                     "Host BON top-up recorded",
-                    `Host added ${fmtBONCurrency(amount)} BON | pot=${fmtBONCurrency(newTotal)} BON | verified wallet=${fmtBONCurrency(currentBon)} BON`
+                    `Host added ${fmtBONCurrency(amount)} BON | pot=${fmtBONCurrency(newTotal)} BON | verified wallet=${fmtBONCurrency(currentBon)} BON | virtual remaining=${fmtBONCurrency(getHostVirtualBon(giveawayData) ?? 0)} BON`
                 );
             }
         } finally {
@@ -13229,6 +13282,15 @@ body.host-panel-dragging * {
         return line;
     }
 
+    function getHostVirtualBon(data = giveawayData) {
+        if (!data) return null;
+        const walletAtStart = Number(data.hostWalletAtStart);
+        if (!Number.isFinite(walletAtStart) || walletAtStart < 0) return null;
+
+        const hostCommitted = Math.max(0, Math.floor(Number(data.hostAdded) || 0));
+        return Math.max(0, Math.floor(walletAtStart) - hostCommitted);
+    }
+
     function isCurrentUserGiveawayHost() {
         const navDisplayName = getTopNavUserLink()?.textContent || "";
         const selfNames = [getLoggedInUsername(), navDisplayName].map((name) => normUserKey(name)).filter(Boolean);
@@ -13572,10 +13634,51 @@ body.host-panel-dragging * {
         });
     }
 
+    function renderHostVirtualBonCard() {
+        if (!hostCommandPanelBody) return;
+
+        let card = hostCommandPanelBody.querySelector(".host-command-panel__virtual-bon");
+        if (!card) {
+            card = document.createElement("section");
+            card.className = "host-command-panel__virtual-bon";
+            card.innerHTML = `
+              <div class="host-command-panel__virtual-bon-main">
+                <span class="host-command-panel__virtual-bon-label">My Virtual BON</span>
+                <strong class="host-command-panel__virtual-bon-value">—</strong>
+              </div>
+              <small class="host-command-panel__virtual-bon-detail"></small>`;
+            hostCommandPanelBody.prepend(card);
+        }
+
+        const value = card.querySelector(".host-command-panel__virtual-bon-value");
+        const detail = card.querySelector(".host-command-panel__virtual-bon-detail");
+        if (!value || !detail) return;
+
+        if (!giveawayData) {
+            value.textContent = "—";
+            detail.textContent = "Start a giveaway to track your own available BON.";
+            return;
+        }
+
+        const virtualBon = getHostVirtualBon(giveawayData);
+        if (!Number.isFinite(virtualBon)) {
+            value.textContent = "Unavailable";
+            detail.textContent = "This giveaway predates virtual BON tracking.";
+            return;
+        }
+
+        const walletAtStart = Math.max(0, Math.floor(Number(giveawayData.hostWalletAtStart) || 0));
+        const hostCommitted = Math.max(0, Math.floor(Number(giveawayData.hostAdded) || 0));
+        value.textContent = `${fmtBONCurrency(virtualBon)} BON`;
+        detail.textContent =
+            `Start: ${fmtBONCurrency(walletAtStart)} BON · committed by you: ${fmtBONCurrency(hostCommitted)} BON · sponsor gifts do not affect this balance.`;
+    }
+
     function renderHostPanelCommands() {
         if (!hostCommandPanelBody) return;
         hostPanelCommandState.clear();
         hostCommandPanelBody.innerHTML = "";
+        renderHostVirtualBonCard();
 
         const panelList = getPanelCommandList();
         if (!panelList || !Array.isArray(panelList.commands)) {
@@ -14080,6 +14183,7 @@ body.host-panel-dragging * {
 
     function updateHostPanelUI() {
         const visible = true;
+        renderHostVirtualBonCard();
 
         if (hostPanelToggleBtn) hostPanelToggleBtn.style.display = visible ? "inline-flex" : "none";
         if (hostCommandPanel && !visible) setHostPanelOpen(false);
