@@ -1057,6 +1057,16 @@
             return;
         }
 
+        // The host's virtual BON is deliberately frozen against sponsor gifts.
+        // Reject impossible top-ups locally before spending another DarkPeers request.
+        const virtualBon = getHostVirtualBon(giveawayData);
+        if (Number.isFinite(virtualBon) && amount > virtualBon) {
+            reply(
+                `[b][color=red]You only have ${fmtBONCurrency(virtualBon)} virtual BON available to add from your own balance.[/color][/b]`
+            );
+            return;
+        }
+
         // Serialize the balance check and mutation as one host transaction.
         hostAddBonInFlight = true;
         try {
@@ -1096,6 +1106,7 @@
 
             // ✅ host-only tracking (excludes sponsors)
             giveawayData.hostAdded = (giveawayData.hostAdded || 0) + amount;
+            updateHostPanelUI();
     
             const newEffectiveWinners = recomputeEffectiveWinners(giveawayData);
             const winnersDelta = Math.max(0, newEffectiveWinners - prevEffectiveWinners);
@@ -1136,7 +1147,7 @@
             } else {
                 logEvent(
                     "Host BON top-up recorded",
-                    `Host added ${fmtBONCurrency(amount)} BON | pot=${fmtBONCurrency(newTotal)} BON | verified wallet=${fmtBONCurrency(currentBon)} BON`
+                    `Host added ${fmtBONCurrency(amount)} BON | pot=${fmtBONCurrency(newTotal)} BON | verified wallet=${fmtBONCurrency(currentBon)} BON | virtual remaining=${fmtBONCurrency(getHostVirtualBon(giveawayData) ?? 0)} BON`
                 );
             }
         } finally {
