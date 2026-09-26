@@ -146,3 +146,47 @@ jobs:
 
               print(f"Published and verified {gist_file} in gist {os.environ['GIST_ID']}.")
           PY
+
+      - name: Verify public raw Gist files
+        env:
+          GIST_ID: ${{ vars.BONANZA_GIST_ID }}
+          SOURCE_FILE: userscripts/giveaway/DarkPeers_BONanza_Giveaway.user.js
+          META_FILE: /tmp/DarkPeers_BONanza_Giveaway.meta.js
+          GIST_USER_FILE: DarkPeers_BONanza_Giveaway.user.js
+          GIST_META_FILE: DarkPeers_BONanza_Giveaway.meta.js
+        run: |
+          set -euo pipefail
+
+          : "${GIST_ID:?BONANZA_GIST_ID is not configured}"
+
+          RAW_BASE="https://gist.githubusercontent.com/maghuro/${GIST_ID}/raw"
+
+          verify_raw() {
+            local expected="$1"
+            local gist_file="$2"
+            local url="${RAW_BASE}/${gist_file}"
+            local actual="/tmp/raw-${gist_file}"
+
+            for attempt in $(seq 1 12); do
+              if curl                 --fail                 --silent                 --show-error                 --location                 --header "Cache-Control: no-cache"                 --header "Pragma: no-cache"                 "${url}"                 --output "${actual}"
+              then
+                if cmp --silent "${expected}" "${actual}"; then
+                  echo "Public raw URL verified: ${gist_file}"
+                  return 0
+                fi
+              fi
+
+              echo "Raw Gist still stale for ${gist_file} (attempt ${attempt}/12)."
+              sleep 5
+            done
+
+            echo "::error::Public raw Gist content does not match the just-published ${gist_file}."
+            echo "Expected metadata/header:"
+            sed -n '1,16p' "${expected}"
+            echo "Raw metadata/header:"
+            sed -n '1,16p' "${actual}" || true
+            return 1
+          }
+
+          verify_raw "${SOURCE_FILE}" "${GIST_USER_FILE}"
+          verify_raw "${META_FILE}" "${GIST_META_FILE}"
