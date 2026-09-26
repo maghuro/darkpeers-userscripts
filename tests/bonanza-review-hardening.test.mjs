@@ -61,6 +61,20 @@ test("Gist workflow generates and verifies a minimal .meta.js manifest", () => {
   assert.match(workflow, /Published Gist content for \{gist_file\} does not match the generated content/);
 });
 
+test("Gist workflow verifies the public raw update URLs after publish", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/publish-bonanza-gist.yml", import.meta.url),
+    "utf8"
+  );
+
+  assert.match(workflow, /Verify public raw Gist files/);
+  assert.match(workflow, /gist\.githubusercontent\.com\/maghuro\/\$\{GIST_ID\}\/raw/);
+  assert.match(workflow, /Cache-Control: no-cache/);
+  assert.match(workflow, /Pragma: no-cache/);
+  assert.match(workflow, /cmp --silent/);
+  assert.match(workflow, /Public raw Gist content does not match/);
+});
+
 test("winner-count commands are host-only", () => {
   const winners = source.match(/winners\(ctx\) \{[\s\S]*?\n\s*\},\n\n\s*maxwinners\(ctx\)/)?.[0] || "";
   const maxWinners = source.match(/maxwinners\(ctx\) \{[\s\S]*?\n\s*\},\n\n\s*scale\(ctx\)/)?.[0] || "";
